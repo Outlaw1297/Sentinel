@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <meta name="theme-color" content="#0b0f16">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sentinel">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=6">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=6">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v=6">
+
+  <title>Sentinel</title>
+
+  <link rel="stylesheet" href="/static/styles.css?v=62">
+
+</head>
+
+<body>
+
+  <div class="layout">
+
+    <div class="install-banner hidden" id="setup-banner" role="region" aria-label="Setup required">
+      <div class="alert-stripe alert-stripe-warn" aria-hidden="true"></div>
+      <div class="install-banner-copy">
+        <strong>Finish setup</strong>
+        <p>Complete Sentinel setup to configure GnBots paths and backups.</p>
+      </div>
+      <button type="button" class="btn btn-small" id="setup-banner-link">Launch setup wizard</button>
+    </div>
+
+    <div class="install-banner hidden" id="install-banner" role="region" aria-label="Install app">
+      <div class="alert-stripe alert-stripe-info" aria-hidden="true"></div>
+      <div class="install-banner-copy">
+        <strong id="install-banner-title">Install on your phone</strong>
+        <p id="install-banner-text">Add this dashboard to your home screen for quick access and notifications.</p>
+      </div>
+      <div class="install-banner-actions">
+        <button class="btn btn-small btn-ghost" id="install-banner-dismiss" type="button">Dismiss</button>
+      </div>
+    </div>
+
+    <header class="header header-card">
+
+      <div class="header-top">
+        <div class="header-left header-brand">
+          <img class="site-logo" src="/static/icons/sentinel-logo.png?v=5" alt="Sentinel" width="64" height="64" decoding="async">
+          <div class="header-brand-text">
+            <h1><span class="title-brand">Sentinel</span></h1>
+            <p class="brand-tagline" aria-label="Observe. Analyze. Control.">
+              <span class="tag-observe"><span class="tagline-icon" data-sentinel-icon="real-time" data-icon-size="14" aria-hidden="true"></span>Observe</span><span class="tag-sep"> · </span><span class="tag-analyze"><span class="tagline-icon" data-sentinel-icon="analyze" data-icon-size="14" aria-hidden="true"></span>Analyze</span><span class="tag-sep"> · </span><span class="tag-control"><span class="tagline-icon" data-sentinel-icon="focus" data-icon-size="14" aria-hidden="true"></span>Control</span>
+            </p>
+            <p class="subtitle" id="profile-label">Loading profile…</p>
+          </div>
+        </div>
+
+        <div class="header-top-actions">
+          <div class="status-pill" id="gnbots-status">Checking…</div>
+          <div class="meta" id="last-updated">—</div>
+          <a class="icon-btn" href="/settings" title="Settings" aria-label="Settings">
+            <svg class="icon-btn-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97 0-.33-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.39-1.06-.73-1.69-.98l-.37-2.65A.506.506 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.22-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64L4.57 11c-.04.34-.07.67-.07 1 0 .33.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.06.74 1.69.99l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.99l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66Z"/>
+            </svg>
+          </a>
+          <button class="icon-btn" id="notifications-btn" type="button" title="Enable notifications" aria-label="Notifications">
+            <svg class="icon-btn-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22m7-6V11a7 7 0 0 0-6-6.92V4a2 2 0 1 0-4 0v.08A7 7 0 0 0 3 11v5l-2 2v1h18v-1l-2-2Z"/>
+            </svg>
+          </button>
+          <button class="btn btn-ghost" id="refresh-btn" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <div class="stack-pills" id="stack-pills"></div>
+
+    </header>
+
+    <div class="restore-recommend-banner hidden" id="restore-recommend-banner" role="region" aria-label="Emulator restore recommended">
+      <div class="alert-stripe" aria-hidden="true"></div>
+      <div class="restore-recommend-copy">
+        <strong id="restore-recommend-title" class="banner-title-row"><span data-sentinel-icon="reliable" data-icon-size="18" aria-hidden="true"></span><span>Emulator restore recommended</span></strong>
+        <p id="restore-recommend-text"></p>
+      </div>
+      <div class="restore-recommend-actions">
+        <a class="btn btn-small btn-restore-link" id="restore-recommend-open" href="/settings?tab=restore">Open restore</a>
+        <button class="btn btn-small btn-ghost" id="restore-recommend-dismiss" type="button">Dismiss</button>
+      </div>
+    </div>
+
+    <div class="compact-panels">
+
+    <section class="controls-panel panel">
+
+      <div class="panel-head">
+
+        <h2>Application</h2>
+
+        <div class="controls-meta" id="host-status"></div>
+
+      </div>
+
+      <div class="controls-row">
+
+        <button class="btn btn-host primary" type="button" data-host-action="start" title="Launch GnBots.exe on the bot PC">Launch GnBots</button>
+
+        <button class="btn btn-host danger" type="button" data-host-action="stop" title="Close GnBots.exe only. The monitor and watcher keep running.">Close GnBots</button>
+
+      </div>
+
+      <p class="controls-note" id="elevated-tasks-note">On the bot PC, run <code>StartGnBotStack.bat</code> to start the headless monitor and GnBots.</p>
+      <p class="controls-note shutdown-countdown-note"><span id="shutdown-countdown"></span></p>
+
+    </section>
+
+
+
+    <section class="controls-panel panel">
+
+      <div class="panel-head">
+
+        <h2>Bot Run</h2>
+
+        <div class="controls-meta" id="command-status"></div>
+
+      </div>
+
+      <div class="controls-row bot-run-toolbar" id="global-controls">
+
+        <div class="toolbar-group">
+          <button class="btn btn-command primary" type="button" data-command="start" title="Start the bot run loop.">Start</button>
+          <button class="btn btn-command" type="button" data-command="stop" title="Stop the current bot run.">Stop</button>
+        </div>
+
+        <div class="toolbar-sep" aria-hidden="true"></div>
+
+        <div class="toolbar-group toolbar-group-danger">
+          <button class="btn btn-command danger" type="button" data-command="stopall" title="Stop every active session.">Stop All</button>
+          <button class="btn btn-command danger" type="button" data-command="stopemulators" title="Shut down all emulators.">Stop Emulators</button>
+        </div>
+
+        <div class="toolbar-sep" aria-hidden="true"></div>
+
+        <a class="btn btn-command btn-utility btn-add-account-link" id="add-account-open" href="/settings?tab=provision" title="Create LDPlayer instance and add a GnBots account">Add account</a>
+
+      </div>
+
+    </section>
+
+    </div>
+
+
+
+    <section class="stats" id="stats"></section>
+
+
+
+    <section class="panel screenshots-panel">
+
+      <div class="panel-head">
+
+        <h2 class="panel-head-title"><span class="panel-head-icon" data-sentinel-icon="inspect" data-icon-size="18" aria-hidden="true"></span><span>Screenshots</span></h2>
+
+        <div class="panel-head-tools">
+
+          <span class="controls-meta screenshots-status" id="screenshots-status">—</span>
+
+          <button class="btn btn-ghost" id="screenshots-refresh-btn" type="button">Refresh</button>
+
+        </div>
+
+      </div>
+
+      <div class="screenshots-grid" id="screenshots-grid">
+
+        <p class="screenshots-empty">Loading active emulator screenshots…</p>
+
+      </div>
+
+    </section>
+
+
+
+    <section class="panel resources-panel">
+
+      <div class="panel-head">
+
+        <h2 class="panel-head-title"><span class="panel-head-icon" data-sentinel-icon="analyze" data-icon-size="18" aria-hidden="true"></span><span>Resources</span></h2>
+
+      </div>
+
+      <div class="resources-body" id="resources-body"></div>
+
+    </section>
+
+
+
+    <main class="main-grid">
+
+      <section class="panel accounts-panel">
+
+        <div class="panel-head">
+
+          <h2>Accounts</h2>
+
+        <div class="panel-head-tools">
+
+          <select class="sort-select" id="account-sort" title="Sort accounts" aria-label="Sort accounts">
+
+            <option value="running-first">Running first</option>
+
+            <option value="not-running-first">Not running first</option>
+
+            <option value="name">Name (A–Z)</option>
+
+            <option value="instance">Instance #</option>
+
+            <option value="issues-first">Most issues first</option>
+
+            <option value="default">Default</option>
+
+          </select>
+
+          <input class="search" id="account-search" type="search" placeholder="Filter…" autocomplete="off">
+
+        </div>
+
+        </div>
+
+        <div class="accounts-grid" id="accounts-grid"></div>
+
+      </section>
+
+
+
+      <section class="panel logs-panel">
+
+        <div class="panel-head">
+
+          <h2 class="panel-head-title"><span class="panel-head-icon" data-sentinel-icon="real-time" data-icon-size="18" aria-hidden="true"></span><span>Logs</span></h2>
+
+          <div class="panel-head-tools log-panel-tools">
+
+            <div class="log-tab-bar" role="tablist" aria-label="Log view">
+              <button class="log-tab active" type="button" data-log-tab="issues" role="tab" aria-selected="true">Issues</button>
+              <button class="log-tab" type="button" data-log-tab="all" role="tab" aria-selected="false">All recent</button>
+            </div>
+
+            <select class="sort-select log-account-filter" id="log-account-filter" title="Filter by account" aria-label="Filter logs by account">
+              <option value="">All accounts</option>
+            </select>
+
+            <select class="sort-select" id="log-level-filter" title="Filter by level" aria-label="Filter log level">
+              <option value="problems">Errors &amp; warnings</option>
+              <option value="ERROR">Errors only</option>
+              <option value="WARN">Warnings only</option>
+            </select>
+
+            <input class="search" id="log-search" type="search" placeholder="Search logs…" autocomplete="off" aria-label="Search logs">
+
+            <button class="btn btn-small btn-ghost btn-clear-errors" id="clear-errors-btn" type="button" title="Reset error and warning counters">Clear errors</button>
+
+          </div>
+
+        </div>
+
+        <div class="log-ocr-notice" id="log-ocr-notice" hidden></div>
+
+        <div class="log-summary" id="log-summary"></div>
+
+        <div class="log-list" id="log-list"></div>
+
+      </section>
+
+    </main>
+
+  </div>
+
+
+
+  <template id="account-card-template">
+
+    <article class="account-card">
+
+      <div class="account-top">
+
+        <h3 class="account-name"></h3>
+
+        <div class="account-top-actions">
+          <label class="account-toggle" title="Include this account when the bot starts">
+            <input type="checkbox" class="account-active-toggle" data-account-active-toggle>
+            <span class="account-toggle-ui" aria-hidden="true"></span>
+            <span class="account-toggle-label">On</span>
+          </label>
+          <span class="badge state-badge"></span>
+        </div>
+
+      </div>
+
+      <dl class="account-meta">
+
+        <div><dt>Instance</dt><dd class="instance"></dd></div>
+
+        <div><dt>Action</dt><dd class="action"></dd></div>
+
+        <div><dt>Uptime today</dt><dd class="uptime-today"></dd></div>
+
+        <div><dt>Switch name</dt><dd class="switch-name" title="Account-switch OCR name configured in GnBots"></dd></div>
+
+        <div><dt>Last runtime</dt><dd class="runtime"></dd></div>
+
+        <div><dt>Runs today</dt><dd class="runs-today"></dd></div>
+
+        <div><dt>Errors today</dt><dd class="errors-today"></dd></div>
+
+        <div><dt>Warnings today</dt><dd class="warnings-today"></dd></div>
+
+      </dl>
+
+      <p class="account-shared-instance hidden"></p>
+
+      <p class="account-trouble-note hidden"></p>
+
+      <div class="account-actions"></div>
+
+    </article>
+
+  </template>
+
+
+
+  <script src="/static/sentinel-icons.js?v=1"></script>
+  <script src="/static/restore-shared.js?v=4"></script>
+  <script src="/static/notifications.js?v=7"></script>
+  <script src="/static/app.js?v=66"></script>
+
+</body>
+
+</html>
+

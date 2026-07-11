@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Company>Sentinel</Company>
+    <Product>Sentinel</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Sentinel">
+  <rect width="512" height="512" rx="96" fill="#0b0f16"/>
+  <image href="sentinel-mark.png" x="48" y="48" width="416" height="416" preserveAspectRatio="xMidYMid meet"/>
+</svg>

@@ -1,0 +1,14 @@
+venv/
+logs/
+dist/
+config.json
+config.json.tmp
+__pycache__/
+*.py[cod]
+*.log
+watcher.lock
+watcher-status.json
+elevated-tasks-status.json
+elevated-tasks-last-attempt.txt
+.env
+*.local.json

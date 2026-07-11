@@ -1,0 +1,46 @@
+# Local secrets and runtime data
+Key.txt
+*.local.json
+.env
+
+# User-specific bot/runtime folders (not part of Sentinel source)
+GnBots/
+Backups/
+profiles/
+vms/
+templates/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Monitor runtime (see monitor/.gitignore)
+monitor/venv/
+monitor/logs/
+monitor/dist/
+monitor/build/gnbot-monitor/
+monitor/build/Output/
+monitor/config.json
+monitor/config.json.tmp
+monitor/watcher.lock
+monitor/watcher-status.json
+monitor/elevated-tasks-status.json
+monitor/elevated-tasks-last-attempt.txt
+
+# .NET build output
+monitor/native/**/bin/
+monitor/native/**/obj/
+monitor/native/venv/
+
+# IDE / OS
+.vscode/
+.idea/
+*.user
+Thumbs.db
+Desktop.ini
+
+# Shortcuts
+*.lnk
+StartGnBotStack.bat

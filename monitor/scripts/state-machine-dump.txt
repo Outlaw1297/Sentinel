@@ -1,0 +1,130 @@
+=== ConsumerLib.Managers.ConsumerManager+<PlayCommand>d__26 ===
+  call: ApiLib.Src.Authentication.AuthManager.get_Instance
+  call:  . .get_License
+  call: UtilLib.Device.GetDeviceID3
+  call:  . .get_LastSelectedAppUID
+  call: ApiLib.Src.Authentication.AuthManager.AuthenticateAsync
+  call: System.Threading.Tasks.Task`1[[ApiLib.Src.Models.AuthResponse, ApiLib, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]].get_Result
+  call: ApiLib.Src.Models.AuthResponse.get_Success
+  call:  . .get_TrialMode
+  str: TRIAL_MODE_DENIED
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call:  . .get_Instance
+  call:  . . 
+  str: OK
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  str: AuthFailed
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetException
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetResult
+=== ConsumerLib.Managers.ConsumerManager+<StopCommand>d__27 ===
+  call:  . .get_Instance
+  call:  . . 
+  str: OK
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetException
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetResult
+=== ConsumerLib.Managers.ConsumerManager+<StopAll>d__25 ===
+  call:  . .get_Instance
+  call:  . . 
+  call: System.Threading.Tasks.Task.Delay
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  str: OK
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetException
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetResult
+=== ConsumerLib.Managers.ConsumerManager+<StopEmulators>d__28 ===
+  call:  . .get_Instance
+  call:  . .?
+  str: OK
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetException
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetResult
+=== ConsumerLib.Managers.SessionController+<PostRunCode>d__3 ===
+  call:  .–.get_Instance
+  call: System.Linq.Enumerable.ElementAtOrDefault
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  call: EmbedIO.HttpContextExtensions.GetRequestDataAsync
+  call: System.Threading.Tasks.Task`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].GetResult
+  call:  .?. 
+  call: System.Threading.Tasks.Task`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].GetResult
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  str: NotFound
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  str: Error
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetException
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetResult
+=== ConsumerLib.Managers.SessionController+<GetRunCode>d__4 ===
+  call:  .–.get_Instance
+  call: System.Linq.Enumerable.ElementAtOrDefault
+  call:  .?. 
+  call: System.Threading.Tasks.Task`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]].GetResult
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  str: NotFound
+  call: EmbedIO.HttpContextExtensions.SendDataAsync
+  call: System.Threading.Tasks.Task.GetAwaiter
+  call: System.Runtime.CompilerServices.TaskAwaiter.get_IsCompleted
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: EmbedIO.WebApi.WebApiController.get_HttpContext
+  str: Error
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted
+  call: System.Runtime.CompilerServices.TaskAwaiter.GetResult
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetException
+  call: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.SetResult

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b0f16">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>Sentinel Setup</title>
+  <link rel="stylesheet" href="/static/styles.css?v=69">
+</head>
+<body>
+  <div class="layout settings-layout">
+    <header class="header header-card settings-header">
+      <a class="back-link dashboard-back-link" href="/">
+        <svg class="back-link-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+      <div class="header-top settings-header-top">
+        <div class="header-left header-brand settings-brand">
+          <div class="header-brand-row">
+            <img class="site-logo site-logo-small" src="/static/icons/sentinel-logo.png?v=5" alt="Sentinel" width="56" height="56" aria-hidden="true">
+            <div class="header-brand-text">
+              <h1><span class="title-brand">Sentinel</span> <span class="title-accent">Setup</span></h1>
+              <p class="subtitle">First-time paths are configured by the desktop installer wizard.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="settings-tab-panel" id="tab-setup">
+      <div class="settings-banner panel">
+        <p>
+          Run <strong>Sentinel-Install.bat</strong> or <strong>Setup Wizard.bat</strong> from your install folder.
+          That wizard sets GnBots paths, backups, shortcuts, and marks setup complete — you should not need this page after install.
+        </p>
+      </div>
+
+      <div class="settings-status controls-meta" id="setup-status"></div>
+
+      <section class="panel settings-group">
+        <div class="panel-head">
+          <h2>Desktop setup wizard</h2>
+          <p class="settings-group-desc">Opens the native Windows wizard (file pickers, validation, optional tasks).</p>
+        </div>
+        <div class="settings-fields">
+          <div class="setting-field">
+            <label class="setting-label">
+              <span class="setting-name">Launch wizard</span>
+              <span class="setting-hint">Use this if you skipped the installer or moved the folder.</span>
+            </label>
+            <div class="setting-control">
+              <button type="button" class="btn" id="setup-launch-wizard-btn">Open Setup Wizard</button>
+            </div>
+          </div>
+          <div class="setting-field">
+            <label class="setting-label">
+              <span class="setting-name">Install folder</span>
+              <span class="setting-hint" id="setup-install-root">—</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel settings-group hidden" id="setup-advanced-section">
+        <div class="panel-head">
+          <h2>Advanced path override</h2>
+          <p class="settings-group-desc">Only if you cannot run the desktop wizard on this PC.</p>
+        </div>
+        <form id="setup-form">
+          <div class="settings-fields">
+            <div class="setting-field">
+              <label class="setting-label" for="setup-gnbots-exe">
+                <span class="setting-name">GnBots.exe</span>
+                <span class="setting-hint">Full path to GnBots.exe</span>
+              </label>
+              <div class="setting-control">
+                <input class="setting-input" type="text" id="setup-gnbots-exe" name="gnbots_exe" placeholder="C:\Games\GnBots\GnBots.exe" required>
+              </div>
+            </div>
+            <div class="setting-field">
+              <label class="setting-label" for="setup-gnbots-root">
+                <span class="setting-name">GnBots root</span>
+                <span class="setting-hint">Usually the folder containing GnBots.exe</span>
+              </label>
+              <div class="setting-control">
+                <input class="setting-input" type="text" id="setup-gnbots-root" name="gnbots_root" placeholder="C:\Games\GnBots">
+              </div>
+            </div>
+            <div class="setting-field">
+              <label class="setting-label" for="setup-ldplayer-path">
+                <span class="setting-name">LDPlayer path</span>
+                <span class="setting-hint">Optional — leave blank to use GnBots LDPath64</span>
+              </label>
+              <div class="setting-control">
+                <input class="setting-input" type="text" id="setup-ldplayer-path" name="ldplayer_path" placeholder="C:\LDPlayer\LDPlayer9">
+              </div>
+            </div>
+            <div class="setting-field">
+              <label class="setting-label" for="setup-backups-dir">
+                <span class="setting-name">Backups folder</span>
+                <span class="setting-hint">Folder containing .ldbk files for Restore</span>
+              </label>
+              <div class="setting-control">
+                <input class="setting-input" type="text" id="setup-backups-dir" name="ldplayer_backups_dir" placeholder="C:\Backups\LDPlayer">
+              </div>
+            </div>
+          </div>
+          <div class="settings-actions" style="padding: 0 0.75rem 0.8rem;">
+            <button type="submit" class="btn btn-small" id="setup-save-btn">Save paths</button>
+          </div>
+        </form>
+      </section>
+
+      <p class="settings-config-path">
+        <button type="button" class="btn btn-ghost btn-small" id="setup-toggle-advanced-btn">Show advanced override</button>
+      </p>
+    </div>
+  </div>
+  <script src="/static/setup.js?v=3"></script>
+</body>
+</html>

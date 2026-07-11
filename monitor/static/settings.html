@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b0f16">
+  <meta name="apple-mobile-web-app-title" content="Sentinel">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=6">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=6">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v=6">
+
+  <title>Sentinel Settings</title>
+
+  <link rel="stylesheet" href="/static/styles.css?v=69">
+</head>
+<body>
+  <div class="layout settings-layout">
+    <header class="header header-card settings-header">
+      <a class="back-link dashboard-back-link" href="/">
+        <svg class="back-link-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+      <div class="header-top settings-header-top">
+        <div class="header-left header-brand settings-brand">
+          <div class="header-brand-row">
+            <img class="site-logo site-logo-small" src="/static/icons/sentinel-logo.png?v=5" alt="Sentinel" width="56" height="56" aria-hidden="true">
+            <div class="header-brand-text">
+              <h1><span class="title-brand">Sentinel</span> <span class="title-accent">Settings</span></h1>
+              <p class="subtitle" id="settings-subtitle">Remote configuration via the GnBots <code>/settings</code> API</p>
+            </div>
+          </div>
+        </div>
+        <div class="header-top-actions">
+          <div class="status-pill" id="gnbots-status">Checking…</div>
+          <div class="meta" id="last-updated">—</div>
+          <button class="btn btn-host danger" id="restart-gnbots-btn" type="button" title="Close and relaunch GnBots.exe">Restart GnBots</button>
+          <button class="btn btn-ghost" id="refresh-btn" type="button">Reload</button>
+        </div>
+      </div>
+    </header>
+
+    <nav class="settings-tabs" aria-label="Settings sections">
+      <button class="settings-tab active" type="button" data-tab="bot" aria-selected="true">Bot Settings</button>
+      <button class="settings-tab" type="button" data-tab="accounts" aria-selected="false">Account Settings</button>
+      <button class="settings-tab" type="button" data-tab="names" aria-selected="false">Account Names</button>
+      <button class="settings-tab" type="button" data-tab="bulk" aria-selected="false">Bulk Actions</button>
+      <button class="settings-tab" type="button" data-tab="provision" aria-selected="false">Add Account</button>
+      <button class="settings-tab" type="button" data-tab="restore" aria-selected="false">Emulator Restore</button>
+      <button class="settings-tab" type="button" data-tab="monitor" aria-selected="false">Sentinel</button>
+    </nav>
+
+    <div class="settings-tab-panel" id="tab-bot" data-tab-panel="bot">
+      <div class="settings-banner panel">
+        <p>
+          All setting changes require a <strong>GnBots restart</strong> to take effect. Editing is disabled while the bot is
+          running, paused, or booting — stop the bot from the dashboard first, change settings here, then use Restart GnBots.
+          Access is currently open — plan to restrict via nginx or a user system later.
+        </p>
+      </div>
+
+      <div class="settings-locked-banner hidden" id="settings-locked-banner"></div>
+
+      <div class="settings-status controls-meta" id="page-status"></div>
+
+      <div class="settings-groups" id="settings-groups">
+        <p class="settings-loading">Loading settings…</p>
+      </div>
+
+      <section class="panel settings-advanced">
+        <div class="panel-head">
+          <h2>All settings</h2>
+          <button class="btn btn-small" id="toggle-advanced-btn" type="button" aria-expanded="false">Show raw JSON</button>
+        </div>
+        <pre class="settings-raw hidden" id="settings-raw" tabindex="0"></pre>
+      </section>
+    </div>
+
+    <div class="settings-tab-panel hidden" id="tab-accounts" data-tab-panel="accounts">
+      <div class="settings-banner panel account-settings-banner">
+        <p>
+          Edit each account’s <strong>Action Editor</strong> settings from the profile file
+          (<code>profiles/&lt;profile&gt;.json</code>). Includes advanced settings, templates, and editable
+          per-action schedule rules. Stop the bot before saving, then restart GnBots.
+        </p>
+      </div>
+
+      <div class="settings-locked-banner hidden" id="account-locked-banner"></div>
+
+      <div class="settings-status controls-meta" id="account-page-status"></div>
+
+      <section class="panel account-settings-toolbar">
+        <div class="account-settings-toolbar-row">
+          <label class="account-settings-label" for="account-select">Account</label>
+          <select class="setting-select account-settings-select" id="account-select" disabled>
+            <option value="">Loading accounts…</option>
+          </select>
+          <span class="account-settings-meta" id="account-settings-meta">—</span>
+        </div>
+      </section>
+
+      <section class="panel account-templates-panel hidden" id="account-templates-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Choose a template</h2>
+            <p class="settings-group-desc">Apply a saved action preset to the selected account (same as GnBots template picker).</p>
+          </div>
+        </div>
+        <div class="account-templates-body">
+          <label class="account-settings-label" for="account-template-select">Template</label>
+          <select class="setting-select account-template-select" id="account-template-select" disabled>
+            <option value="">Loading templates…</option>
+          </select>
+          <label class="account-settings-label" for="account-template-description">Description</label>
+          <textarea
+            class="setting-input account-template-description"
+            id="account-template-description"
+            rows="3"
+            readonly
+            placeholder="Select a template to view its description."
+          ></textarea>
+          <div class="account-templates-actions">
+            <button class="btn btn-small" id="account-template-apply" type="button" disabled>Apply</button>
+            <button class="btn btn-small" id="account-template-create" type="button" disabled>Create template</button>
+            <button class="btn btn-small" id="account-template-remove" type="button" disabled>Remove</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel account-advanced-panel hidden" id="account-advanced-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Advanced settings</h2>
+            <p class="settings-group-desc">Assigned session and account menu rules (shuffle / custom).</p>
+          </div>
+        </div>
+        <div class="account-advanced-body" id="account-advanced-body">
+          <p class="settings-loading">Select an account to view advanced settings.</p>
+        </div>
+      </section>
+
+      <section class="panel account-actions-panel hidden" id="account-actions-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Actions</h2>
+            <p class="settings-group-desc">Per-action settings, schedules, and last-used times.</p>
+          </div>
+        </div>
+        <div class="account-actions-list" id="account-actions-list">
+          <p class="settings-loading">Select an account to view actions.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="settings-tab-panel hidden" id="tab-names" data-tab-panel="names">
+      <div class="settings-banner panel account-names-banner">
+        <p>
+          Edit every account’s <strong>Switch account name</strong> (Account Switch action) in one place.
+          Each row keeps up to 10 recent names for quick selection. Stop the bot before saving, then restart GnBots.
+        </p>
+      </div>
+
+      <div class="settings-locked-banner hidden" id="names-locked-banner"></div>
+      <div class="settings-status controls-meta" id="names-page-status"></div>
+
+      <section class="panel account-names-toolbar">
+        <div class="account-names-toolbar-row">
+          <div>
+            <h2>Switch account names</h2>
+            <p class="settings-group-desc" id="account-names-meta">—</p>
+          </div>
+          <button class="btn btn-small" id="account-names-save-all" type="button" disabled>Save all names</button>
+        </div>
+      </section>
+
+      <div class="account-names-list" id="account-names-list">
+        <p class="settings-loading">Loading account names…</p>
+      </div>
+    </div>
+
+    <div class="settings-tab-panel hidden" id="tab-bulk" data-tab-panel="bulk">
+      <div class="settings-banner panel bulk-actions-banner">
+        <p>
+          Change one setting or <strong>schedule timer</strong> on a GnBots action across many accounts at once — for example,
+          set <strong>Beasts</strong> to level 27, replace <strong>schedule rules</strong>, or
+          <strong>reset timers</strong> on selected accounts.
+          Stop the bot before saving, then restart GnBots.
+        </p>
+      </div>
+
+      <div class="settings-locked-banner hidden" id="bulk-locked-banner"></div>
+      <div class="settings-status controls-meta" id="bulk-page-status"></div>
+
+      <section class="panel bulk-actions-toolbar">
+        <div class="bulk-actions-toolbar-row">
+          <div>
+            <h2>Bulk action settings</h2>
+            <p class="settings-group-desc" id="bulk-actions-meta">—</p>
+          </div>
+        </div>
+        <div class="bulk-actions-pickers">
+          <label class="bulk-actions-picker" for="bulk-action-select">
+            <span class="bulk-actions-picker-label">Action</span>
+            <select class="setting-select" id="bulk-action-select" disabled>
+              <option value="">Loading actions…</option>
+            </select>
+          </label>
+          <label class="bulk-actions-picker" for="bulk-field-select">
+            <span class="bulk-actions-picker-label">Setting / timer</span>
+            <select class="setting-select" id="bulk-field-select" disabled>
+              <option value="">Select an action first</option>
+            </select>
+          </label>
+        </div>
+        <div class="bulk-actions-bulk-row hidden" id="bulk-actions-bulk-row">
+          <label class="bulk-actions-picker" for="bulk-apply-value">
+            <span class="bulk-actions-picker-label">Set selected to</span>
+            <span class="bulk-actions-apply-control" id="bulk-apply-control"></span>
+          </label>
+          <button class="btn btn-small" id="bulk-apply-selected-btn" type="button" disabled>Apply to selected</button>
+        </div>
+        <div class="bulk-actions-selection-row hidden" id="bulk-actions-selection-row">
+          <button class="btn btn-small btn-ghost" id="bulk-select-all-btn" type="button">Select all</button>
+          <button class="btn btn-small btn-ghost" id="bulk-select-none-btn" type="button">Select none</button>
+          <button class="btn btn-small" id="bulk-save-selected-btn" type="button" disabled>Save selected</button>
+        </div>
+      </section>
+
+      <div class="bulk-actions-list" id="bulk-actions-list">
+        <p class="settings-loading">Choose an action and setting to edit.</p>
+      </div>
+    </div>
+
+    <div class="settings-tab-panel hidden" id="tab-provision" data-tab-panel="provision">
+      <div class="settings-banner panel provision-settings-banner">
+        <p>
+          Create a new <strong>LDPlayer</strong> instance with recommended health settings, install the latest
+          <strong>Whiteout Survival</strong> APK, and add a matching account to the active GnBots profile. The instance
+          and account name are the same. Stop the bot before starting — restart GnBots when the job completes.
+        </p>
+      </div>
+
+      <div class="settings-locked-banner hidden" id="provision-locked-banner"></div>
+      <div class="settings-status controls-meta" id="provision-page-status"></div>
+
+      <section class="panel provision-form-panel" id="provision-form-panel">
+        <div class="provision-panel-body">
+          <p class="settings-loading" id="provision-form-loading">Loading provisioning options…</p>
+          <form class="provision-form hidden" id="provision-form" autocomplete="off">
+          <div class="provision-summary-grid" id="provision-summary-grid"></div>
+
+          <div class="provision-field-row">
+            <label class="account-settings-label" for="provision-account-name">Account / LDPlayer name</label>
+            <input
+              class="setting-input provision-account-input"
+              id="provision-account-name"
+              type="text"
+              spellcheck="false"
+              placeholder="e.g. Archer2"
+              required
+            >
+          </div>
+
+          <div class="provision-field-row">
+            <label class="account-settings-label" for="provision-template-select">Clone settings from</label>
+            <select class="setting-select" id="provision-template-select"></select>
+            <p class="provision-field-hint" id="provision-template-hint">
+              Copies action list, schedule rules, and advanced settings from a profile account or saved action template.
+            </p>
+          </div>
+
+          <div class="provision-actions">
+            <button class="btn btn-primary" id="provision-start-btn" type="submit">Create account</button>
+          </div>
+        </form>
+        </div>
+      </section>
+
+      <section class="panel provision-job-panel hidden" id="provision-job-panel">
+        <div class="panel-head">
+          <h2>Provisioning progress</h2>
+        </div>
+        <div class="provision-job-status" id="provision-job-status"></div>
+        <ol class="provision-job-steps" id="provision-job-steps"></ol>
+      </section>
+
+      <section class="panel provision-history-panel" id="provision-history-panel">
+        <div class="panel-head">
+          <h2>Recent jobs</h2>
+        </div>
+        <div class="provision-history-list" id="provision-history-list">
+          <p class="settings-loading">No provisioning jobs yet.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="settings-tab-panel hidden" id="tab-restore" data-tab-panel="restore">
+      <div class="settings-banner panel restore-settings-banner">
+        <p>
+          Restore troubled LDPlayer instances from your configured backup folder, then install the latest
+          Whiteout Survival APK from the GnBots cache. Restore is disabled while the bot is running — stop the bot
+          from the dashboard first.
+        </p>
+      </div>
+
+      <div class="settings-locked-banner hidden" id="restore-locked-banner"></div>
+      <div class="settings-locked-banner requires-admin hidden" id="restore-elevation-banner"></div>
+      <div class="settings-status controls-meta" id="restore-page-status"></div>
+
+      <section class="panel restore-path-panel" id="restore-path-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Backup folder</h2>
+            <p class="settings-group-desc">
+              Absolute path to the folder with <code>*.ldbk</code> emulator backups. Saved in
+              <code>monitor/config.json</code>.
+            </p>
+          </div>
+        </div>
+        <div class="restore-path-row">
+          <label class="account-settings-label" for="restore-backups-dir">Backups folder</label>
+          <input
+            class="setting-input restore-backups-input"
+            id="restore-backups-dir"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="C:\Backups\LDPlayer"
+          >
+          <button class="btn btn-small" id="restore-backups-save" type="button">Save</button>
+        </div>
+        <p class="restore-path-meta" id="restore-backups-meta">—</p>
+      </section>
+
+      <section class="panel restore-summary-panel" id="restore-summary-panel">
+        <p class="settings-loading">Loading emulator restore options…</p>
+      </section>
+
+      <details class="panel restore-apk-accounts-panel" id="restore-apk-accounts-panel">
+        <summary class="restore-apk-accounts-summary">
+          <span class="restore-apk-accounts-summary-title">Instances to update</span>
+          <span class="restore-apk-accounts-summary-meta" id="restore-apk-accounts-summary">Loading…</span>
+        </summary>
+        <div class="restore-apk-accounts-body">
+          <div class="restore-apk-account-actions">
+            <button type="button" class="btn btn-small" id="apk-select-active-btn">Select active</button>
+            <button type="button" class="btn btn-small" id="apk-select-all-btn">Select all</button>
+            <button type="button" class="btn btn-small" id="apk-select-none-btn">Clear</button>
+          </div>
+          <p class="restore-apk-accounts-meta" id="restore-apk-accounts-meta">Choose emulator instances to update. Updating an instance updates Whiteout for every account on it.</p>
+          <div class="restore-apk-account-list" id="restore-apk-account-list">
+            <p class="settings-loading">Loading instances…</p>
+          </div>
+        </div>
+      </details>
+
+      <div class="restore-instance-list" id="restore-instance-list"></div>
+    </div>
+
+    <div class="settings-tab-panel hidden" id="tab-monitor" data-tab-panel="monitor">
+      <div class="settings-banner panel">
+        <p>
+          Edits <code>monitor/config.json</code> directly. Most dashboard and push values apply immediately;
+          <strong>watcher</strong> settings need a watcher restart, <strong>dashboard port</strong> needs a monitor
+          restart, and <strong>tray</strong> settings need the tray restarted.
+        </p>
+      </div>
+
+      <div class="settings-status controls-meta" id="monitor-page-status"></div>
+      <p class="settings-config-path" id="monitor-config-path"></p>
+
+      <section class="panel settings-advanced" id="monitor-updates-panel">
+        <div class="panel-head">
+          <h2>Updates</h2>
+        </div>
+        <p class="settings-loading" id="monitor-update-summary">Checking version…</p>
+        <div class="settings-actions">
+          <button type="button" class="btn btn-small" id="monitor-check-updates-btn">Check for updates</button>
+          <button type="button" class="btn btn-small" id="monitor-apply-update-btn" disabled>Apply update</button>
+        </div>
+      </section>
+
+      <div class="settings-groups" id="monitor-settings-groups">
+        <p class="settings-loading">Loading monitor settings…</p>
+      </div>
+
+      <section class="panel settings-advanced">
+        <div class="panel-head">
+          <h2>Raw monitor config</h2>
+          <button class="btn btn-small" id="toggle-monitor-raw-btn" type="button" aria-expanded="false">Show raw JSON</button>
+        </div>
+        <pre class="settings-raw hidden" id="monitor-settings-raw" tabindex="0"></pre>
+      </section>
+    </div>
+  </div>
+
+  <script src="/static/restore-shared.js?v=4"></script>
+  <script src="/static/settings.js?v=56"></script>
+</body>
+</html>
