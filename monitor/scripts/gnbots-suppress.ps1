@@ -49,7 +49,7 @@ function Clear-GnBotsUserStopSuppressed([string]$MonitorRoot) {
     if (Test-Path $flagFile) { Remove-Item $flagFile -Force }
 }
 
-if ($PSCmdlet -InvocationName -ne '.') {
+if ($MyInvocation.InvocationName -ne '.') {
     $MonitorRoot = Split-Path -Parent $PSScriptRoot
     switch ($Action) {
         "Clear" {

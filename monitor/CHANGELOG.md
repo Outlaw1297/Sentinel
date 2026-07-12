@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-07-11
+
+### Bug fix
+- Fix PowerShell parse error in `gnbots-suppress.ps1` that blocked GnBots launch from the dashboard
+
 ## 0.1.1 — 2026-07-11
 
 ### Branding & release artifacts
