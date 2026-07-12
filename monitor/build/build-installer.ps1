@@ -55,9 +55,9 @@ try {
     Pop-Location
 }
 
-$setupExe = Join-Path $BuildDir "Output\GnBotsMonitor-Setup.exe"
+$setupExe = Join-Path $BuildDir "Output\Sentinel-Setup.exe"
 if (Test-Path $setupExe) {
-    $dest = Join-Path $MonitorRoot "dist\GnBotsMonitor-Setup.exe"
+    $dest = Join-Path $MonitorRoot "dist\Sentinel-Setup.exe"
     Copy-Item $setupExe $dest -Force
     Write-Host "Installer: $dest"
 } else {

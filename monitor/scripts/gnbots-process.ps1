@@ -80,9 +80,9 @@ function Test-UserStopSuppressed {
 
     if (-not (Test-Path $suppressScript)) { return $false }
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $suppressScript -Action Test
+    . $suppressScript
 
-    return ($LASTEXITCODE -eq 0)
+    return Test-GnBotsUserStopSuppressed $MonitorRoot
 
 }
 
@@ -94,7 +94,9 @@ function Set-UserStopSuppressed([int]$Minutes = 30) {
 
     if (-not (Test-Path $suppressScript)) { return }
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $suppressScript -Action Set -Minutes $Minutes | Out-Null
+    . $suppressScript
+
+    Set-GnBotsUserStopSuppressed $MonitorRoot $Minutes | Out-Null
 
 }
 
@@ -106,7 +108,9 @@ function Clear-UserStopSuppressed {
 
     if (-not (Test-Path $suppressScript)) { return }
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $suppressScript -Action Clear | Out-Null
+    . $suppressScript
+
+    Clear-GnBotsUserStopSuppressed $MonitorRoot | Out-Null
 
 }
 

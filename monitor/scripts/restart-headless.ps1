@@ -1,10 +1,14 @@
 # Restarts the headless monitor stack (stops old watcher/monitor, starts fresh).
 
 $ErrorActionPreference = "Continue"
-$MonitorRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "runtime-root.ps1")
+$MonitorRoot = Get-SentinelRuntimeRoot
 $LogDir = Join-Path $MonitorRoot "logs"
-$StopScript = Join-Path $PSScriptRoot "stop-monitor-stack.ps1"
-$StartBat = Join-Path $MonitorRoot "StartGnBotStack.bat"
+$StopScript = Join-Path $MonitorRoot "scripts\stop-monitor-stack.ps1"
+if (-not (Test-Path $StopScript)) {
+    $StopScript = Join-Path (Split-Path -Parent $PSScriptRoot) "scripts\stop-monitor-stack.ps1"
+}
+$StartBat = Join-Path (Split-Path -Parent $PSScriptRoot) "StartGnBotStack.bat"
 $SentinelExe = Join-Path $MonitorRoot "Sentinel.exe"
 
 function Write-StackLog([string]$Message) {
@@ -44,15 +48,20 @@ Write-Host "Stopping existing monitor and watcher ..."
 if (Test-Path $StopScript) {
     Invoke-MonitorScript -ScriptPath $StopScript -ScriptArgs @("-Quiet") | Out-Null
 } else {
-    Write-Host "  stop-monitor-stack.ps1 not found; using legacy stop logic."
-    $DashboardPort = 8787
-    Get-NetTCPConnection -LocalPort $DashboardPort -State Listen -ErrorAction SilentlyContinue |
-        ForEach-Object {
-            $ownerPid = [int]$_.OwningProcess
-            if ($ownerPid -gt 0) {
-                Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+    $legacyStop = Join-Path (Split-Path -Parent $PSScriptRoot) "scripts\stop-monitor-stack.ps1"
+    if (Test-Path $legacyStop) {
+        Invoke-MonitorScript -ScriptPath $legacyStop -ScriptArgs @("-Quiet") | Out-Null
+    } else {
+        Write-Host "  stop-monitor-stack.ps1 not found; using legacy stop logic."
+        $DashboardPort = 8787
+        Get-NetTCPConnection -LocalPort $DashboardPort -State Listen -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $ownerPid = [int]$_.OwningProcess
+                if ($ownerPid -gt 0) {
+                    Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+                }
             }
-        }
+    }
 }
 
 Start-Sleep -Seconds 2

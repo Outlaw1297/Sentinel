@@ -10,6 +10,18 @@ if %errorLevel% neq 0 (
     exit /b 0
 )
 
+set "RELEASE=%~dp0dist\GnBotsMonitor-Release"
+if exist "%RELEASE%\SentinelTray.exe" (
+    for /f "delims=" %%R in ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\ensure-release-runtime.ps1" -Quiet') do set "RELEASE=%%R"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop-tray.ps1" -Quiet
+    timeout /t 1 /nobreak >nul
+    start "" /B "%RELEASE%\SentinelTray.exe"
+    echo.
+    echo Tray restarted. Right-click for menu, double-click to open dashboard.
+    timeout /t 4 /nobreak >nul
+    exit /b 0
+)
+
 echo Stopping tray icon...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop-tray.ps1" -Quiet
 timeout /t 1 /nobreak >nul

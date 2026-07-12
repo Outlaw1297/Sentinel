@@ -15,11 +15,36 @@ if (-not $OutputDir) {
     $OutputDir = Join-Path $DistDir "GnBotsMonitor-Release"
 }
 
-$pythonExe = Join-Path $MonitorRoot "venv\Scripts\python.exe"
+function Get-BuildPythonExe {
+    foreach ($ver in @("3.12", "3.13")) {
+        try {
+            $candidate = & py "-$ver" -c "import sys; print(sys.executable)" 2>$null
+            $candidate = [string]$candidate
+            if ($candidate -and (Test-Path $candidate)) {
+                return $candidate.Trim()
+            }
+        } catch {}
+    }
+    throw "Python 3.12 or 3.13 is required for release builds. Install from python.org (avoid 3.14; PyInstaller bundles are often flagged by Norton)."
+}
+
+function Test-VenvPythonVersion([string]$VenvPython) {
+    if (-not (Test-Path $VenvPython)) { return $false }
+    $ver = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+    return [string]$ver -match '^3\.(12|13)$'
+}
+
+$basePython = Get-BuildPythonExe
+$venvDir = Join-Path $MonitorRoot "venv"
+$pythonExe = Join-Path $venvDir "Scripts\python.exe"
+if ((Test-Path $pythonExe) -and -not (Test-VenvPythonVersion $pythonExe)) {
+    Write-Host "Removing venv (wrong Python version for release builds)..."
+    Remove-Item $venvDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 if (-not (Test-Path $pythonExe)) {
-    Write-Host "Creating build venv..."
+    Write-Host "Creating build venv with $basePython ..."
     Push-Location $MonitorRoot
-    python -m venv venv
+    & $basePython -m venv venv
     & $pythonExe -m pip install -r requirements.txt pyinstaller -q
     Pop-Location
 } else {
@@ -46,7 +71,7 @@ if (Test-Path $OutputDir) {
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Copy-Item (Join-Path $pyOut "*") $OutputDir -Recurse -Force
-Copy-Item (Join-Path $MonitorRoot "static\splash") (Join-Path $OutputDir "static\splash") -Recurse -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $MonitorRoot "static") (Join-Path $OutputDir "static") -Recurse -Force
 Copy-Item (Join-Path $MonitorRoot "config.example.json") $OutputDir -Force
 Copy-Item (Join-Path $MonitorRoot "version.json") $OutputDir -Force
 Copy-Item (Join-Path $BuildDir "README-INSTALL.txt") $OutputDir -Force
@@ -71,15 +96,14 @@ $scriptsOut = Join-Path $OutputDir "scripts"
 if (-not (Test-Path $scriptsOut)) {
     New-Item -ItemType Directory -Path $scriptsOut -Force | Out-Null
 }
-foreach ($name in @(
-    "monitor-launcher.ps1", "apply-update.ps1", "setup-wizard.ps1", "stack-splash.ps1",
-    "stack-watcher.ps1", "start-gnbot-stack.ps1", "start-stack.ps1", "start-tray.ps1",
-    "stop-monitor-stack.ps1", "stop-tray.ps1", "tray-app.ps1", "gnbots-process.ps1",
-    "gnbots-elevation.ps1", "restart-headless.ps1", "ensure-elevated-tasks.ps1"
-)) {
-    $src = Join-Path $MonitorRoot "scripts\$name"
+Get-ChildItem (Join-Path $MonitorRoot "scripts") -File |
+    Where-Object { $_.Extension -in @(".ps1", ".py", ".bat") } |
+    ForEach-Object { Copy-Item $_.FullName $scriptsOut -Force }
+
+foreach ($extra in @("VERSION")) {
+    $src = Join-Path $MonitorRoot $extra
     if (Test-Path $src) {
-        Copy-Item $src $scriptsOut -Force
+        Copy-Item $src $OutputDir -Force
     }
 }
 
@@ -87,8 +111,8 @@ New-Item -ItemType Directory -Path (Join-Path $OutputDir "logs") -Force | Out-Nu
 
 $version = (Get-Content (Join-Path $MonitorRoot "version.json") -Raw | ConvertFrom-Json)
 $short = [string]$version.commitShort
-$zipLatest = Join-Path $DistDir "GnBotsMonitor.zip"
-$zipCommit = Join-Path $DistDir "GnBotsMonitor-$short.zip"
+$zipLatest = Join-Path $DistDir "Sentinel.zip"
+$zipCommit = Join-Path $DistDir "Sentinel-$short.zip"
 if (Test-Path $zipLatest) { Remove-Item $zipLatest -Force }
 if (Test-Path $zipCommit) { Remove-Item $zipCommit -Force }
 try {

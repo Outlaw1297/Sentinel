@@ -1,41 +1,71 @@
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [ValidateSet("Set", "Clear", "Test")]
     [string]$Action,
     [int]$Minutes = 30
 )
 
-$MonitorRoot = Split-Path -Parent $PSScriptRoot
-$FlagFile = Join-Path $MonitorRoot "logs\gnbots-user-stopped.json"
+function Get-GnBotsSuppressFlagPath([string]$MonitorRoot) {
+    return Join-Path $MonitorRoot "logs\gnbots-user-stopped.json"
+}
 
-function Read-Flag {
-    if (-not (Test-Path $FlagFile)) { return $null }
+function Read-GnBotsSuppressFlag([string]$MonitorRoot) {
+    $flagFile = Get-GnBotsSuppressFlagPath $MonitorRoot
+    if (-not (Test-Path $flagFile)) { return $null }
     try {
-        return Get-Content $FlagFile -Raw | ConvertFrom-Json
+        return Get-Content $flagFile -Raw | ConvertFrom-Json
     } catch {
         return $null
     }
 }
 
-if ($Action -eq "Clear") {
-    if (Test-Path $FlagFile) { Remove-Item $FlagFile -Force }
-    exit 0
+function Test-GnBotsUserStopSuppressed([string]$MonitorRoot) {
+    $flag = Read-GnBotsSuppressFlag $MonitorRoot
+    if (-not $flag -or -not $flag.until) { return $false }
+    try {
+        $until = [DateTime]::Parse($flag.until).ToUniversalTime()
+        if ((Get-Date).ToUniversalTime() -lt $until) { return $true }
+    } catch {}
+    $flagFile = Get-GnBotsSuppressFlagPath $MonitorRoot
+    if (Test-Path $flagFile) { Remove-Item $flagFile -Force }
+    return $false
 }
 
-if ($Action -eq "Set") {
+function Set-GnBotsUserStopSuppressed([string]$MonitorRoot, [int]$Minutes = 30) {
     if ($Minutes -lt 1) { $Minutes = 30 }
+    $flagFile = Get-GnBotsSuppressFlagPath $MonitorRoot
+    $logDir = Split-Path -Parent $flagFile
+    if (-not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
     $until = (Get-Date).AddMinutes($Minutes).ToUniversalTime().ToString("o")
     @{ until = $until; setAt = (Get-Date).ToUniversalTime().ToString("o") } |
         ConvertTo-Json -Compress |
-        Set-Content -Path $FlagFile -Encoding UTF8
-    exit 0
+        Set-Content -Path $flagFile -Encoding UTF8
 }
 
-$flag = Read-Flag
-if (-not $flag -or -not $flag.until) { exit 1 }
-try {
-    $until = [DateTime]::Parse($flag.until).ToUniversalTime()
-    if ((Get-Date).ToUniversalTime() -lt $until) { exit 0 }
-} catch {}
-if (Test-Path $FlagFile) { Remove-Item $FlagFile -Force }
-exit 1
+function Clear-GnBotsUserStopSuppressed([string]$MonitorRoot) {
+    $flagFile = Get-GnBotsSuppressFlagPath $MonitorRoot
+    if (Test-Path $flagFile) { Remove-Item $flagFile -Force }
+}
+
+if ($PSCmdlet -InvocationName -ne '.') {
+    $MonitorRoot = Split-Path -Parent $PSScriptRoot
+    switch ($Action) {
+        "Clear" {
+            Clear-GnBotsUserStopSuppressed $MonitorRoot
+            exit 0
+        }
+        "Set" {
+            Set-GnBotsUserStopSuppressed $MonitorRoot $Minutes
+            exit 0
+        }
+        "Test" {
+            if (Test-GnBotsUserStopSuppressed $MonitorRoot) { exit 0 }
+            exit 1
+        }
+        default {
+            throw "Action is required."
+        }
+    }
+}

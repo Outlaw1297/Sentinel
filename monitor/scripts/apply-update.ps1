@@ -85,12 +85,12 @@ function Invoke-ReleaseUpdate([string]$Repo, [string]$Branch, [string]$Channel) 
     $headers = @{ Accept = "application/vnd.github+json"; "User-Agent" = "gnbot-monitor" }
     $commit = (Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 60).sha
     $short = $commit.Substring(0, 7)
-    $assetName = if ($Channel -eq "main") { "GnBotsMonitor-$short.zip" } else { "GnBotsMonitor.zip" }
+    $assetName = if ($Channel -eq "main") { "Sentinel-$short.zip" } else { "Sentinel.zip" }
     $releaseUrl = "https://api.github.com/repos/$Repo/releases/latest"
     $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -TimeoutSec 60
     $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
     if (-not $asset) {
-        $asset = $release.assets | Where-Object { $_.name -like "GnBotsMonitor*.zip" } | Select-Object -First 1
+        $asset = $release.assets | Where-Object { $_.name -like "Sentinel*.zip" -or $_.name -like "GnBotsMonitor*.zip" } | Select-Object -First 1
     }
     if (-not $asset) { throw "No release zip asset found for $assetName" }
 

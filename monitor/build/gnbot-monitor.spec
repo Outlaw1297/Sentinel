@@ -40,7 +40,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(_spec_dir / "pyi_rth_stdio.py")],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -1451,6 +1451,7 @@ async function refresh() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
   } catch (error) {
+    els.profileLabel.textContent = "Profile unavailable";
     renderError(error.message);
   } finally {
     els.refreshBtn.disabled = false;

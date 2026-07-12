@@ -45,10 +45,19 @@ def get_logs_dir() -> Path:
 
 
 def get_static_dir() -> Path:
-    bundled = get_bundle_root() / "static"
-    if bundled.is_dir():
-        return bundled
-    return get_install_root() / "static"
+    install_static = get_install_root() / "static"
+    bundle_root = get_bundle_root()
+    candidates = (
+        bundle_root / "static",
+        bundle_root / "_internal" / "static",
+        install_static,
+    )
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "app.js").is_file():
+            return candidate
+    if install_static.is_dir():
+        return install_static
+    return bundle_root / "static"
 
 
 def get_scripts_dir() -> Path:

@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+
 import asyncio
 import base64
 import json
@@ -4248,7 +4256,7 @@ if __name__ == "__main__":
     import sys
     import uvicorn
 
-    from monitor_logging import append_crash_report, log_unhandled_exception, setup_monitor_logging
+    from monitor_logging import append_crash_report, ensure_stdio_streams, log_unhandled_exception, setup_monitor_logging
 
     def _main_excepthook(exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
         if exc is not None:
@@ -4257,6 +4265,7 @@ if __name__ == "__main__":
         sys.__excepthook__(exc_type, exc, tb)
 
     sys.excepthook = _main_excepthook
+    ensure_stdio_streams()
     setup_monitor_logging(console=not bool(config.get("headless_mode")))
 
     headless = bool(config.get("headless_mode"))
@@ -4267,4 +4276,5 @@ if __name__ == "__main__":
         reload=False,
         access_log=not headless,
         log_level="warning" if headless else "info",
+        use_colors=False,
     )

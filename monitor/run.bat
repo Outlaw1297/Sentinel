@@ -2,6 +2,14 @@
 setlocal
 cd /d "%~dp0"
 
+:: Dev-only: live Python from source. For GitHub release parity use StartGnBotStack.bat.
+set "RELEASE=%~dp0dist\GnBotsMonitor-Release"
+if exist "%RELEASE%\Sentinel.exe" (
+    echo.
+    echo [dev] run.bat starts live Python. Use StartGnBotStack.bat for release parity.
+    echo.
+)
+
 if not exist "venv\Scripts\python.exe" (
   echo Creating virtual environment...
   python -m venv venv

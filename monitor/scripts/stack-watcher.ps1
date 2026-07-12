@@ -114,8 +114,8 @@ function Ensure-Monitor([int]$Port, [switch]$ForceRestart) {
 function Test-UserStopSuppressed {
     $suppressScript = Join-Path $PSScriptRoot "gnbots-suppress.ps1"
     if (-not (Test-Path $suppressScript)) { return $false }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $suppressScript -Action Test
-    return ($LASTEXITCODE -eq 0)
+    . $suppressScript
+    return Test-GnBotsUserStopSuppressed (Split-Path -Parent $PSScriptRoot)
 }
 
 function Stop-MonitorOnPort([int]$Port) {

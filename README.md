@@ -6,12 +6,12 @@ Windows monitor and control stack for GnBots — dashboard, LDPlayer restore/pro
 
 Tagged releases publish:
 
-- **GnBotsMonitor-Setup.exe** — recommended Windows installer (Inno Setup)
-- **GnBotsMonitor.zip** — portable frozen build (no Python required)
+- **Sentinel-Setup.exe** — recommended Windows installer (Inno Setup)
+- **Sentinel.zip** — portable frozen build (no Python required)
 
 ## Quick start (release build)
 
-1. Run `GnBotsMonitor-Setup.exe` or extract `GnBotsMonitor.zip`
+1. Run `Sentinel-Setup.exe` or extract `Sentinel.zip`
 2. Complete first-run setup with **SentinelSetup.exe**
 3. Start the stack with **Sentinel.exe**
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-07-11
+
+### Branding & release artifacts
+- Rename downloads to **Sentinel-Setup.exe** and **Sentinel.zip** (replacing GnBotsMonitor names)
+- Fix frozen monitor static assets and headless uvicorn logging on Windows
+- Stop watcher flicker from spawning visible PowerShell windows
+
 ## 0.1.0 — 2026-07-11
 
 ### Native Windows launchers

@@ -13,6 +13,16 @@ RUNTIME_LOG = LOG_DIR / "monitor-runtime.log"
 _CONFIGURED = False
 
 
+def ensure_stdio_streams() -> None:
+    """PyInstaller windowed builds set stdout/stderr to None; uvicorn logging requires them."""
+    import os
+
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+
+
 def setup_monitor_logging(*, console: bool = False) -> logging.Logger:
     global _CONFIGURED
     logger = logging.getLogger("gnbots.monitor")

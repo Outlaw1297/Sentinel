@@ -136,10 +136,46 @@ try {
     exit 1
 }
 
+$frozenExe = Join-Path $MonitorRoot "gnbot-monitor.exe"
 $pythonExe = Join-Path $MonitorRoot "venv\Scripts\python.exe"
 $appPy = Join-Path $MonitorRoot "app.py"
 
 try {
+if (Test-Path -LiteralPath $frozenExe) {
+    if (Test-MonitorHealthy $dashboardPort) {
+        if (-not $ForceRestart) {
+            Write-Log "Monitor healthy on port $dashboardPort."
+            exit 0
+        }
+        Write-Log "Restarting monitor on port $dashboardPort ..."
+        Stop-MonitorOnPort $dashboardPort
+    } else {
+        Stop-MonitorOnPort $dashboardPort
+    }
+
+    Write-Log "Starting monitor via gnbot-monitor.exe ..."
+    $proc = Start-Process `
+        -FilePath $frozenExe `
+        -WorkingDirectory $MonitorRoot `
+        -WindowStyle Hidden `
+        -PassThru
+
+    if (Wait-MonitorHealthy $dashboardPort 45) {
+        Write-Log "Started monitor (PID $($proc.Id), gnbot-monitor.exe) on http://127.0.0.1:$dashboardPort"
+        exit 0
+    }
+
+    if ($proc -and -not $proc.HasExited) {
+        Write-Log "Stopping failed gnbot-monitor.exe PID $($proc.Id)."
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Log "gnbot-monitor.exe exited before becoming healthy."
+    }
+    Stop-MonitorOnPort $dashboardPort
+    Write-Log "Monitor failed to become healthy on port $dashboardPort."
+    exit 1
+}
+
 if (-not (Test-Path -LiteralPath $pythonExe)) {
     Write-Log "Monitor venv missing. Run setup.bat once to create it."
     exit 1
