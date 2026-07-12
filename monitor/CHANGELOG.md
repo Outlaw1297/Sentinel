@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — 2026-07-12
+
+### Reverse proxy
+- Bump dashboard CSS cache-bust to `v=70` so nginx-cached 504s on `styles.css?v=62` no longer break remote access
+- Bump service worker shell cache to invalidate stale offline CSS
+
 ## 0.1.3 — 2026-07-12
 
 ### Screen flicker
