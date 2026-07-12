@@ -342,7 +342,8 @@ $script:Steps = @(
     @{ Pattern = "Tray icon|Stack is up"; Percent = 95; Status = "FINALIZING..." }
 )
 
-$script:StartJob = $null
+$script:StartProc = $null
+$script:StackLaunchAt = $null
 $script:Finished = $false
 $script:Success = $false
 $script:CancelRequested = $false
@@ -412,63 +413,59 @@ function script:Splash_OnCloseTimerTick {
     }
 }
 
+function script:Splash_StopStartProc {
+    if ($null -eq $script:StartProc) { return }
+    try {
+        if (-not $script:StartProc.HasExited) {
+            Stop-Process -Id $script:StartProc.Id -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    $script:StartProc = $null
+}
+
 function script:Splash_OnTimerTick {
     if ($script:Finished) { return }
     try {
+        $statusText = ""
         if (Test-Path $script:StatusFile) {
             $raw = Get-Content $script:StatusFile -Raw -ErrorAction SilentlyContinue
-            if ($raw) { script:Splash_UpdateFromStatus $raw.Trim() }
+            if ($raw) {
+                $statusText = $raw.Trim()
+                script:Splash_UpdateFromStatus $statusText
+            }
         }
 
-        $job = $script:StartJob
-        if ($null -eq $job) { return }
-        if ($job.State -eq "Running") { return }
+        if (-not $script:StackLaunchAt) { return }
+
+        $monitorUp = script:Splash_TestMonitorPing
+        $elapsed = ((Get-Date) - $script:StackLaunchAt).TotalSeconds
+        $stackReady = ($statusText -match "Stack is up") -or $monitorUp
+
+        if (-not $stackReady -and $elapsed -lt 120) { return }
 
         $script:Finished = $true
         if ($null -ne $script:Timer) { $script:Timer.Stop() }
 
-        if ($job.State -eq "Completed") {
-            $exitCode = 0
-            try {
-                $received = Receive-Job -Job $job -ErrorAction Stop
-                if ($null -ne $received) {
-                    if ($received -is [System.Array]) { $received = $received[-1] }
-                    $exitCode = [int]$received
-                }
-            } catch {}
-            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-            $script:StartJob = $null
-
-            $monitorUp = script:Splash_TestMonitorPing
-            if (-not $monitorUp -and $exitCode -ne 0) {
-                script:Splash_SetError "exit $exitCode"
-                return
-            }
-            if (-not $monitorUp) {
-                script:Splash_SetError "dashboard unreachable"
-                return
-            }
-
-            if ($null -ne $script:Canvas) {
-                $script:Canvas.ProgressPercent = 100
-                $script:Canvas.StatusText = "SYSTEM READY"
-            }
-            if ($null -ne $script:CancelBtn) { $script:CancelBtn.Text = "Close" }
-            $script:Success = $true
-
-            $port = script:Get-DashboardPort
-            Start-Process "http://127.0.0.1:$port/"
-
-            $script:CloseTimer = New-Object System.Windows.Forms.Timer
-            $script:CloseTimer.Interval = 900
-            $script:CloseTimer.Add_Tick({ script:Splash_OnCloseTimerTick })
-            $script:CloseTimer.Start()
+        if (-not $monitorUp) {
+            script:Splash_SetError "dashboard unreachable"
             return
         }
 
-        try { Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null } catch {}
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-        $script:StartJob = $null
+        if ($null -ne $script:Canvas) {
+            $script:Canvas.ProgressPercent = 100
+            $script:Canvas.StatusText = "SYSTEM READY"
+        }
+        if ($null -ne $script:CancelBtn) { $script:CancelBtn.Text = "Close" }
+        $script:Success = $true
+
+        $port = script:Get-DashboardPort
+        Start-Process "http://127.0.0.1:$port/"
+
+        $script:CloseTimer = New-Object System.Windows.Forms.Timer
+        $script:CloseTimer.Interval = 900
+        $script:CloseTimer.Add_Tick({ script:Splash_OnCloseTimerTick })
+        $script:CloseTimer.Start()
+    } catch {
         if ($script:CancelRequested) {
             if ($null -ne $script:Form) {
                 $script:Form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -476,8 +473,6 @@ function script:Splash_OnTimerTick {
             }
             return
         }
-        script:Splash_SetError "failed"
-    } catch {
         script:Splash_SetError $_.Exception.Message
     }
 }
@@ -487,19 +482,11 @@ function script:Splash_OnShown {
         if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
         if (Test-Path $script:StatusFile) { Remove-Item $script:StatusFile -Force -ErrorAction SilentlyContinue }
 
-        $script:StartJob = Start-Job -ArgumentList $StartScript, $script:StatusFile, $Elevated.IsPresent -ScriptBlock {
-            param($ScriptPath, $StatusPath, $IsElevated)
-            $ErrorActionPreference = "Stop"
-            try {
-                if ($IsElevated) { & $ScriptPath -Quiet -Elevated -StatusFile $StatusPath }
-                else { & $ScriptPath -Quiet -StatusFile $StatusPath }
-                $code = 0
-                if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
-                return $code
-            } catch {
-                return 1
-            }
-        }
+        . (Join-Path $ScriptsDir "hidden-powershell.ps1")
+        $argList = @("-Quiet", "-StatusFile", $script:StatusFile)
+        if ($Elevated) { $argList += "-Elevated" }
+        Start-HiddenPowerShellFile -ScriptPath $StartScript -Arguments $argList -WorkingDirectory $MonitorRoot | Out-Null
+        $script:StackLaunchAt = Get-Date
         if ($null -ne $script:Timer) { $script:Timer.Start() }
     } catch {
         script:Splash_SetError $_.Exception.Message
@@ -520,11 +507,7 @@ function script:Splash_OnCancelClick {
     }
     $script:CancelRequested = $true
     if ($null -ne $script:Timer) { $script:Timer.Stop() }
-    if ($script:StartJob) {
-        Stop-Job -Job $script:StartJob -Force -ErrorAction SilentlyContinue
-        Remove-Job -Job $script:StartJob -Force -ErrorAction SilentlyContinue
-        $script:StartJob = $null
-    }
+    script:Splash_StopStartProc
     if ($null -ne $script:Form) {
         $script:Form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
         $script:Form.Close()
@@ -534,11 +517,7 @@ function script:Splash_OnCancelClick {
 function script:Splash_OnCloseClick {
     $script:CancelRequested = $true
     if ($null -ne $script:Timer) { $script:Timer.Stop() }
-    if ($script:StartJob) {
-        Stop-Job -Job $script:StartJob -Force -ErrorAction SilentlyContinue
-        Remove-Job -Job $script:StartJob -Force -ErrorAction SilentlyContinue
-        $script:StartJob = $null
-    }
+    script:Splash_StopStartProc
     if ($null -ne $script:Form) {
         $script:Form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
         $script:Form.Close()
@@ -626,10 +605,7 @@ $script:Form.Add_Shown({ script:Splash_OnShown })
 $script:Form.Add_FormClosed({
     if ($null -ne $script:Timer) { $script:Timer.Stop(); $script:Timer.Dispose() }
     if ($null -ne $script:CloseTimer) { $script:CloseTimer.Stop(); $script:CloseTimer.Dispose() }
-    if ($script:StartJob) {
-        Stop-Job -Job $script:StartJob -Force -ErrorAction SilentlyContinue
-        Remove-Job -Job $script:StartJob -Force -ErrorAction SilentlyContinue
-    }
+    if ($script:StartProc) { script:Splash_StopStartProc }
 })
 
 try {

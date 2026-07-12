@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import httpx
 
-from host_status import resolve_gnbots_root
+from host_status import _hidden_windows_subprocess_kwargs, resolve_gnbots_root
 from paths import get_logs_dir
 
 DEFAULT_APK_FOLDER = "Whiteout Survival"
@@ -525,6 +525,7 @@ def read_version_from_main_apk(apk_dir: Path, config: dict[str, Any]) -> str | N
             capture_output=True,
             timeout=60,
             check=False,
+            **_hidden_windows_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -657,6 +658,7 @@ def _read_installed_version_via_device_apk(
                 capture_output=True,
                 timeout=60,
                 check=False,
+                **_hidden_windows_subprocess_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -1271,8 +1273,14 @@ def update_all_whiteout_apks(
 
 def apk_status(config: dict[str, Any]) -> dict[str, Any]:
     apk_dir = resolve_whiteout_apk_dir(config)
-    sync_apk_manifest_from_main_apk(config)
     manifest = read_apk_manifest(apk_dir)
+    if config.get("headless_mode"):
+        if not str(manifest.get("version_name") or "").strip():
+            sync_apk_manifest_from_main_apk(config)
+            manifest = read_apk_manifest(apk_dir)
+    else:
+        sync_apk_manifest_from_main_apk(config)
+        manifest = read_apk_manifest(apk_dir)
     files = [apk_dir / name for name in APK_INSTALL_ORDER]
     present = all(path.is_file() for path in files)
     version_name = resolve_local_apk_version(config, apk_dir)

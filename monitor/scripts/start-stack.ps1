@@ -88,6 +88,18 @@ function Test-MonitorImport([string]$PythonExe) {
     return $false
 }
 
+function Apply-PendingMonitorUpdate([string]$LauncherExe) {
+    $pendingExe = Join-Path $MonitorRoot "gnbot-monitor.new.exe"
+    if (-not (Test-Path -LiteralPath $pendingExe)) { return }
+    try {
+        Copy-Item -LiteralPath $pendingExe -Destination $LauncherExe -Force
+        Remove-Item -LiteralPath $pendingExe -Force -ErrorAction SilentlyContinue
+        Write-Log "Applied pending gnbot-monitor.exe update."
+    } catch {
+        Write-Log "Pending monitor update waiting (file locked): $($_.Exception.Message)"
+    }
+}
+
 function Start-MonitorProcess([string]$LauncherExe, [string]$AppPy) {
     if (-not $LauncherExe -or -not (Test-Path -LiteralPath $LauncherExe)) {
         throw "Monitor launcher not found: $LauncherExe"
@@ -152,6 +164,8 @@ if (Test-Path -LiteralPath $frozenExe) {
     } else {
         Stop-MonitorOnPort $dashboardPort
     }
+
+    Apply-PendingMonitorUpdate $frozenExe
 
     Write-Log "Starting monitor via gnbot-monitor.exe ..."
     $proc = Start-Process `

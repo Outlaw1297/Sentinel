@@ -204,7 +204,8 @@ function Ensure-TrayIconFiles {
     $generator = Join-Path $ScriptsDir "generate-tray-icons.ps1"
     if (Test-Path $generator) {
         try {
-            & $generator | Out-Null
+            . (Join-Path $ScriptsDir "hidden-powershell.ps1")
+            Start-HiddenPowerShellFile -ScriptPath $generator -WorkingDirectory $MonitorRoot -Wait | Out-Null
         } catch {}
     }
 }
@@ -381,13 +382,15 @@ function Start-TrayScript([string]$ScriptName, [string[]]$Arguments = @(), [swit
         return $false
     }
 
-    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath) + $Arguments
+    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptPath) + $Arguments
     if ($Wait) {
-        & powershell.exe @args
-        return ($LASTEXITCODE -eq 0)
+        . (Join-Path $ScriptsDir "hidden-powershell.ps1")
+        $proc = Start-HiddenPowerShellFile -ScriptPath $scriptPath -Arguments $Arguments -WorkingDirectory $MonitorRoot -Wait
+        return ($proc.ExitCode -eq 0)
     }
 
-    Start-Process -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $MonitorRoot -WindowStyle Hidden | Out-Null
+    . (Join-Path $ScriptsDir "hidden-powershell.ps1")
+    Start-HiddenPowerShellFile -ScriptPath $scriptPath -Arguments $Arguments -WorkingDirectory $MonitorRoot | Out-Null
     return $true
 }
 
@@ -442,6 +445,13 @@ function Exit-TrayApp {
         Set-Content -Path $dismissed -Value (Get-Date -Format "o") -Encoding ASCII
     } catch {}
 
+    try {
+        if ($script:AppContext) {
+            $script:AppContext.ExitThread()
+            return
+        }
+    } catch {}
+
     [System.Environment]::Exit(0)
 }
 
@@ -484,16 +494,9 @@ Write-TrayLock
 $script:Busy = $false
 $script:ShuttingDown = $false
 $script:Config = $config
+$script:AppContext = New-Object System.Windows.Forms.ApplicationContext
 $script:Snapshot = Get-StackSnapshot $config
 $script:IconCache = @{}
-
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "Sentinel Tray"
-$form.ShowInTaskbar = $false
-$form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
-$form.Opacity = 0
-$form.Size = New-Object System.Drawing.Size 1, 1
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Text = "Sentinel"
@@ -654,10 +657,6 @@ $timer.Interval = [Math]::Max(15000, [int]$script:Config.TrayPollSeconds * 1000)
 $timer.Add_Tick({ Refresh-TrayStatus })
 $timer.Start()
 
-$form.Add_Load({
-    $form.Hide()
-})
-
 Update-TrayVisual $script:Snapshot
 $notify.Visible = $true
 if (Test-Path $ConfigPath) {
@@ -672,5 +671,5 @@ if (Test-RecentStackStart) {
     Show-TrayBalloon "Monitor stack restarted" "Dashboard is back at http://127.0.0.1:$($script:Config.DashboardPort)"
 }
 [System.Windows.Forms.Application]::EnableVisualStyles()
-[System.Windows.Forms.Application]::Run($form)
+[System.Windows.Forms.Application]::Run($script:AppContext)
 exit 0

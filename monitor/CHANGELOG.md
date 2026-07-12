@@ -1,9 +1,34 @@
 # Changelog
 
+## 0.1.3 — 2026-07-12
+
+### Screen flicker
+- Hide all subprocess windows (`CREATE_NO_WINDOW`) for `sc.exe`, `aapt.exe`, `ldconsole`, and PowerShell spawns
+- Cache LDRemoteSvc queries to avoid repeated `sc query` flashes during dashboard refresh
+- Debounce hung-monitor force-restarts (180s when port is open) to stop restart loops
+- Replace VBS hidden launcher with .NET `ProcessStartInfo` (`CreateNoWindow`)
+
+### Tray & screenshots
+- Re-enable tray icon and screenshot polling in headless mode (flicker fixes made these safe again)
+- Restore screenshot interval from config in headless; load screenshots on dashboard init
+- Start tray once at watcher startup instead of every poll cycle
+
+### Stack / deploy
+- Add `hidden-powershell.ps1` shared launcher and `watch-visible-windows.ps1` diagnostic
+- Apply pending `gnbot-monitor.new.exe` swap on next monitor start when file is locked
+- Native GnBots start/stop from dashboard without spawning visible PowerShell
+
 ## 0.1.2 — 2026-07-11
 
 ### Bug fix
 - Fix PowerShell parse error in `gnbots-suppress.ps1` that blocked GnBots launch from the dashboard
+
+### UI / flicker
+- Stop watcher from force-restarting the tray every poll cycle (hidden PowerShell flashes)
+- Launch tray via `SentinelTray.exe` when available; add restart cooldown
+- Remove invisible WinForms shell from tray app message loop
+- Run stack startup from splash via hidden process instead of `Start-Job` console child
+- Hide all dashboard-spawned PowerShell windows (`-WindowStyle Hidden` + `CREATE_NO_WINDOW`)
 
 ## 0.1.1 — 2026-07-11
 

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from host_status import resolve_gnbots_root
+from host_status import _hidden_windows_subprocess_kwargs, resolve_gnbots_root
 from paths import get_install_root, get_logs_dir, get_scripts_dir
 
 ROOT = get_install_root()
@@ -22,6 +22,8 @@ RESTORE_LOG_PATH = get_logs_dir() / "ldplayer-restore.log"
 BACKUP_ASSIGNMENTS_KEY = "ldplayer_backup_assignments"
 _LIST2_CACHE: dict[str, Any] = {"at": 0.0, "key": "", "rows": None}
 _LIST2_CACHE_SECONDS = 8.0
+_LDREMOTE_STATE_CACHE: dict[str, Any] = {"at": 0.0, "state": "UNKNOWN"}
+_LDREMOTE_STATE_CACHE_SECONDS = 60.0
 
 RESTORE_STATUS_PROGRESS: dict[str, int] = {
     "queued": 5,
@@ -232,6 +234,7 @@ def clear_ldplayer_config_readonly(config_path: Path) -> bool:
             text=True,
             timeout=15,
             check=False,
+            **_hidden_windows_subprocess_kwargs(),
         )
         return result.returncode == 0 and is_ldplayer_config_writable(config_path)
 
@@ -254,23 +257,35 @@ def _monitor_is_admin() -> bool:
         return False
 
 
-def _query_ldremote_service_state() -> str:
+def _query_ldremote_service_state(*, force: bool = False) -> str:
     """Return RUNNING, STOPPED, NOT_FOUND, or UNKNOWN."""
+    now = time.time()
+    if (
+        not force
+        and now - float(_LDREMOTE_STATE_CACHE["at"]) < _LDREMOTE_STATE_CACHE_SECONDS
+    ):
+        return str(_LDREMOTE_STATE_CACHE["state"])
+
     result = subprocess.run(
         ["sc", "query", "LDRemoteSvc"],
         capture_output=True,
         text=True,
         timeout=15,
         check=False,
+        **_hidden_windows_subprocess_kwargs(),
     )
     text = (result.stdout or result.stderr or "").upper()
     if "RUNNING" in text:
-        return "RUNNING"
-    if "STOPPED" in text:
-        return "STOPPED"
-    if "1060" in text or "DOES NOT EXIST" in text:
-        return "NOT_FOUND"
-    return "UNKNOWN"
+        state = "RUNNING"
+    elif "STOPPED" in text:
+        state = "STOPPED"
+    elif "1060" in text or "DOES NOT EXIST" in text:
+        state = "NOT_FOUND"
+    else:
+        state = "UNKNOWN"
+    _LDREMOTE_STATE_CACHE["at"] = now
+    _LDREMOTE_STATE_CACHE["state"] = state
+    return state
 
 
 def _stop_ldremote_service() -> str:
@@ -289,6 +304,8 @@ def _stop_ldremote_service() -> str:
                     "-NoProfile",
                     "-ExecutionPolicy",
                     "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
                     "-File",
                     str(script),
                     "-Quiet",
@@ -297,9 +314,10 @@ def _stop_ldremote_service() -> str:
                 text=True,
                 timeout=60,
                 check=False,
+                **_hidden_windows_subprocess_kwargs(),
             )
             _kill_ldplayer_config_lock_processes()
-            state = _query_ldremote_service_state()
+            state = _query_ldremote_service_state(force=True)
             if result.returncode == 0 and state not in {"RUNNING"}:
                 return ""
             text = (result.stdout or result.stderr or "").strip()
@@ -338,15 +356,16 @@ def _stop_ldremote_service() -> str:
             text=True,
             timeout=45,
             check=False,
+            **_hidden_windows_subprocess_kwargs(),
         )
         text = (result.stdout or result.stderr or "").strip()
         if text:
             outputs.append(text)
         _kill_ldplayer_config_lock_processes()
-        state = _query_ldremote_service_state()
+        state = _query_ldremote_service_state(force=True)
         if state in {"STOPPED", "NOT_FOUND"}:
             return ""
-    state = _query_ldremote_service_state()
+    state = _query_ldremote_service_state(force=True)
     if state in {"STOPPED", "NOT_FOUND"}:
         return ""
     detail = "; ".join(outputs) if outputs else f"LDRemoteSvc is still {state}"
@@ -373,6 +392,7 @@ def _kill_ldplayer_config_lock_processes() -> None:
             text=True,
             timeout=10,
             check=False,
+            **_hidden_windows_subprocess_kwargs(),
         )
 
 
@@ -437,6 +457,7 @@ def restart_ldplayer_remote_service() -> None:
         text=True,
         timeout=30,
         check=False,
+        **_hidden_windows_subprocess_kwargs(),
     )
 
 
@@ -488,6 +509,7 @@ def run_ldconsole(ldconsole: Path, *args: str, timeout: float | None = 120) -> s
         timeout=timeout,
         check=False,
         cwd=str(ldconsole.parent),
+        **_hidden_windows_subprocess_kwargs(),
     )
 
 

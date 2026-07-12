@@ -51,13 +51,7 @@ function Test-MonitorPortOpen([int]$Port) {
 }
 
 function Test-MonitorHealthy([int]$Port) {
-    if (Test-MonitorPing $Port) {
-        return $true
-    }
-    if (Test-MonitorPortOpen $Port) {
-        Write-Log "Monitor port $Port is listening but /api/ping failed (process may be hung)."
-    }
-    return $false
+    return Test-MonitorPing $Port
 }
 
 function Invoke-GnBotsStackPresent([string]$ProcessName, [string]$ApiUrl, [string]$ExePath) {
@@ -82,10 +76,23 @@ function Wait-MonitorHealthy([int]$Port, [int]$TimeoutSeconds) {
 }
 
 function Ensure-Monitor([int]$Port, [switch]$ForceRestart) {
-    if (Test-MonitorHealthy $Port) { return $true }
-    $hung = Test-MonitorPortOpen $Port
-    if ($hung -and -not $ForceRestart) {
-        Write-Log "Monitor unhealthy on port $Port (port open but API hung). Force-restarting monitor ..."
+    if (Test-MonitorHealthy $Port) {
+        $script:MonitorUnhealthySince = $null
+        return $true
+    }
+
+    if (-not $script:MonitorUnhealthySince) {
+        $script:MonitorUnhealthySince = Get-Date
+    }
+    $unhealthySec = [int]((Get-Date) - $script:MonitorUnhealthySince).TotalSeconds
+    $portOpen = Test-MonitorPortOpen $Port
+    $minWait = if ($portOpen) { 180 } else { 30 }
+    if ($unhealthySec -lt $minWait -and -not $ForceRestart) {
+        return $false
+    }
+
+    if ($portOpen) {
+        Write-Log "Monitor unhealthy on port $Port (port open but API hung for ${unhealthySec}s). Force-restarting monitor ..."
         $ForceRestart = $true
     } else {
         Write-Log "Monitor unhealthy on port $Port. Starting monitor ..."
@@ -105,6 +112,7 @@ function Ensure-Monitor([int]$Port, [switch]$ForceRestart) {
 
     if (Wait-MonitorHealthy $Port 60) {
         Write-Log "Monitor started successfully."
+        $script:MonitorUnhealthySince = $null
         return $true
     }
     Write-Log "Monitor failed to become healthy (start-stack exit=$startExit)."
@@ -163,23 +171,56 @@ function Ensure-GnBots([string]$ProcessName, [bool]$AutoStart, [string]$ApiUrl, 
     }
 }
 
-function Ensure-Tray([bool]$TrayEnabled) {
-    if (-not $TrayEnabled) { return }
-    if (-not (Test-Path $TrayScript)) { return }
-
+function Test-TrayRunning {
     $trayLock = Join-Path $LogDir "tray.lock"
     if (Test-Path $trayLock) {
         try {
             $trayPid = [int](Get-Content $trayLock -ErrorAction Stop)
             if ($trayPid -gt 0 -and (Get-Process -Id $trayPid -ErrorAction SilentlyContinue)) {
-                return
+                return $true
             }
         } catch {}
     }
 
+    $trayExe = Join-Path $MonitorRoot "SentinelTray.exe"
+    if (Test-Path $trayExe) {
+        if (Get-Process -Name "SentinelTray" -ErrorAction SilentlyContinue) {
+            return $true
+        }
+    }
+
+    return [bool](
+        Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like "*tray-app.ps1*" }
+    )
+}
+
+function Start-TrayOnce([bool]$TrayEnabled) {
+    if (-not $TrayEnabled) { return }
+    if ($script:TrayStarted) { return }
+    if (Test-TrayRunning) {
+        $script:TrayStarted = $true
+        return
+    }
+    $script:TrayStarted = $true
+    Ensure-Tray $TrayEnabled
+}
+
+function Ensure-Tray([bool]$TrayEnabled) {
+    if (-not $TrayEnabled) { return }
+    if (Test-TrayRunning) { return }
+
+    $cooldownSec = 180
+    if ($script:LastTrayEnsureAttempt -and ((Get-Date) - $script:LastTrayEnsureAttempt).TotalSeconds -lt $cooldownSec) {
+        return
+    }
+    $script:LastTrayEnsureAttempt = Get-Date
+
+    if (-not (Test-Path $TrayScript)) { return }
+
     Write-Log "Tray icon not running. Starting tray ..."
     try {
-        & $TrayScript -Quiet -Force | Out-Null
+        & $TrayScript -Quiet | Out-Null
     } catch {
         Write-Log "Tray start failed: $($_.Exception.Message)"
     }
@@ -227,6 +268,9 @@ if ($shutdownAfterMinutes -gt 0) {
     Write-Log "Idle monitor stop disabled (watcher_shutdown_after_gnbots_minutes is 0)."
 }
 $script:LastStatusLine = ""
+$script:LastTrayEnsureAttempt = $null
+$script:TrayStarted = $false
+$script:MonitorUnhealthySince = $null
 $script:GnBotsAbsentSince = $null
 $script:GnBotsApiUnhealthySince = $null
 $script:IdleMonitorStopped = $false
@@ -234,6 +278,7 @@ $script:LastHeartbeatAt = Get-Date
 
 # Always bring monitor up immediately at watcher start.
 Ensure-Monitor $dashboardPort | Out-Null
+Start-TrayOnce $trayEnabled
 
 if (-not (Invoke-GnBotsStackPresent $processName $gnbotsApiUrl $gnbotsExePath)) {
     $script:GnBotsAbsentSince = Get-Date
@@ -350,7 +395,6 @@ while ($true) {
 
     if ($monitorHealthy) {
         Ensure-GnBots $processName $autoStartGnBots $gnbotsApiUrl $gnbotsExePath
-        Ensure-Tray $trayEnabled
     }
 
     $sleepFor = if ($monitorHealthy -and $gnbotsStackPresent) { $pollSlow } else { $pollFast }

@@ -23,6 +23,34 @@ _CPU_METRICS_STATE: dict[str, Any] = {"last_at": 0.0, "percent": 0.0, "interval"
 _GNBOTS_API_PORT_CACHE: dict[str, Any] = {"at": 0.0, "port": None}
 
 
+def _hidden_windows_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
+def _powershell_hidden_args(*extra: str) -> list[str]:
+    return [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        *extra,
+    ]
+
+
+def _gnbots_user_stop_flag_path() -> Path:
+    return get_logs_dir() / "gnbots-user-stopped.json"
+
+
 def cache_ttl(config: dict[str, Any], key: str, default: int) -> int:
     return int(config.get(key, default))
 
@@ -861,21 +889,19 @@ def check_scheduled_tasks_ready(config: dict[str, Any], *, max_age_seconds: int 
     if enabled:
         try:
             completed = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
+                _powershell_hidden_args(
                     "-Command",
                     (
                         f"$l = Get-ScheduledTask -TaskPath '{launch_path}' -TaskName '{launch_name}' -ErrorAction SilentlyContinue; "
                         f"$s = Get-ScheduledTask -TaskPath '{stop_path}' -TaskName '{stop_name}' -ErrorAction SilentlyContinue; "
                         "if ($l -and $s) { 'true' } else { 'false' }"
                     ),
-                ],
+                ),
                 capture_output=True,
                 text=True,
                 timeout=8,
                 cwd=str(ROOT),
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                **_hidden_windows_subprocess_kwargs(),
             )
             ready = completed.stdout.strip().lower() == "true"
         except Exception:  # noqa: BLE001
@@ -1001,7 +1027,7 @@ def run_gnbots_pause_action(action: str) -> dict[str, Any]:
         capture_output=True,
         text=True,
         timeout=30,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        **_hidden_windows_subprocess_kwargs(),
     )
     if completed.returncode == 0:
         time.sleep(2.0)
@@ -1017,21 +1043,17 @@ def run_gnbots_pause_action(action: str) -> dict[str, Any]:
         return {"ok": False, "error": f"Missing script: {script}"}
 
     completed = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
+        _powershell_hidden_args(
             "-File",
             str(script),
             "-Action",
             action,
-        ],
+        ),
         capture_output=True,
         text=True,
         timeout=120,
         cwd=str(ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        **_hidden_windows_subprocess_kwargs(),
     )
 
     message = (completed.stdout or completed.stderr or "").strip()
@@ -1062,45 +1084,250 @@ def run_gnbots_ui_action(action: str) -> dict[str, Any]:
 
 
 def set_gnbots_user_stop_suppress(minutes: int = 120) -> None:
-    script = ROOT / "scripts" / "gnbots-suppress.ps1"
-    if not script.exists():
-        return
-    subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-            "-Action",
-            "Set",
-            "-Minutes",
-            str(max(1, minutes)),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=str(ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    flag_path = _gnbots_user_stop_flag_path()
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    until = now.timestamp() + max(1, minutes) * 60
+    payload = {
+        "until": datetime.fromtimestamp(until, timezone.utc).isoformat(),
+        "setAt": now.isoformat(),
+    }
+    flag_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_gnbots_user_stop_suppressed() -> bool:
+    flag_path = _gnbots_user_stop_flag_path()
+    if not flag_path.exists():
+        return False
+    try:
+        data = json.loads(flag_path.read_text(encoding="utf-8"))
+        until_raw = str(data.get("until") or "")
+        until = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) < until.astimezone(timezone.utc):
+            return True
+        flag_path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        try:
+            flag_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return False
+
+
+def clear_gnbots_user_stop_suppress() -> None:
+    flag_path = _gnbots_user_stop_flag_path()
+    if flag_path.exists():
+        flag_path.unlink(missing_ok=True)
+
+
+def _load_monitor_config() -> dict[str, Any]:
+    config_path = ROOT / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        with config_path.open(encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _wait_for_gnbots_pid(process_name: str, timeout_seconds: float = 15) -> int | None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        procs = find_processes(process_name)
+        if procs:
+            return int(procs[0].pid)
+        time.sleep(1)
+    return None
+
+
+def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str, Any] | None:
+    """Start/stop GnBots without spawning powershell.exe (prevents console flicker)."""
+    if os.name != "nt":
+        return None
+
+    config = _load_monitor_config()
+    process_name = str(config.get("gnbots_process_name") or "GnBots")
+    exe_name = f"{process_name}.exe"
+    elevation = monitor_elevation_status(config)
+    running = find_processes(process_name)
+    hidden = _hidden_windows_subprocess_kwargs()
+
+    if action == "Status":
+        details = {
+            "running": bool(running),
+            "processName": process_name,
+            "pids": [proc.pid for proc in running],
+            "exePath": str(resolve_gnbots_exe(config)),
+            "isAdmin": elevation.get("isAdmin"),
+            "requiresAdmin": elevation.get("requiresAdmin"),
+            "executionLevel": elevation.get("executionLevel"),
+            "elevationSource": elevation.get("source"),
+        }
+        return {
+            "ok": True,
+            "action": action,
+            "message": json.dumps(details),
+            "details": details,
+        }
+
+    if action == "Start":
+        clear_gnbots_user_stop_suppress()
+        if force and running:
+            for proc in running:
+                try:
+                    proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            subprocess.run(
+                ["taskkill.exe", "/F", "/IM", exe_name, "/T"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                **hidden,
+            )
+            time.sleep(2)
+            running = find_processes(process_name)
+
+        if running:
+            details = {
+                "ok": True,
+                "message": f"{process_name} already running (PID {running[0].pid})",
+                "pid": running[0].pid,
+            }
+            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+        exe_path = resolve_gnbots_exe(config)
+        if not exe_path.is_file():
+            details = {"ok": False, "message": "GnBots.exe not found at configured path."}
+            return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
+
+        if elevation.get("requiresAdmin") and not elevation.get("isAdmin"):
+            details = {
+                "ok": False,
+                "message": (
+                    "GnBots requires Administrator. Restart the monitor elevated "
+                    "(run monitor\\run.bat once and approve UAC, or restart the watcher)."
+                ),
+                "blocked": True,
+            }
+            return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
+
+        try:
+            proc = subprocess.Popen(
+                [str(exe_path)],
+                cwd=str(exe_path.parent),
+                **hidden,
+            )
+        except OSError as exc:
+            details = {"ok": False, "message": str(exc)}
+            return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
+
+        pid = _wait_for_gnbots_pid(process_name)
+        if pid is None and proc.poll() is None:
+            pid = proc.pid
+        if pid is None:
+            details = {"ok": False, "message": f"Tried to launch {process_name} but it did not stay running."}
+            return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
+
+        details = {
+            "ok": True,
+            "message": f"Launched {process_name} (PID {pid})",
+            "pid": pid,
+            "elevated": elevation.get("isAdmin"),
+            "method": "direct-native",
+        }
+        return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+    if action == "Stop":
+        if not running:
+            details = {"ok": True, "message": f"{process_name} is not running."}
+            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+        set_gnbots_user_stop_suppress(120)
+
+        if elevation.get("requiresAdmin") and not elevation.get("isAdmin"):
+            stop_task = str(config.get("gnbots_task_stop") or "GnBotsMonitor\\Stop")
+            subprocess.run(
+                ["schtasks.exe", "/Run", "/TN", stop_task],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                **hidden,
+            )
+            time.sleep(6)
+            if not find_processes(process_name):
+                details = {"ok": True, "message": f"Closed {process_name} via scheduled task.", "method": "scheduled-task"}
+                return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+            kill_result = force_kill_gnbots_process(config)
+            if not kill_result.get("stillRunning"):
+                details = {
+                    "ok": True,
+                    "message": f"Closed {process_name} via elevated taskkill.",
+                    "method": "elevated-taskkill",
+                }
+                return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+            still = find_processes(process_name)
+            details = {
+                "ok": False,
+                "message": f"Could not close elevated {process_name}. Close Goodnight Bots manually from the taskbar.",
+                "pids": [proc.pid for proc in still],
+                "blocked": True,
+            }
+            return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
+
+        for proc in running:
+            try:
+                proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        time.sleep(2)
+        if not find_processes(process_name):
+            details = {"ok": True, "message": f"Closed {process_name}.", "method": "direct-native"}
+            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+        subprocess.run(
+            ["taskkill.exe", "/F", "/IM", exe_name, "/T"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            **hidden,
+        )
+        time.sleep(2)
+        if not find_processes(process_name):
+            details = {"ok": True, "message": f"Closed {process_name}.", "method": "taskkill-native"}
+            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+
+        still = find_processes(process_name)
+        details = {
+            "ok": False,
+            "message": f"Could not close {process_name}.",
+            "pids": [proc.pid for proc in still],
+        }
+        return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
+
+    return None
 
 
 def run_gnbots_process_action(action: str, *, force: bool = False) -> dict[str, Any]:
+    native = _run_gnbots_process_native(action, force=force)
+    if native is not None:
+        return native
+
     script = ROOT / "scripts" / "gnbots-process.ps1"
     if not script.exists():
         return {"ok": False, "error": f"Missing script: {script}"}
 
-    args = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
+    args = _powershell_hidden_args(
         "-File",
         str(script),
         "-Action",
         action,
-    ]
+    )
     if force:
         args.append("-Force")
 
@@ -1110,7 +1337,7 @@ def run_gnbots_process_action(action: str, *, force: bool = False) -> dict[str, 
         text=True,
         timeout=120,
         cwd=str(ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        **_hidden_windows_subprocess_kwargs(),
     )
 
     message = (completed.stdout or completed.stderr or "").strip()
@@ -1143,7 +1370,7 @@ def force_kill_gnbots_process(config: dict[str, Any]) -> dict[str, Any]:
         text=True,
         timeout=30,
         cwd=str(ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        **_hidden_windows_subprocess_kwargs(),
     )
     time.sleep(2)
     still_running = any(
@@ -1188,7 +1415,7 @@ def kill_processes_listening_on_port(port: int) -> dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=20,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                **_hidden_windows_subprocess_kwargs(),
             )
             if completed.returncode == 0:
                 killed.append(pid)

@@ -93,16 +93,8 @@ function Start-Watcher {
     }
 
     Write-Info "Starting headless watcher ..."
-    $proc = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden",
-            "-File", $WatcherScript
-        ) `
-        -WorkingDirectory $MonitorRoot `
-        -WindowStyle Hidden `
-        -PassThru
+    . (Join-Path $PSScriptRoot "hidden-powershell.ps1")
+    $proc = Start-HiddenPowerShellFile -ScriptPath $WatcherScript -WorkingDirectory $MonitorRoot
 
     Start-Sleep -Seconds 3
 
@@ -114,9 +106,13 @@ function Start-Watcher {
         }
     }
 
-    if ($proc -and -not $proc.HasExited) {
-        Write-Info "Watcher process started (PID $($proc.Id))."
-        return $proc.Id
+    $watcherProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*stack-watcher.ps1*" } |
+        Select-Object -First 1
+    if ($watcherProc) {
+        $wpid = [int]$watcherProc.ProcessId
+        Write-Info "Watcher process started (PID $wpid)."
+        return $wpid
     }
 
     throw "Watcher did not start."
@@ -183,17 +179,9 @@ if (-not $Quiet) {
 }
 
 $trayScript = Join-Path $PSScriptRoot "start-tray.ps1"
-$trayExe = Join-Path $MonitorRoot "SentinelTray.exe"
-if (Test-Path $trayExe) {
+if (Test-Path $trayScript) {
     try {
-        Start-Process -FilePath $trayExe -WorkingDirectory $MonitorRoot -WindowStyle Hidden | Out-Null
-        Write-Info "Tray icon started via SentinelTray.exe."
-    } catch {
-        Write-Info "Tray icon start failed: $($_.Exception.Message)"
-    }
-} elseif (Test-Path $trayScript) {
-    try {
-        & $trayScript -Quiet -Force | Out-Null
+        & $trayScript -Quiet | Out-Null
         Write-Info "Tray icon started."
     } catch {
         Write-Info "Tray icon start failed: $($_.Exception.Message)"

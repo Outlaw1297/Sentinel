@@ -482,7 +482,7 @@ def normalize_monitor_config(raw: dict[str, Any]) -> dict[str, Any]:
 def dashboard_cache_seconds(config: dict[str, Any]) -> float:
     if "dashboard_cache_seconds" in config:
         return max(0.0, float(config["dashboard_cache_seconds"]))
-    return 8.0 if config.get("headless_mode") else 0.0
+    return 30.0 if config.get("headless_mode") else 0.0
 
 
 def invalidate_dashboard_cache() -> None:
@@ -2561,17 +2561,20 @@ async def setup_launch_wizard_route() -> dict[str, Any]:
     import subprocess
     import sys
 
+    from host_status import _hidden_windows_subprocess_kwargs, _powershell_hidden_args
     from paths import get_install_root, get_scripts_dir
 
     if sys.platform != "win32":
         raise HTTPException(status_code=400, detail="Desktop setup wizard is only available on Windows.")
 
     install_root = get_install_root()
+    hidden = _hidden_windows_subprocess_kwargs()
     setup_exe = install_root / "SentinelSetup.exe"
     if setup_exe.is_file():
         subprocess.Popen(
             [str(setup_exe)],
             cwd=str(install_root),
+            **hidden,
         )
         return {"ok": True, "message": "Desktop Setup Wizard launched."}
 
@@ -2579,15 +2582,9 @@ async def setup_launch_wizard_route() -> dict[str, Any]:
     if not script.is_file():
         raise HTTPException(status_code=503, detail="SentinelSetup.exe and setup-wizard.ps1 not found in install folder.")
     subprocess.Popen(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-        ],
+        _powershell_hidden_args("-File", str(script)),
         cwd=str(install_root),
+        **hidden,
     )
     return {"ok": True, "message": "Desktop Setup Wizard launched."}
 
@@ -2603,22 +2600,16 @@ async def update_status_route(force: bool = False) -> dict[str, Any]:
 async def update_apply_route() -> dict[str, Any]:
     import subprocess
 
+    from host_status import _hidden_windows_subprocess_kwargs, _powershell_hidden_args
     from paths import get_scripts_dir
 
     script = get_scripts_dir() / "apply-update.ps1"
     if not script.is_file():
         raise HTTPException(status_code=503, detail="apply-update.ps1 not found")
     proc = subprocess.Popen(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-            "-Quiet",
-        ],
+        _powershell_hidden_args("-File", str(script), "-Quiet"),
         cwd=str(ROOT),
+        **_hidden_windows_subprocess_kwargs(),
     )
     return {"ok": True, "started": True, "pid": proc.pid, "message": "Update started. Monitor will restart when complete."}
 

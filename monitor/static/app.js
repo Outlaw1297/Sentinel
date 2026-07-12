@@ -1234,6 +1234,7 @@ function renderScreenshots(items) {
 }
 
 function screenshotRefreshLabel() {
+  if (!screenshotIntervalMs) return "manual refresh only";
   const seconds = Math.max(15, Math.round(screenshotIntervalMs / 1000));
   if (window.matchMedia("(max-width: 640px)").matches) {
     return `every ${seconds}s`;
@@ -1276,8 +1277,12 @@ async function loadScreenshots({ bust = true } = {}) {
       lastScreenshotTone
     );
   } catch (error) {
-    els.screenshotsGrid.innerHTML = `<p class="screenshots-empty">Screenshot error: ${escapeHtml(error.message)}</p>`;
-    setScreenshotsStatus(error.message, "error");
+    const message =
+      error?.message === "Failed to fetch" || error?.name === "TypeError"
+        ? "Dashboard unreachable — is the monitor running on this PC?"
+        : error.message;
+    els.screenshotsGrid.innerHTML = `<p class="screenshots-empty">Screenshot error: ${escapeHtml(message)}</p>`;
+    setScreenshotsStatus(message, "error");
   } finally {
     screenshotsBusy = false;
     if (els.screenshotsRefreshBtn) els.screenshotsRefreshBtn.disabled = false;
@@ -1419,9 +1424,15 @@ async function loadConfig() {
   refreshIntervalMs = (config.refreshIntervalSeconds || 10) * 1000;
   refreshIntervalActiveMs = (config.refreshIntervalActiveSeconds || 5) * 1000;
   refreshIntervalHiddenMs = (config.refreshIntervalHiddenSeconds || 120) * 1000;
-  screenshotIntervalMs = config.screenshotIntervalSeconds === 0
-    ? 0
-    : Math.max(15000, (config.screenshotIntervalSeconds || 60) * 1000);
+  let screenshotSeconds = config.screenshotIntervalSeconds;
+  // Older monitor builds forced 0 in headless; config.json still uses screenshot_interval_seconds.
+  if (!screenshotSeconds && config.headlessMode) {
+    screenshotSeconds = 120;
+  }
+  screenshotIntervalMs =
+    screenshotSeconds === 0
+      ? 0
+      : Math.max(15000, (screenshotSeconds || 60) * 1000);
   shutdownAfterMinutesConfig = Number(config.watcherShutdownAfterMinutes || 0);
 }
 
@@ -1825,6 +1836,7 @@ els.addAccountOpen?.addEventListener("click", (event) => {
   if (window.GnBotsNotifications) {
     await window.GnBotsNotifications.initNotifications(document.getElementById("notifications-btn"));
   }
+  await loadConfig();
   await refresh();
   await loadScreenshots({ bust: true });
   scheduleScreenshotRefresh();

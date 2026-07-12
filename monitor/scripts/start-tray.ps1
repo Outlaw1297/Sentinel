@@ -91,7 +91,8 @@ try {
     $iconGenerator = Join-Path $PSScriptRoot "generate-tray-icons.ps1"
     if (Test-Path $iconGenerator) {
         try {
-            & $iconGenerator | Out-Null
+            . (Join-Path $PSScriptRoot "hidden-powershell.ps1")
+            Start-HiddenPowerShellFile -ScriptPath $iconGenerator -WorkingDirectory $MonitorRoot -Wait | Out-Null
         } catch {}
     }
 
@@ -101,17 +102,8 @@ try {
     $forceTag = if ($Force) { " (force)" } else { "" }
     Add-Content -Path $trayLog -Value "$startedAt Starting tray-app.ps1 (STA)$forceTag" -ErrorAction SilentlyContinue
 
-    Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @(
-            "-NoProfile",
-            "-STA",
-            "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden",
-            "-File", $TrayScript
-        ) `
-        -WorkingDirectory $MonitorRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardError $trayErr
+    . (Join-Path $PSScriptRoot "hidden-powershell.ps1")
+    Start-HiddenPowerShellFile -ScriptPath $TrayScript -WorkingDirectory $MonitorRoot -STA
 } finally {
     if ($startMutex) {
         try { $startMutex.ReleaseMutex() } catch {}
