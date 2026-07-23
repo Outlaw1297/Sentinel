@@ -1,4 +1,4 @@
-# Apply a monitor update (git pull or GitHub release zip) and restart the stack.
+﻿# Apply a monitor update (git pull or GitHub release zip) and restart the stack.
 
 param(
     [switch]$Quiet,
@@ -67,42 +67,39 @@ if (
     exit $(if ($null -ne $proc) { $proc.ExitCode } else { 1 })
 }
 
-$script:UpdateUi = $null
+$script:UpdateUiStatusPath = Join-Path $env:TEMP "gnbot-update-ui-status.json"
 $script:UpdateStatus = [hashtable]::Synchronized(@{
-    Text   = "Starting…"
+    Text   = "Starting..."
     Percent = 5
     Failed  = $false
     Done    = $false
     Error   = ""
 })
 
+function Write-UpdateUiStatusFile {
+    try {
+        $payload = [ordered]@{
+            text    = [string]$script:UpdateStatus.Text
+            percent = [int]$script:UpdateStatus.Percent
+            done    = [bool]$script:UpdateStatus.Done
+            failed  = [bool]$script:UpdateStatus.Failed
+            error   = [string]$script:UpdateStatus.Error
+        }
+        $json = ($payload | ConvertTo-Json -Compress)
+        [System.IO.File]::WriteAllText($script:UpdateUiStatusPath, $json + [Environment]::NewLine)
+    } catch {}
+}
+
 function Set-UpdateProgress([string]$Text, [int]$Percent = -1) {
     $script:UpdateStatus.Text = $Text
     if ($Percent -ge 0) {
         $script:UpdateStatus.Percent = [Math]::Max(0, [Math]::Min(100, $Percent))
     }
-    if ($null -ne $script:UpdateUi) {
-        try {
-            $ui = $script:UpdateUi
-            if ($ui.Form -and -not $ui.Form.IsDisposed) {
-                $ui.Form.BeginInvoke([Action]{
-                    if ($ui.StatusLabel -and -not $ui.StatusLabel.IsDisposed) {
-                        $ui.StatusLabel.Text = $script:UpdateStatus.Text
-                    }
-                    if ($ui.Progress -and -not $ui.Progress.IsDisposed) {
-                        $ui.Progress.Style = "Continuous"
-                        $ui.Progress.Value = [int]$script:UpdateStatus.Percent
-                    }
-                }) | Out-Null
-            }
-        } catch {
-            # UI may already be closing
-        }
-    }
+    Write-UpdateUiStatusFile
 }
 
 function Write-UpdateLog([string]$Message) {
-    # Never throw — a locked update.log (Dropbox / prior apply) must not abort the update.
+    # Never throw - a locked update.log (Dropbox / prior apply) must not abort the update.
     try {
         if (-not (Test-Path $LogDir)) {
             New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -203,10 +200,10 @@ function Invoke-GitUpdate([string]$GitRoot, [string]$Branch) {
         $status = git status --porcelain 2>&1
         if ($LASTEXITCODE -ne 0) { throw ($status -join "`n") }
         if ($status) { throw "Git working tree has local changes. Commit or stash before updating." }
-        Set-UpdateProgress "Fetching latest changes…" 45
+        Set-UpdateProgress "Fetching latest changes..." 45
         git fetch origin $Branch 2>&1 | ForEach-Object { Write-UpdateLog $_ }
         if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
-        Set-UpdateProgress "Applying git update…" 70
+        Set-UpdateProgress "Applying git update..." 70
         git pull --ff-only origin $Branch 2>&1 | ForEach-Object { Write-UpdateLog $_ }
         if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only failed" }
     } finally {
@@ -244,12 +241,12 @@ function Copy-ReleaseTree([string]$Source, [string]$Dest) {
     if (-not (Test-Path -LiteralPath $Dest)) {
         New-Item -ItemType Directory -Path $Dest -Force | Out-Null
     }
-    # Merge copy — do not Remove-Item the dest tree (locks scripts/_internal while running).
+    # Merge copy - do not Remove-Item the dest tree (locks scripts/_internal while running).
     $robocopy = Get-Command robocopy.exe -ErrorAction SilentlyContinue
     if ($robocopy) {
         & robocopy.exe $Source $Dest /E /IS /IT /R:3 /W:2 /NFL /NDL /NJH /NJS /NC /NS | Out-Null
         if ($LASTEXITCODE -ge 8) {
-            Write-UpdateLog "robocopy warning code $LASTEXITCODE for $Dest — falling back to file copy"
+            Write-UpdateLog "robocopy warning code $LASTEXITCODE for $Dest - falling back to file copy"
         } else {
             return
         }
@@ -282,10 +279,11 @@ function Invoke-ReleaseUpdate([string]$Repo, [string]$Branch, [string]$Channel) 
     $zipPath = Join-Path $staging "r.zip"
     $extractPath = Join-Path $staging "c"
     New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
-    Set-UpdateProgress "Downloading $($asset.name)…" 40
+    Set-UpdateProgress "Downloading $($asset.name)..." 40
     Write-UpdateLog "Downloading $($asset.name) ..."
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
-    Set-UpdateProgress "Extracting update…" 60
+    # GitHub requires a User-Agent; anonymous downloads without one often return 403.
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing -Headers $headers
+    Set-UpdateProgress "Extracting update..." 60
     Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
     $extractRoot = Get-Item $extractPath
@@ -295,7 +293,7 @@ function Invoke-ReleaseUpdate([string]$Repo, [string]$Branch, [string]$Channel) 
         $extractRoot = $topDirs[0]
     }
 
-    Set-UpdateProgress "Applying files…" 75
+    Set-UpdateProgress "Applying files..." 75
     $preserve = @("config.json", "logs")  # keep in sync with apply_update_rules.RELEASE_UPDATE_PRESERVE
     Get-ChildItem $extractRoot.FullName -Force | ForEach-Object {
         if ($preserve -contains $_.Name) { return }
@@ -310,13 +308,13 @@ function Invoke-UpdateWork {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $backupDir = Join-Path $MonitorRoot ("update-backup-" + $stamp)
     Write-UpdateLog "Update started (root=$MonitorRoot backup=$backupDir)"
-    Set-UpdateProgress "Backing up settings…" 10
+    Set-UpdateProgress "Backing up settings..." 10
 
     try {
         Backup-UserState $backupDir
 
         if (-not $SkipStop -and (Test-Path $StopScript)) {
-            Set-UpdateProgress "Stopping monitor stack…" 20
+            Set-UpdateProgress "Stopping monitor stack..." 20
             Write-UpdateLog "Stopping monitor stack..."
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $StopScript -Quiet
             Start-Sleep -Seconds 3
@@ -333,11 +331,11 @@ function Invoke-UpdateWork {
         $gitRoot = Test-GitInstall
         if ($gitRoot) {
             Write-UpdateLog "Git mode: pulling origin/$branch in $gitRoot"
-            Set-UpdateProgress "Updating from git…" 35
+            Set-UpdateProgress "Updating from git..." 35
             Invoke-GitUpdate -GitRoot $gitRoot -Branch $branch
         } elseif ($repo) {
             Write-UpdateLog "Release mode: downloading from GitHub $repo"
-            Set-UpdateProgress "Downloading release…" 35
+            Set-UpdateProgress "Downloading release..." 35
             Invoke-ReleaseUpdate -Repo $repo -Branch $branch -Channel $channel
         } else {
             throw "No git repo and update_repo is not configured."
@@ -348,26 +346,30 @@ function Invoke-UpdateWork {
             Write-UpdateLog "SkipRestart: not restarting stack."
             Set-UpdateProgress "Update complete." 100
         } elseif (Test-Path $SentinelExe) {
-            Set-UpdateProgress "Restarting Sentinel…" 90
+            Set-UpdateProgress "Restarting Sentinel..." 90
             Write-UpdateLog "Restarting stack via Sentinel.exe..."
             Start-Process -FilePath $SentinelExe -WorkingDirectory $MonitorRoot
-            Set-UpdateProgress "Update complete. Restarting…" 100
+            Set-UpdateProgress "Update complete. Restarting..." 100
         } elseif (Test-Path $StartBat) {
-            Set-UpdateProgress "Restarting stack…" 90
+            Set-UpdateProgress "Restarting stack..." 90
             Write-UpdateLog "Restarting stack..."
             Start-Process -FilePath $StartBat -WorkingDirectory $MonitorRoot
-            Set-UpdateProgress "Update complete. Restarting…" 100
+            Set-UpdateProgress "Update complete. Restarting..." 100
         } else {
             Set-UpdateProgress "Update complete." 100
         }
     } catch {
+        $script:UpdateStatus.Failed = $true
+        $script:UpdateStatus.Error = $_.Exception.Message
+        $script:UpdateStatus.Text = "Update failed: $($_.Exception.Message)"
+        Write-UpdateUiStatusFile
         Write-UpdateLog "Update failed: $($_.Exception.Message)"
         try { Restore-UserState $backupDir } catch {}
         throw
     }
 }
 
-function Show-UpdateProgressWindow([scriptblock]$Work) {
+function Show-UpdateProgressWindow {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
@@ -390,7 +392,7 @@ function Show-UpdateProgressWindow([scriptblock]$Work) {
     $title.Location = New-Object System.Drawing.Point 24, 22
 
     $status = New-Object System.Windows.Forms.Label
-    $status.Text = "Starting…"
+    $status.Text = "Starting..."
     $status.Font = New-Object System.Drawing.Font "Segoe UI", 10
     $status.ForeColor = [System.Drawing.Color]::FromArgb(160, 190, 220)
     $status.AutoSize = $false
@@ -413,31 +415,98 @@ function Show-UpdateProgressWindow([scriptblock]$Work) {
     $hint.Location = New-Object System.Drawing.Point 24, 145
 
     $form.Controls.AddRange(@($title, $status, $progress, $hint))
-    $script:UpdateUi = @{ Form = $form; StatusLabel = $status; Progress = $progress }
     $script:ApplyExitCode = 0
+
+    try { Remove-Item -LiteralPath $script:UpdateUiStatusPath -Force -ErrorAction SilentlyContinue } catch {}
+    Write-UpdateUiStatusFile
+
+    $workerScript = $MyInvocation.MyCommand.Path
+    if (-not $workerScript) { $workerScript = $PSCommandPath }
+    $argList = @(
+        "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+        "-File", $workerScript,
+        "-MonitorRoot", $MonitorRoot,
+        "-NoUi", "-Quiet"
+    )
+    if ($Force) { $argList += "-Force" }
+    if ($SkipStop) { $argList += "-SkipStop" }
+    if ($SkipRestart) { $argList += "-SkipRestart" }
+
+    $env:GNBOT_APPLY_FROM_TEMP = "1"
+    $worker = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WorkingDirectory (Split-Path -Parent $workerScript) -PassThru -WindowStyle Hidden
+
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 150
+    $script:UiCloseArmed = $false
+    $script:UiCloseTicks = 0
+    $timer.Add_Tick({
+        try {
+            if (Test-Path -LiteralPath $script:UpdateUiStatusPath) {
+                $raw = [System.IO.File]::ReadAllText($script:UpdateUiStatusPath)
+                $st = $raw | ConvertFrom-Json
+                if ($st.text) { $status.Text = [string]$st.text }
+                $pct = 5
+                try { $pct = [int]$st.percent } catch {}
+                if ($pct -lt 0) { $pct = 0 }
+                if ($pct -gt 100) { $pct = 100 }
+                $progress.Value = $pct
+            }
+        } catch {}
+
+        $exited = $false
+        try { $exited = $worker.HasExited } catch { $exited = $true }
+        if (-not $exited) { return }
+
+        if (-not $script:UiCloseArmed) {
+            $script:UiCloseArmed = $true
+            $code = 1
+            try { $code = [int]$worker.ExitCode } catch {}
+            $script:ApplyExitCode = $code
+            if ($code -ne 0) {
+                $errText = "Update failed."
+                try {
+                    if (Test-Path -LiteralPath $script:UpdateUiStatusPath) {
+                        $st2 = ([System.IO.File]::ReadAllText($script:UpdateUiStatusPath) | ConvertFrom-Json)
+                        if ($st2.error) { $errText = "Update failed: $($st2.error)" }
+                        elseif ($st2.text) { $errText = [string]$st2.text }
+                    }
+                } catch {}
+                $status.Text = $errText
+                $status.ForeColor = [System.Drawing.Color]::FromArgb(248, 113, 113)
+                $progress.Value = 100
+                [System.Windows.Forms.MessageBox]::Show(
+                    "$errText`n`nRestored from backup when possible.",
+                    "Sentinel Update",
+                    "OK",
+                    "Error"
+                ) | Out-Null
+                $timer.Stop()
+                $form.Close()
+            } else {
+                $status.Text = "Update complete. Restarting..."
+                $progress.Value = 100
+                $script:UiCloseTicks = 0
+            }
+            return
+        }
+
+        if ($script:ApplyExitCode -eq 0) {
+            $script:UiCloseTicks = [int]$script:UiCloseTicks + 1
+            if ($script:UiCloseTicks -ge 6) {
+                $timer.Stop()
+                $form.Close()
+            }
+        }
+    })
 
     $form.Add_Shown({
         $form.Activate()
-        try {
-            & $Work
-            $script:UpdateStatus.Done = $true
-            Start-Sleep -Milliseconds 900
-            $form.Close()
-        } catch {
-            $script:ApplyExitCode = 1
-            $script:UpdateStatus.Failed = $true
-            $script:UpdateStatus.Error = $_.Exception.Message
-            $status.Text = "Update failed: $($_.Exception.Message)"
-            $status.ForeColor = [System.Drawing.Color]::FromArgb(248, 113, 113)
-            $progress.Value = 100
-            [System.Windows.Forms.MessageBox]::Show(
-                "Update failed: $($_.Exception.Message)`n`nRestored from backup when possible.",
-                "Sentinel Update",
-                "OK",
-                "Error"
-            ) | Out-Null
-            $form.Close()
-        }
+        $timer.Start()
+    })
+
+    $form.Add_FormClosed({
+        try { $timer.Stop() } catch {}
+        try { $timer.Dispose() } catch {}
     })
 
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -449,8 +518,15 @@ function Show-UpdateProgressWindow([scriptblock]$Work) {
 if ($NoUi) {
     try {
         Invoke-UpdateWork
+        $script:UpdateStatus.Done = $true
+        $script:UpdateStatus.Percent = 100
+        Write-UpdateUiStatusFile
         exit 0
     } catch {
+        $script:UpdateStatus.Failed = $true
+        $script:UpdateStatus.Error = $_.Exception.Message
+        $script:UpdateStatus.Text = "Update failed: $($_.Exception.Message)"
+        Write-UpdateUiStatusFile
         if (-not $Quiet) {
             Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
         }
@@ -458,5 +534,5 @@ if ($NoUi) {
     }
 }
 
-$code = Show-UpdateProgressWindow { Invoke-UpdateWork }
+$code = Show-UpdateProgressWindow
 exit $code

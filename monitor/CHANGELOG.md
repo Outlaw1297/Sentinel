@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8 — 2026-07-23
+
+### Updates
+- Keep the apply progress window responsive: run update work in a background `-NoUi` process and poll a status file for the bar
+- Use ASCII-safe strings / UTF-8 BOM so PowerShell 5.1 does not misparse the apply script
+- Send GitHub `User-Agent` on release zip download to avoid anonymous 403s
+
 ## 0.1.7 — 2026-07-23
 
 ### Restore & Whiteout APK
