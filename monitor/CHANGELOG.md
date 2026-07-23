@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7 — 2026-07-23
+
+### Restore & Whiteout APK
+- Stage Dropbox/OneDrive APKs to TEMP before install to avoid mid-install stalls
+- Use `pm uninstall -k` plus `install-multiple --no-streaming` for split APK upgrades
+- Fix WinError 32 temp `.apk` lock by closing `mkstemp` handles before cleanup
+- Add Pillow for screenshot classification; tighten Download Now / Enter Game detection
+- Stop pre-launch settings from hanging forever when ldconsole times out
+- Persist installed APK versions from running GnBots sessions; force APK refresh after restore
+
 ## 0.1.6 — 2026-07-22
 
 ### Updates
