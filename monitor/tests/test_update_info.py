@@ -14,6 +14,8 @@ if str(ROOT) not in sys.path:
 
 from update_info import (
     commits_match,
+    is_git_install,
+    is_portable_install,
     normalize_commit,
     read_local_version_info,
     update_available,
@@ -62,3 +64,41 @@ def test_read_local_version_info_from_file(tmp_path: Path, monkeypatch: pytest.M
     info = read_local_version_info()
     assert info["appVersion"] == "1.2.3"
     assert info["commit"] == "deadbeef"
+
+
+def test_read_local_version_info_utf8_bom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("update_info.get_install_root", lambda: tmp_path)
+    payload = {"appVersion": "0.1.5", "commit": "abc1234", "commitShort": "abc1234"}
+    path = version_json_path()
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8"))
+    info = read_local_version_info()
+    assert info["appVersion"] == "0.1.5"
+    assert info["commit"] == "abc1234"
+
+
+def test_read_local_version_falls_back_to_version_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("update_info.get_install_root", lambda: tmp_path)
+    (tmp_path / "VERSION").write_text("0.1.5\n", encoding="utf-8")
+    info = read_local_version_info()
+    assert info["appVersion"] == "0.1.5"
+
+
+def test_portable_install_under_clone_is_not_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = tmp_path / "repo"
+    install = repo / "dist" / "GnBotsMonitor-Release"
+    install.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (install / "Sentinel.exe").write_text("stub", encoding="utf-8")
+    monkeypatch.setattr("update_info.get_install_root", lambda: install)
+    assert is_portable_install(install) is True
+    assert is_git_install() is False
+
+
+def test_source_tree_under_clone_is_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = tmp_path / "repo"
+    monitor = repo / "monitor"
+    monitor.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    monkeypatch.setattr("update_info.get_install_root", lambda: monitor)
+    assert is_portable_install(monitor) is False
+    assert is_git_install() is True

@@ -2605,20 +2605,53 @@ async def update_status_route(force: bool = False) -> dict[str, Any]:
 
 @app.post("/api/update/apply")
 async def update_apply_route() -> dict[str, Any]:
+    import shutil
     import subprocess
+    import tempfile
 
-    from host_status import _hidden_windows_subprocess_kwargs, _powershell_hidden_args
-    from paths import get_scripts_dir
+    from paths import get_install_root, get_scripts_dir
 
-    script = get_scripts_dir() / "apply-update.ps1"
+    # Prefer a TEMP copy so apply-update can replace install\scripts without locking itself.
+    install_root = get_install_root()
+    script = install_root / "scripts" / "apply-update.ps1"
+    if not script.is_file():
+        script = get_scripts_dir() / "apply-update.ps1"
     if not script.is_file():
         raise HTTPException(status_code=503, detail="apply-update.ps1 not found")
+    temp_dir = Path(tempfile.mkdtemp(prefix="gnbot-apply-"))
+    temp_script = temp_dir / "apply-update.ps1"
+    shutil.copy2(script, temp_script)
+    env = os.environ.copy()
+    env["GNBOT_APPLY_FROM_TEMP"] = "1"
+    # STA + visible-capable process so the update progress WinForms window can appear.
+    # Do not use CREATE_NO_WINDOW here — that can prevent the progress UI from showing.
     proc = subprocess.Popen(
-        _powershell_hidden_args("-File", str(script), "-Quiet"),
-        cwd=str(ROOT),
-        **_hidden_windows_subprocess_kwargs(),
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-STA",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(temp_script),
+            "-MonitorRoot",
+            str(install_root),
+            "-Quiet",
+        ],
+        cwd=str(install_root),
+        env=env,
     )
-    return {"ok": True, "started": True, "pid": proc.pid, "message": "Update started. Monitor will restart when complete."}
+    return {
+        "ok": True,
+        "started": True,
+        "pid": proc.pid,
+        "message": (
+            "Update running — watch the Sentinel update window. "
+            "This page may stop responding until the monitor restarts."
+        ),
+    }
 
 
 @app.get("/status", response_class=HTMLResponse)

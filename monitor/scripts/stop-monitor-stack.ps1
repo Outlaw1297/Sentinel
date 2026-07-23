@@ -66,7 +66,7 @@ if (Test-Path $LockFile) {
 
 $stopTrayScript = Join-Path $PSScriptRoot "stop-tray.ps1"
 if (Test-Path $stopTrayScript) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stopTrayScript -Quiet | Out-Null
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $stopTrayScript -Quiet | Out-Null
 }
 
 $dismissed = Join-Path $LogDir "tray.dismissed"

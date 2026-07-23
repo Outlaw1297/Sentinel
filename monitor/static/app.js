@@ -1425,6 +1425,29 @@ function render(payload) {
   }
 }
 
+async function resolveAppVersion(config) {
+  if (config?.appVersion) return String(config.appVersion);
+  try {
+    const response = await fetch(`/static/VERSION?v=${Date.now()}`, { cache: "no-store" });
+    if (response.ok) {
+      const text = (await response.text()).trim().split(/\r?\n/)[0].trim();
+      if (text) return text;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    const response = await fetch("/api/update/status");
+    if (response.ok) {
+      const body = await response.json();
+      if (body.localVersion && body.localVersion !== "0.0.0") return String(body.localVersion);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return "";
+}
+
 async function loadConfig() {
   const response = await fetch("/api/config");
   if (!response.ok) return;
@@ -1443,9 +1466,12 @@ async function loadConfig() {
       : Math.max(15000, (screenshotSeconds || 60) * 1000);
   shutdownAfterMinutesConfig = Number(config.watcherShutdownAfterMinutes || 0);
   const versionEl = document.getElementById("app-version");
-  if (versionEl && config.appVersion) {
-    versionEl.textContent = `v${config.appVersion}`;
-    versionEl.hidden = false;
+  if (versionEl) {
+    const appVersion = await resolveAppVersion(config);
+    if (appVersion) {
+      versionEl.textContent = `v${appVersion.replace(/^v/i, "")}`;
+      versionEl.hidden = false;
+    }
   }
 }
 

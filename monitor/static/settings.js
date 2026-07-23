@@ -6018,19 +6018,50 @@ document.getElementById("monitor-apply-update-btn")?.addEventListener("click", a
   const applyBtn = document.getElementById("monitor-apply-update-btn");
   const summary = document.getElementById("monitor-update-summary");
   if (!applyBtn || applyBtn.disabled) return;
-  if (!window.confirm("Apply update and restart the monitor stack?")) return;
+  const confirmed = window.confirm(
+    "Apply update and restart the monitor stack?\n\n" +
+      "A desktop progress window will appear. This Settings page may disconnect while the monitor restarts.",
+  );
+  if (!confirmed) return;
   applyBtn.disabled = true;
-  summary.textContent = "Applying update…";
+  summary.textContent = "Starting update…";
   try {
     const response = await fetch("/api/update/apply", { method: "POST" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || "Update failed to start.");
-    summary.textContent = body.message || "Update started.";
+    summary.textContent =
+      body.message ||
+      "Update running — watch the Sentinel update window. This page may stop responding until restart.";
+    pollUpdateRestart(summary, applyBtn);
   } catch (error) {
     summary.textContent = error.message || "Update failed.";
     applyBtn.disabled = false;
   }
 });
+
+async function pollUpdateRestart(summary, applyBtn) {
+  let sawDisconnect = false;
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const response = await fetch("/api/update/status?force=true", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (sawDisconnect) {
+        summary.textContent = "Monitor is back. Refreshing update status…";
+        await loadUpdateStatus(true);
+        return;
+      }
+      summary.textContent =
+        "Update running — watch the Sentinel update window. Waiting for monitor restart…";
+    } catch (_error) {
+      sawDisconnect = true;
+      summary.textContent = "Monitor restarting… watch the Sentinel update window.";
+    }
+  }
+  summary.textContent =
+    "Still waiting for the monitor. If the update window closed, refresh this page.";
+  if (applyBtn) applyBtn.disabled = false;
+}
 
 const initialTabHash = window.location.hash.replace("#", "");
 const initialTab = [initialTabParam, initialTabHash].find(

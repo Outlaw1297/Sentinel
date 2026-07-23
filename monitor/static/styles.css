@@ -169,6 +169,10 @@ body {
 
 .header h1 {
   margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  flex-wrap: wrap;
   font-family: var(--font-display);
   font-size: 1.65rem;
   font-weight: 700;
@@ -187,6 +191,17 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+.header h1 .app-version {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: #7dd3fc;
+  opacity: 1;
 }
 
 .brand-tagline {
@@ -274,14 +289,6 @@ body {
   margin: 0.3rem 0 0;
   color: var(--muted);
   font-size: 0.9rem;
-}
-
-.app-version {
-  margin: 0.15rem 0 0;
-  color: var(--muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.02em;
-  opacity: 0.85;
 }
 
 .header-right {

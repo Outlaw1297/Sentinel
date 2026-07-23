@@ -1,4 +1,4 @@
-const SHELL_CACHE = "sentinel-shell-v6";
+const SHELL_CACHE = "sentinel-shell-v7";
 const NETWORK_FIRST_STATIC = new Set([
   "/static/settings.js",
   "/static/app.js",
@@ -8,8 +8,8 @@ const SHELL_ASSETS = [
   "/",
   "/favicon.ico",
   "/favicon.png?v=6",
-  "/static/styles.css?v=71",
-  "/static/app.js?v=71",
+  "/static/styles.css?v=73",
+  "/static/app.js?v=73",
   "/static/settings.js?v=56",
   "/static/restore-shared.js?v=4",
   "/static/notifications.js?v=7",
@@ -46,7 +46,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (NETWORK_FIRST_STATIC.has(url.pathname)) {
+  if (NETWORK_FIRST_STATIC.has(url.pathname) || url.pathname === "/") {
     event.respondWith(
       fetch(event.request)
         .then((response) => {

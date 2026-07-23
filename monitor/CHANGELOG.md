@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.6 — 2026-07-22
+
+### Updates
+- Fix Apply targeting `_internal` instead of the install root
+- Show a desktop “Updating Sentinel” progress window during apply
+- Run apply from TEMP so `scripts/` can be replaced without file locks
+- Harden logging/backup against Dropbox-locked `update.log`
+- Overlay release files with robocopy merge; stage `gnbot-monitor.new.exe` when locked
+- Treat portable exe installs as release mode even when nested under a git clone
+- Show `vX.Y.Z` beside the Sentinel title; tolerate UTF-8 BOM in `version.json`
+
 ## 0.1.5 — 2026-07-22
 
 ### GnBots launch & detection

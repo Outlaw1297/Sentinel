@@ -58,5 +58,7 @@ $payload = @{
 }
 
 $outPath = Join-Path $MonitorRoot "version.json"
-$payload | ConvertTo-Json -Depth 3 | Set-Content -Path $outPath -Encoding UTF8
+$json = $payload | ConvertTo-Json -Depth 3
+# Avoid UTF-8 BOM — Python json.loads(encoding="utf-8") rejects it.
+[System.IO.File]::WriteAllText($outPath, $json + [Environment]::NewLine)
 Write-Host "Wrote $outPath ($AppVersion $short)"

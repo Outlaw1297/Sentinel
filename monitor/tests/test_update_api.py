@@ -45,23 +45,25 @@ def test_update_status_returns_check_payload(client):
 
 
 def test_update_apply_missing_script_returns_503(client, tmp_path: Path):
-    with patch("paths.get_scripts_dir", return_value=tmp_path):
+    with (
+        patch("paths.get_install_root", return_value=tmp_path),
+        patch("paths.get_scripts_dir", return_value=tmp_path / "missing-scripts"),
+    ):
         response = client.post("/api/update/apply")
     assert response.status_code == 503
     assert "apply-update.ps1" in response.json()["detail"]
 
 
 def test_update_apply_starts_subprocess(client, tmp_path: Path):
-    script = tmp_path / "apply-update.ps1"
-    script.write_text("# stub", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "apply-update.ps1").write_text("# stub", encoding="utf-8")
     fake_proc = MagicMock()
     fake_proc.pid = 4242
 
     with (
-        patch("paths.get_scripts_dir", return_value=tmp_path),
+        patch("paths.get_install_root", return_value=tmp_path),
         patch("subprocess.Popen", return_value=fake_proc) as popen,
-        patch("host_status._powershell_hidden_args", side_effect=lambda *a: ["powershell", *a]),
-        patch("host_status._hidden_windows_subprocess_kwargs", return_value={}),
     ):
         response = client.post("/api/update/apply")
 
@@ -70,3 +72,11 @@ def test_update_apply_starts_subprocess(client, tmp_path: Path):
     assert body["started"] is True
     assert body["pid"] == 4242
     assert popen.called
+    args = popen.call_args.args[0]
+    assert "-STA" in args
+    assert "-MonitorRoot" in args
+    assert str(tmp_path) in args
+    # Launched from a TEMP copy, not install\scripts directly
+    script_arg = args[args.index("-File") + 1]
+    assert "gnbot-apply-" in script_arg.replace("\\", "/")
+    assert "update window" in body["message"].lower() or "watch the Sentinel" in body["message"]
