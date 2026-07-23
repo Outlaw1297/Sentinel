@@ -107,13 +107,13 @@ function parseWatcherStatusLine(message) {
 
 function normalizeWatcherForShutdown(watcher, stack) {
   const parsed = parseWatcherStatusLine(watcher?.lastMessage);
+  const shutdownAfterMinutes =
+    watcher?.shutdownAfterMinutes ??
+    stack?.idleShutdownMinutes ??
+    shutdownAfterMinutesConfig;
   return {
     ...(watcher || {}),
-    shutdownAfterMinutes:
-      watcher?.shutdownAfterMinutes ||
-      stack?.idleShutdownMinutes ||
-      shutdownAfterMinutesConfig ||
-      undefined,
+    shutdownAfterMinutes,
     gnbotsIdleMinutes: watcher?.gnbotsIdleMinutes ?? parsed.gnbotsIdleMinutes ?? 0,
     gnbotsRunning:
       typeof watcher?.gnbotsRunning === "boolean"
@@ -134,12 +134,16 @@ function gnbotsRunningForShutdown(watcher, stack) {
 }
 
 function shutdownLimitMinutes(watcher, stack) {
-  const fromWatcher = Number(watcher?.shutdownAfterMinutes || 0);
-  if (fromWatcher > 0) return fromWatcher;
-  const fromStack = Number(stack?.idleShutdownMinutes || 0);
-  if (fromStack > 0) return fromStack;
-  const fromConfig = Number(shutdownAfterMinutesConfig || 0);
-  if (fromConfig > 0) return fromConfig;
+  // Explicit 0 means disabled. Do not fall through to DEFAULT_SHUTDOWN_MINUTES.
+  for (const value of [
+    watcher?.shutdownAfterMinutes,
+    stack?.idleShutdownMinutes,
+    shutdownAfterMinutesConfig,
+  ]) {
+    if (value === 0 || value === "0") return 0;
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
   return DEFAULT_SHUTDOWN_MINUTES;
 }
 
@@ -332,7 +336,11 @@ function renderResources(resources) {
 }
 
 function updateHostButtons(stack) {
-  const gnbotsRunning = Boolean(stack?.gnbotsExe?.running);
+  const gnbotsRunning = Boolean(
+    stack?.gnbotsExe?.running ||
+      stack?.gnbotsExe?.stackActive ||
+      lastPayload?.gnbotsProcessRunning
+  );
   const elevationReady = stack?.capabilities?.gnbotsElevationReady ?? stack?.monitorElevation?.ready ?? true;
   document.querySelectorAll("[data-host-action]").forEach((btn) => {
     const action = btn.dataset.hostAction;
@@ -1434,6 +1442,11 @@ async function loadConfig() {
       ? 0
       : Math.max(15000, (screenshotSeconds || 60) * 1000);
   shutdownAfterMinutesConfig = Number(config.watcherShutdownAfterMinutes || 0);
+  const versionEl = document.getElementById("app-version");
+  if (versionEl && config.appVersion) {
+    versionEl.textContent = `v${config.appVersion}`;
+    versionEl.hidden = false;
+  }
 }
 
 function currentRefreshIntervalMs() {
@@ -1643,6 +1656,27 @@ els.globalControls.addEventListener("click", async (event) => {
   });
 });
 
+function applyHostActionOptimistic(action, payload) {
+  if (!lastPayload) {
+    lastPayload = {};
+  }
+  if (!lastPayload.stack) {
+    lastPayload.stack = {};
+  }
+  if (!lastPayload.stack.gnbotsExe) {
+    lastPayload.stack.gnbotsExe = {};
+  }
+  const details = payload?.details || {};
+  const running = action === "start";
+  const pid = details.pid || (running ? lastPayload.stack.gnbotsExe.pid : null);
+  lastPayload.gnbotsProcessRunning = running;
+  lastPayload.stack.gnbotsExe.running = running;
+  lastPayload.stack.gnbotsExe.stackActive = running;
+  lastPayload.stack.gnbotsExe.pid = running ? pid : null;
+  updateHostButtons(lastPayload.stack);
+  renderStack(lastPayload.stack);
+}
+
 document.querySelectorAll("[data-host-action]").forEach((button) => {
   button.addEventListener("click", async () => {
     const action = button.dataset.hostAction;
@@ -1665,7 +1699,12 @@ document.querySelectorAll("[data-host-action]").forEach((button) => {
         throw new Error(payload.detail || payload.message || `HTTP ${response.status}`);
       }
       setHostStatus(payload.message || `${label} request sent.`, "ok");
-      void burstRefresh();
+      applyHostActionOptimistic(action, payload);
+      commandBusy = false;
+      updateControlsDisabled();
+      // Background sync only — do not hold the UI lock across multi-second refreshes.
+      void burstRefresh({ delays: [0, 1500, 4000] });
+      return;
     } catch (error) {
       setHostStatus(`${label} failed: ${error.message}`, "error");
     } finally {

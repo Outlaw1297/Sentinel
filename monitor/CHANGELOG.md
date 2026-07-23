@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.5 — 2026-07-22
+
+### GnBots launch & detection
+- Launch GnBots as a normal GUI process (no `CREATE_NO_WINDOW` / `SW_HIDE`) so the window is visible
+- Fix dashboard host buttons and idle-shutdown countdown when process is running
+- Optimistic Launch/Close UI; unlock controls immediately instead of awaiting long refresh bursts
+- Start without force-restart so a second Launch click does not kill a fresh instance
+- Re-resolve GnBots API port each watcher poll (5509 when 5508 is busy)
+
+### Version & updates
+- Show Sentinel version on the dashboard header and Settings → Updates
+- Add pytest coverage for update check, apply API, and release zip preserve rules
+- Stop preserving `version.json` on release apply so the stamped version advances
+
 ## 0.1.4 — 2026-07-12
 
 ### Reverse proxy

@@ -246,6 +246,7 @@ from log_reader import enrich_log_entries, parse_log_line, read_log_feed
 from log_session import begin_monitor_log_session, resolve_today_log_path
 from setup_status import apply_setup_config, evaluate_setup_status
 from update_check import check_for_updates
+from update_info import read_local_version_info
 
 ERROR_CLEAR_STATE_PATH = get_logs_dir() / "error-log-cleared.json"
 
@@ -489,6 +490,12 @@ def invalidate_dashboard_cache() -> None:
     _DASHBOARD_CACHE["at"] = 0.0
     _DASHBOARD_CACHE["data"] = None
     invalidate_gnbots_caches()
+    try:
+        from host_status import invalidate_stack_cache
+
+        invalidate_stack_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def read_gnbots_config_file(monitor_config: dict[str, Any]) -> dict[str, Any]:
@@ -2727,6 +2734,7 @@ async def public_config() -> dict[str, Any]:
     gnbots_port = read_gnbots_web_server_port(config)
     api = resolve_gnbots_api_status(config)
     api_url = resolve_gnbots_api_url(config)
+    version = read_local_version_info()
     return {
         "refreshIntervalSeconds": int(config.get("refresh_interval_seconds", 30 if headless else 10)),
         "refreshIntervalActiveSeconds": int(config.get("refresh_interval_active_seconds", 5)),
@@ -2743,6 +2751,8 @@ async def public_config() -> dict[str, Any]:
         "screenshotIntervalSeconds": int(config.get("screenshot_interval_seconds", 60)),
         "pushEnabled": push_enabled(config),
         "notificationsSupported": push_enabled(config),
+        "appVersion": str(version.get("appVersion") or "0.0.0"),
+        "commitShort": str(version.get("commitShort") or ""),
     }
 
 
@@ -3615,7 +3625,9 @@ async def launch_gnbots() -> dict[str, Any]:
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     invalidate_dashboard_cache()
-    result = run_gnbots_process_action("Start", force=True)
+    # Do not force-restart: a second Launch click while detection is catching up
+    # used to kill the process that just started.
+    result = run_gnbots_process_action("Start", force=False)
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("message") or "Failed to launch GnBots")
     return result

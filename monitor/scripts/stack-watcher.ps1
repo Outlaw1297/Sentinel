@@ -286,7 +286,13 @@ if (-not (Invoke-GnBotsStackPresent $processName $gnbotsApiUrl $gnbotsExePath)) 
 
 while ($true) {
     $presence = if (Get-Command Get-GnBotsPresenceSnapshot -ErrorAction SilentlyContinue) {
-        Get-GnBotsPresenceSnapshot -ProcessName $processName -ApiUrl $gnbotsApiUrl -ExePath $gnbotsExePath
+        # Re-resolve API URL each poll — GnBots may bind 5509+ when 5508 is busy.
+        $resolvedApi = if (Get-Command Get-GnBotsApiUrl -ErrorAction SilentlyContinue) {
+            Get-GnBotsApiUrl
+        } else {
+            $gnbotsApiUrl
+        }
+        Get-GnBotsPresenceSnapshot -ProcessName $processName -ApiUrl $resolvedApi -ExePath $gnbotsExePath
     } else {
         @{
             stackPresent = [bool](Invoke-GnBotsStackPresent $processName $gnbotsApiUrl $gnbotsExePath)

@@ -276,6 +276,14 @@ body {
   font-size: 0.9rem;
 }
 
+.app-version {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
 .header-right {
   display: flex;
   align-items: center;

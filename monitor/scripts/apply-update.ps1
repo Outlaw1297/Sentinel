@@ -103,7 +103,7 @@ function Invoke-ReleaseUpdate([string]$Repo, [string]$Branch, [string]$Channel) 
     $extractRoot = Get-ChildItem $staging -Directory | Where-Object { $_.Name -ne "__MACOSX" } | Select-Object -First 1
     if (-not $extractRoot) { $extractRoot = Get-Item $staging }
 
-    $preserve = @("config.json", "version.json", "logs")
+    $preserve = @("config.json", "logs")  # keep in sync with apply_update_rules.RELEASE_UPDATE_PRESERVE
     Get-ChildItem $extractRoot.FullName -Force | ForEach-Object {
         if ($preserve -contains $_.Name) { return }
         $dest = Join-Path $MonitorRoot $_.Name

@@ -5997,7 +5997,8 @@ async function loadUpdateStatus(force = false) {
     const response = await fetch(`/api/update/status${force ? "?force=true" : ""}`);
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || "Update check failed.");
-    const local = body.localCommitShort || body.localVersion || "unknown";
+    const versionLabel = body.localVersion ? `v${body.localVersion}` : "";
+    const local = [versionLabel, body.localCommitShort].filter(Boolean).join(" ") || "unknown";
     const remote = body.remoteCommitShort || "unknown";
     summary.textContent = body.updateAvailable
       ? `Update available: ${local} → ${remote}${body.remoteMessage ? ` — ${body.remoteMessage}` : ""}`

@@ -23,6 +23,11 @@ _CPU_METRICS_STATE: dict[str, Any] = {"last_at": 0.0, "percent": 0.0, "interval"
 _GNBOTS_API_PORT_CACHE: dict[str, Any] = {"at": 0.0, "port": None}
 
 
+def invalidate_stack_cache() -> None:
+    _STACK_CACHE["at"] = 0.0
+    _STACK_CACHE["data"] = None
+
+
 def _hidden_windows_subprocess_kwargs() -> dict[str, Any]:
     if os.name != "nt":
         return {}
@@ -1216,10 +1221,11 @@ def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str,
             return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
 
         try:
+            # GnBots is a GUI app — do not pass CREATE_NO_WINDOW / SW_HIDE or the
+            # main window stays invisible (looks like Launch did nothing).
             proc = subprocess.Popen(
                 [str(exe_path)],
                 cwd=str(exe_path.parent),
-                **hidden,
             )
         except OSError as exc:
             details = {"ok": False, "message": str(exc)}
