@@ -577,10 +577,14 @@ def finalize_restored_instance_settings_bounded(
             phase=phase,
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    # Do not use `with ThreadPoolExecutor`: on TimeoutError its __exit__ calls
+    # shutdown(wait=True) and blocks forever if ldconsole is hung.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         future = pool.submit(_run)
         try:
-            return future.result(timeout=outer_timeout)
+            result = future.result(timeout=outer_timeout)
+            return result
         except concurrent.futures.TimeoutError:
             if phase == "prelaunch":
                 label = "Pre-launch"
@@ -602,6 +606,8 @@ def finalize_restored_instance_settings_bounded(
                 "ok": False,
                 "timedOut": True,
             }
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def finalize_restored_instance_settings(

@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 psutil==6.1.1
 pywebpush==2.0.1
+Pillow>=10,<12

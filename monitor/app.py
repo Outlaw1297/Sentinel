@@ -82,6 +82,7 @@ from whiteout_apk import (
     inspect_whiteout_apk_for_indexes,
     invalidate_apk_inspect_cache,
     merge_persisted_apk_cache,
+    probe_apk_versions_for_active_sessions,
     save_persisted_apk_update_instance_indexes,
     update_active_account_apks,
     update_all_whiteout_apks,
@@ -2430,6 +2431,29 @@ async def event_monitor_loop() -> None:
         await asyncio.sleep(push_poll_seconds(config))
 
 
+def _session_apk_probe_tick(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """When GnBots is running accounts, read installed APK versions via ADB and persist them."""
+    try:
+        data = fetch_gnbots_sync(cfg)
+    except Exception:  # noqa: BLE001
+        return None
+    sessions = data.get("sessions") or []
+    if not isinstance(sessions, list) or not sessions:
+        return None
+    return probe_apk_versions_for_active_sessions(cfg, sessions)
+
+
+async def session_apk_probe_loop() -> None:
+    await asyncio.sleep(12)
+    interval = max(15, int(config.get("session_apk_probe_seconds", 20)))
+    while True:
+        try:
+            await asyncio.to_thread(_session_apk_probe_tick, config)
+        except Exception as exc:  # noqa: BLE001
+            log_unhandled_exception("session_apk_probe_loop", exc)
+        await asyncio.sleep(interval)
+
+
 def _asyncio_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
     message = context.get("message") or "asyncio error"
     exc = context.get("exception")
@@ -2458,6 +2482,7 @@ async def on_startup() -> None:
     setup_monitor_logging().info("Sentinel started on port %s", int(config.get("dashboard_port", 8787)))
     refresh_profiles_manifest()
     asyncio.create_task(gnbots_api_health_loop())
+    asyncio.create_task(session_apk_probe_loop())
     if push_enabled(config):
         asyncio.create_task(event_monitor_loop())
 

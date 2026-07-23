@@ -2017,11 +2017,11 @@ async function runRestoreForIndex(index) {
       setRestorePageStatus(`Restore completed for ${row.ldName}.`, "ok", 100);
     }
     delete restoreProgressByIndex[index];
-    await loadRestoreTab();
+    await loadRestoreTab({ forceApk: true });
   } catch (error) {
     setRestorePageStatus(error.message || "Restore failed.", "error");
     delete restoreProgressByIndex[index];
-    await loadRestoreTab();
+    await loadRestoreTab({ forceApk: true });
   } finally {
     restoreBusy = false;
     applyRestoreLockState();

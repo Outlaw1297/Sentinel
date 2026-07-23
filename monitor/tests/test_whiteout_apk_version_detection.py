@@ -281,6 +281,51 @@ Package [com.gof.global.arch] (ghi):
         self.assertFalse(row["versionConfirmed"])
         self.assertTrue(row["persistedVersion"])
 
+    def test_device_apk_temp_unlinks_after_mkstemp_fd_closed(self) -> None:
+        """Regression: open mkstemp FD caused WinError 32 on Windows unlink."""
+        from whiteout_apk import _read_installed_version_via_device_apk
+
+        class _Result:
+            def __init__(self, stdout: str = "", returncode: int = 0) -> None:
+                self.stdout = stdout
+                self.stderr = ""
+                self.returncode = returncode
+
+        pulled: dict[str, Path] = {}
+
+        def fake_adb(_ldconsole, _index, command, _run, timeout=30):  # noqa: ARG001
+            if command.startswith("shell pm path"):
+                return _Result("package:/data/app/base.apk")
+            if command.startswith("pull "):
+                # destination is the last quoted path
+                dest = command.split('"')[-2]
+                path = Path(dest)
+                path.write_bytes(b"fake-apk")
+                pulled["path"] = path
+                return _Result("pulled", 0)
+            return _Result("", 0)
+
+        with patch("whiteout_apk.resolve_aapt_path", return_value=Path("aapt.exe")), patch(
+            "whiteout_apk._run_ld_adb",
+            side_effect=fake_adb,
+        ), patch(
+            "subprocess.run",
+            return_value=_Result("package: name='com.gof.global' versionName='1.32.21'"),
+        ), patch(
+            "whiteout_apk._decode_subprocess_output",
+            return_value="package: name='com.gof.global' versionName='1.32.21'",
+        ):
+            version = _read_installed_version_via_device_apk(
+                Path("ldconsole.exe"),
+                6,
+                "com.gof.global",
+                lambda *a, **k: None,
+                {"whiteout_package_name": "com.gof.global"},
+            )
+        self.assertEqual(version, "1.32.21")
+        self.assertIn("path", pulled)
+        self.assertFalse(pulled["path"].exists())
+
 
 if __name__ == "__main__":
     unittest.main()

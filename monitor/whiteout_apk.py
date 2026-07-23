@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -215,6 +216,8 @@ def persist_instance_apk_version(index: int, version: str | None, *, source: str
     }
     state["instances"] = instances
     save_whiteout_apk_state(state)
+    # Cached inspect rows may still say installedVersion=null ("Installed (unknown)").
+    invalidate_apk_inspect_cache()
 
 
 def persist_job_installed_apk_version(
@@ -230,6 +233,130 @@ def persist_job_installed_apk_version(
         return None
     persist_instance_apk_version(index, clean, source=source)
     return clean
+
+
+SESSION_APK_PROBE_RETRY_SECONDS = 45.0
+_SESSION_APK_PROBE: dict[str, Any] = {"by_index": {}}
+
+
+def reset_session_apk_probe_state() -> None:
+    """Clear in-memory session APK probe debounce (tests / restart)."""
+    _SESSION_APK_PROBE["by_index"] = {}
+
+
+def probe_apk_versions_for_active_sessions(
+    config: dict[str, Any],
+    sessions: list[Any] | None,
+) -> dict[str, Any]:
+    """Read + persist Whiteout APK version for emulators GnBots is actively running.
+
+    Called from the monitor background loop when session Data.IsRunning (ADB is up).
+    Probes once per account/instance run; retries on failure after a short cooldown.
+    """
+    from bot_activity import build_session_snapshots
+    from ldplayer_restore import list_running_ld_indexes, resolve_ldconsole, resolve_ldplayer_base, run_ldconsole
+
+    snapshots = build_session_snapshots(sessions or [])
+    active_indexes: set[int] = set()
+    targets: list[tuple[str, int]] = []
+    for account_id, snap in snapshots.items():
+        try:
+            index = int(snap.get("instanceId", -1))
+        except (TypeError, ValueError):
+            continue
+        if index < 0:
+            continue
+        state = str(snap.get("state") or "")
+        if state != "running":
+            continue
+        active_indexes.add(index)
+        targets.append((str(account_id), index))
+
+    by_index = _SESSION_APK_PROBE.setdefault("by_index", {})
+    if not isinstance(by_index, dict):
+        by_index = {}
+        _SESSION_APK_PROBE["by_index"] = by_index
+    for key in list(by_index):
+        try:
+            if int(key) not in active_indexes:
+                by_index.pop(key, None)
+        except (TypeError, ValueError):
+            by_index.pop(key, None)
+
+    if not targets:
+        return {"probed": [], "skipped": [], "errors": []}
+
+    package_name = resolve_whiteout_package_name(config)
+    ldconsole = resolve_ldconsole(config)
+    ldplayer_base = resolve_ldplayer_base(config)
+    try:
+        running_indexes = list_running_ld_indexes(ldconsole, run_ldconsole)
+    except Exception:  # noqa: BLE001
+        running_indexes = set(active_indexes)
+
+    probed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    now = time.time()
+    seen_indexes: set[int] = set()
+
+    for account_id, index in targets:
+        if index in seen_indexes:
+            continue
+        seen_indexes.add(index)
+        session_key = f"{account_id}:{index}"
+        prev = by_index.get(str(index)) if isinstance(by_index.get(str(index)), dict) else None
+        if prev and prev.get("session_key") == session_key and prev.get("version"):
+            skipped.append({"index": index, "reason": "already_probed", "version": prev.get("version")})
+            continue
+        if (
+            prev
+            and prev.get("session_key") == session_key
+            and (now - float(prev.get("last_attempt") or 0.0)) < SESSION_APK_PROBE_RETRY_SECONDS
+        ):
+            skipped.append({"index": index, "reason": "retry_cooldown"})
+            continue
+
+        try:
+            installed = read_installed_package_version(
+                ldconsole,
+                index,
+                package_name,
+                run_ldconsole,
+                running_indexes=running_indexes,
+                ldplayer_base=ldplayer_base,
+                config=config,
+            )
+            version = str(installed.get("versionName") or "").strip() or None
+            check_state = str(installed.get("checkState") or "")
+            by_index[str(index)] = {
+                "session_key": session_key,
+                "last_attempt": now,
+                "version": version,
+                "checkState": check_state,
+            }
+            if version:
+                persist_instance_apk_version(index, version, source="live")
+                probed.append({"index": index, "accountId": account_id, "version": version})
+            else:
+                errors.append(
+                    {
+                        "index": index,
+                        "accountId": account_id,
+                        "error": f"version unavailable ({check_state or 'unknown'})",
+                        "checkState": check_state,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            by_index[str(index)] = {
+                "session_key": session_key,
+                "last_attempt": now,
+                "version": None,
+                "checkState": "error",
+            }
+            errors.append({"index": index, "accountId": account_id, "error": str(exc)})
+
+    return {"probed": probed, "skipped": skipped, "errors": errors}
 
 
 def backfill_persisted_version_from_restore_log(
@@ -641,7 +768,10 @@ def _read_installed_version_via_device_apk(
     if aapt is None:
         return None
 
-    local_apk = Path(tempfile.mkstemp(suffix=".apk")[1])
+    # mkstemp leaves the FD open; on Windows unlink fails with WinError 32 if we don't close it.
+    fd, temp_name = tempfile.mkstemp(suffix=".apk")
+    os.close(fd)
+    local_apk = Path(temp_name)
     try:
         pull = _run_ld_adb(
             ldconsole,
@@ -666,7 +796,10 @@ def _read_installed_version_via_device_apk(
         match = re.search(r"versionName='([^']+)'", decoded)
         return match.group(1).strip() if match else None
     finally:
-        local_apk.unlink(missing_ok=True)
+        try:
+            local_apk.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _adb_output_indicates_device_missing(output: str, returncode: int) -> bool:
@@ -871,7 +1004,8 @@ def read_installed_package_version(
             ldplayer_base=ldplayer_base,
         )
     version_name = _parse_version_name_from_dumpsys(dump_output, package_name)
-    if config is not None:
+    # Pulling base.apk is expensive; only use aapt as a fallback when dumpsys has no version.
+    if not version_name and config is not None:
         device_version = _read_installed_version_via_device_apk(
             ldconsole,
             index,
@@ -970,7 +1104,7 @@ def inspect_whiteout_apk_for_index(
         if game_update_required:
             update_available = True
 
-    return {
+    result = {
         "index": index,
         "packageName": package_name,
         "latestVersion": latest_version,
@@ -986,6 +1120,7 @@ def inspect_whiteout_apk_for_index(
         "versionConfirmed": version_confirmed,
         "versionSource": "live" if version_confirmed else (persisted_source if persisted_version else None),
     }
+    return result
 
 
 def reconcile_stale_instance_versions() -> None:
@@ -1808,7 +1943,7 @@ def _read_display_size(ldconsole: Path, index: int, run_ldconsole) -> tuple[int,
 
 
 def _screencap_png(ldconsole: Path, index: int, run_ldconsole) -> Path | None:
-    remote = "/sdcard/ld_whiteout_cap.png"
+    remote = f"/sdcard/ld_whiteout_cap_{int(index)}_{int(time.time() * 1000)}.png"
     capture = _run_ld_adb(
         ldconsole,
         index,
@@ -1826,6 +1961,16 @@ def _screencap_png(ldconsole: Path, index: int, run_ldconsole) -> Path | None:
         run_ldconsole,
         timeout=90,
     )
+    try:
+        _run_ld_adb(
+            ldconsole,
+            index,
+            f"shell rm -f {remote}",
+            run_ldconsole,
+            timeout=30,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     if pull.returncode != 0 or not local.is_file() or local.stat().st_size < 128:
         local.unlink(missing_ok=True)
         return None
@@ -1833,16 +1978,28 @@ def _screencap_png(ldconsole: Path, index: int, run_ldconsole) -> Path | None:
 
 
 def _is_download_now_blue(r: int, g: int, b: int) -> bool:
-    return b >= 120 and b > r + 25 and b > g + 10
+    """True for the mid-dialog Download Now button — not sky/snow or cyan pack bars."""
+    if b < 140:
+        return False
+    if b <= r + 30 or b <= g + 20:
+        return False
+    # Cyan/teal progress fill (pack bar): near-zero red, very high green+blue.
+    if r <= 40 and g >= 150:
+        return False
+    # Snow/sky greys: all channels high and close together.
+    if min(r, g, b) >= 100 and (max(r, g, b) - min(r, g, b)) <= 55:
+        return False
+    return True
 
 
 def _is_progress_fill_color(r: int, g: int, b: int) -> bool:
     if r >= 170 and g >= 90 and b <= 90:
         return True
-    if b >= 130 and b > r and b > g:
+    # Vivid pack-bar blue (exclude snow/sky where red stays high).
+    if r <= 80 and b >= 140 and b > r + 40 and b > g:
         return True
     # Cyan/teal optional resource-pack bar (2,384 MB download strip).
-    if g >= 95 and b >= 95 and r <= 130 and (g + b) > r * 2:
+    if g >= 95 and b >= 95 and r <= 80 and (g + b) > r * 2:
         return True
     return False
 
@@ -2151,14 +2308,24 @@ def _analyze_whiteout_screenshot(
         y_end_frac=0.72,
         color_predicate=_is_download_now_blue,
     )
+    # Enter Game sits beside Download Now in the mid-dialog band (not below it).
     enter_game = _find_colored_button_on_image(
         image,
         x_start_frac=0.12,
         x_end_frac=0.48,
-        y_start_frac=0.72,
-        y_end_frac=0.88,
+        y_start_frac=0.58,
+        y_end_frac=0.72,
         color_predicate=_is_enter_game_orange,
     )
+    if not enter_game:
+        enter_game = _find_colored_button_on_image(
+            image,
+            x_start_frac=0.12,
+            x_end_frac=0.48,
+            y_start_frac=0.72,
+            y_end_frac=0.88,
+            color_predicate=_is_enter_game_orange,
+        )
     enter_now = _find_colored_button_on_image(
         image,
         x_start_frac=0.62,
@@ -2248,6 +2415,12 @@ def _analyze_whiteout_screenshot(
         pack_percent = bottom_percent
     elif mid_percents:
         pack_percent = dialog_percent
+    # Phase-2 splash: Enter Now + bottom pack bar. Mid-screen snow blues must not
+    # keep us stuck on optional_prompt / Download Now taps.
+    if optional_dialog and enter_now and bottom_percents and not enter_game:
+        optional_dialog = False
+        dialog_download_now = None
+        download_now = None
     game_hud = _game_hud_visible(image, img_width, img_height) and not optional_dialog
 
     # Phase-1 optional dialog (Download Now + Enter Game). A grey "Enter Now" chip in the
@@ -3456,7 +3629,9 @@ def wait_for_whiteout_required_assets(
             time.sleep(5.0)
             continue
 
-        probe_mode = "screenshot" if unity_confirmed else "xml"
+        # Unity dialogs are not in the accessibility tree. Never stay on xml-only
+        # mode or screenStage stays stuck at the default "loading".
+        probe_mode = "full" if (unity_confirmed or elapsed >= 5.0) else "xml"
         state = _probe_download_state(
             ldconsole,
             index,
@@ -3467,7 +3642,6 @@ def wait_for_whiteout_required_assets(
         )
         if state.get("unityUi"):
             unity_confirmed = True
-        xml = state.get("xml") or ""
         percent = state.get("percent")
 
         if _whiteout_game_ready_from_state(state):
@@ -4211,52 +4385,106 @@ def run_whiteout_post_install_workflow(
     )
 
 
-def install_whiteout_apk(ldconsole: Path, index: int, apk_paths: list[Path]) -> str:
-    from ldplayer_restore import run_ldconsole
+def _apk_paths_need_local_stage(apk_paths: list[Path]) -> bool:
+    """Dropbox/OneDrive sync folders can stall multi-hundred-MB adb reads mid-install."""
+    markers = ("dropbox", "onedrive", "google drive", "icloud")
+    for path in apk_paths:
+        text = str(path).lower()
+        if any(marker in text for marker in markers):
+            return True
+    return False
 
-    if len(apk_paths) == 1:
-        result = run_ldconsole(
-            ldconsole,
-            "installapp",
-            "--index",
-            str(index),
-            "--filename",
-            str(apk_paths[0]),
-            timeout=1800,
-        )
-        output = (result.stdout or result.stderr or "").strip()
-        if result.returncode != 0:
-            raise RuntimeError(output or "installapp failed")
-        return output
 
-    quoted = " ".join(f'"{path}"' for path in apk_paths)
-    command = f"install-multiple -r {quoted}"
+def _stage_apks_for_install(apk_paths: list[Path]) -> tuple[list[Path], Path | None]:
+    if not apk_paths or not _apk_paths_need_local_stage(apk_paths):
+        return apk_paths, None
+    stage_root = Path(tempfile.mkdtemp(prefix="gnbot-apk-install-"))
+    staged: list[Path] = []
+    for path in apk_paths:
+        dest = stage_root / path.name
+        shutil.copy2(path, dest)
+        staged.append(dest)
+    return staged, stage_root
+
+
+def _uninstall_keep_data_for_reinstall(
+    ldconsole: Path,
+    index: int,
+    run_ldconsole,
+    *,
+    package_name: str = DEFAULT_PACKAGE_NAME,
+) -> dict[str, Any]:
+    """Clear the installed package (keep app data) so split APK upgrades do not hang."""
     result = run_ldconsole(
         ldconsole,
         "adb",
         "--index",
         str(index),
         "--command",
-        command,
-        timeout=1800,
+        f"shell pm uninstall -k {package_name}",
+        timeout=120,
     )
     output = (result.stdout or result.stderr or "").strip()
-    if result.returncode != 0 or "failure" in output.lower():
-        # Fallback to sequential installapp, matching GnBots split APK order.
-        chunks: list[str] = []
-        for apk_path in apk_paths:
-            step = run_ldconsole(
+    ok = result.returncode == 0 and "success" in output.lower()
+    return {"ok": ok, "output": output, "returncode": result.returncode}
+
+
+def install_whiteout_apk(ldconsole: Path, index: int, apk_paths: list[Path]) -> str:
+    from ldplayer_restore import run_ldconsole
+
+    staged_paths, stage_root = _stage_apks_for_install(apk_paths)
+    try:
+        # Split APK -r upgrades often hang forever on LDPlayer; uninstall -k then fresh install.
+        if len(staged_paths) > 1:
+            _uninstall_keep_data_for_reinstall(ldconsole, index, run_ldconsole)
+
+        if len(staged_paths) == 1:
+            result = run_ldconsole(
                 ldconsole,
                 "installapp",
                 "--index",
                 str(index),
                 "--filename",
-                str(apk_path),
+                str(staged_paths[0]),
                 timeout=1800,
             )
-            step_output = (step.stdout or step.stderr or "").strip()
-            chunks.append(step_output)
-            if step.returncode != 0:
-                raise RuntimeError(step_output or f"installapp failed for {apk_path.name}")
-        return "; ".join(chunk for chunk in chunks if chunk)
-    return output
+            output = (result.stdout or result.stderr or "").strip()
+            if result.returncode != 0:
+                raise RuntimeError(output or "installapp failed")
+            return output
+
+        quoted = " ".join(f'"{path}"' for path in staged_paths)
+        # Fresh install (after uninstall -k); --no-streaming avoids streamed-install hangs.
+        command = f"install-multiple --no-streaming {quoted}"
+        result = run_ldconsole(
+            ldconsole,
+            "adb",
+            "--index",
+            str(index),
+            "--command",
+            command,
+            timeout=1800,
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode != 0 or "failure" in output.lower():
+            # Fallback to sequential installapp, matching GnBots split APK order.
+            chunks: list[str] = []
+            for apk_path in staged_paths:
+                step = run_ldconsole(
+                    ldconsole,
+                    "installapp",
+                    "--index",
+                    str(index),
+                    "--filename",
+                    str(apk_path),
+                    timeout=1800,
+                )
+                step_output = (step.stdout or step.stderr or "").strip()
+                chunks.append(step_output)
+                if step.returncode != 0:
+                    raise RuntimeError(step_output or f"installapp failed for {apk_path.name}")
+            return "; ".join(chunk for chunk in chunks if chunk)
+        return output
+    finally:
+        if stage_root is not None:
+            shutil.rmtree(stage_root, ignore_errors=True)

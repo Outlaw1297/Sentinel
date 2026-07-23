@@ -1497,81 +1497,80 @@ def _restore_worker_body(
                         }
                     elif resource_info is None:
                         resource_info = {}
-
-                if resource_info:
-                    if resource_info.get("requiredAssets", {}).get("optionalPromptReady"):
-                        if resource_info.get("completed"):
-                            _append_restore_log(
-                                f"[{job_id}] optional resource pack reached "
-                                f"{resource_info.get('downloadPercent', 100)}%"
-                            )
-                        elif resource_info.get("physicalTap"):
-                            _append_restore_log(
-                                f"[{job_id}] tapped download now via {resource_info.get('method')}"
-                            )
-                        if resource_info.get("reason") == "download_now_still_visible":
-                            restore_warnings.append(
-                                "Download Now was still visible — optional resource pack did not start."
-                            )
-                            _append_restore_log(
-                                f"[{job_id}] optional download never started (Download Now still visible)"
-                            )
-                        elif resource_info.get("reason") == "timeout":
-                            restore_warnings.append(
-                                "Whiteout optional resource pack did not reach 100% before timeout."
-                            )
-                            _append_restore_log(
-                                f"[{job_id}] optional resource download stalled at "
-                                f"{resource_info.get('downloadPercent', 0)}%"
-                            )
-                        elif not resource_info.get("completed"):
-                            restore_warnings.append(
-                                "Whiteout optional resource pack did not show verified 100% completion."
-                            )
+            if resource_info:
+                if resource_info.get("requiredAssets", {}).get("optionalPromptReady"):
+                    if resource_info.get("completed"):
+                        _append_restore_log(
+                            f"[{job_id}] optional resource pack reached "
+                            f"{resource_info.get('downloadPercent', 100)}%"
+                        )
                     elif resource_info.get("physicalTap"):
                         _append_restore_log(
                             f"[{job_id}] tapped download now via {resource_info.get('method')}"
                         )
-                        if resource_info.get("completed"):
-                            _append_restore_log(
-                                f"[{job_id}] optional resource pack reached "
-                                f"{resource_info.get('downloadPercent', 100)}%"
-                            )
-                        elif not resource_info.get("completed"):
-                            restore_warnings.append(
-                                "Whiteout optional resource pack did not show verified 100% completion."
-                            )
-                    elif resource_info.get("requiredAssets", {}).get("sawRequiredDownload"):
-                        _append_restore_log(
-                            f"[{job_id}] required assets phase: "
-                            f"prompt_ready={resource_info.get('requiredAssets', {}).get('optionalPromptReady')} "
-                            f"percent={resource_info.get('requiredAssets', {}).get('downloadPercent', 0)}"
+                    if resource_info.get("reason") == "download_now_still_visible":
+                        restore_warnings.append(
+                            "Download Now was still visible — optional resource pack did not start."
                         )
-                    elif resource_info.get("tapped"):
                         _append_restore_log(
-                            f"[{job_id}] false tap report ({resource_info.get('method')}); button not verified"
+                            f"[{job_id}] optional download never started (Download Now still visible)"
                         )
-                        if resource_info.get("completed"):
-                            _append_restore_log(
-                                f"[{job_id}] resource pack download reached "
-                                f"{resource_info.get('downloadPercent', 100)}%"
-                            )
-                        elif resource_info.get("reason") == "timeout":
-                            restore_warnings.append(
-                                "Whiteout resource pack download did not reach 100% before timeout."
-                            )
-                            _append_restore_log(
-                                f"[{job_id}] resource download stalled at "
-                                f"{resource_info.get('downloadPercent', 0)}%"
-                            )
-                        else:
-                            restore_warnings.append(
-                                "Whiteout resource pack download did not show 100% completion."
-                            )
+                    elif resource_info.get("reason") == "timeout":
+                        restore_warnings.append(
+                            "Whiteout optional resource pack did not reach 100% before timeout."
+                        )
+                        _append_restore_log(
+                            f"[{job_id}] optional resource download stalled at "
+                            f"{resource_info.get('downloadPercent', 0)}%"
+                        )
+                    elif not resource_info.get("completed"):
+                        restore_warnings.append(
+                            "Whiteout optional resource pack did not show verified 100% completion."
+                        )
+                elif resource_info.get("physicalTap"):
+                    _append_restore_log(
+                        f"[{job_id}] tapped download now via {resource_info.get('method')}"
+                    )
+                    if resource_info.get("completed"):
+                        _append_restore_log(
+                            f"[{job_id}] optional resource pack reached "
+                            f"{resource_info.get('downloadPercent', 100)}%"
+                        )
+                    elif not resource_info.get("completed"):
+                        restore_warnings.append(
+                            "Whiteout optional resource pack did not show verified 100% completion."
+                        )
+                elif resource_info.get("requiredAssets", {}).get("sawRequiredDownload"):
+                    _append_restore_log(
+                        f"[{job_id}] required assets phase: "
+                        f"prompt_ready={resource_info.get('requiredAssets', {}).get('optionalPromptReady')} "
+                        f"percent={resource_info.get('requiredAssets', {}).get('downloadPercent', 0)}"
+                    )
+                elif resource_info.get("tapped"):
+                    _append_restore_log(
+                        f"[{job_id}] false tap report ({resource_info.get('method')}); button not verified"
+                    )
+                    if resource_info.get("completed"):
+                        _append_restore_log(
+                            f"[{job_id}] resource pack download reached "
+                            f"{resource_info.get('downloadPercent', 100)}%"
+                        )
+                    elif resource_info.get("reason") == "timeout":
+                        restore_warnings.append(
+                            "Whiteout resource pack download did not reach 100% before timeout."
+                        )
+                        _append_restore_log(
+                            f"[{job_id}] resource download stalled at "
+                            f"{resource_info.get('downloadPercent', 0)}%"
+                        )
                     else:
                         restore_warnings.append(
-                            "Could not find the Whiteout resource-pack Download Now button."
+                            "Whiteout resource pack download did not show 100% completion."
                         )
+                else:
+                    restore_warnings.append(
+                        "Could not find the Whiteout resource-pack Download Now button."
+                    )
 
             if resource_info:
                 apk_info = {**apk_info, "resourcePack": resource_info}

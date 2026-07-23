@@ -37,6 +37,8 @@ a = Analysis(
         "psutil",
         "cryptography",
         "pywebpush",
+        "PIL",
+        "PIL.Image",
     ],
     hookspath=[],
     hooksconfig={},
