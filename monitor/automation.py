@@ -1,4 +1,4 @@
-"""Background automation: stop GnBots on trouble, auto APK updates, issue ingestion."""
+"""Background automation: stop GnBots on trouble, auto APK updates, issue ingestion, stuck-screen learning."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from host_status import resolve_gnbots_root, run_gnbots_process_action
-from issue_history import build_issue_report, ingest_log_alerts, record_issue_event
+from issue_history import build_issue_report, ingest_log_alerts, load_issue_history, record_issue_event
 from log_reader import enrich_log_entries
 from paths import get_logs_dir
+from stuck_screen_learning import process_stuck_screen_events, stuck_rules_status
 
 _AUTOMATION_STATE: dict[str, Any] = {
     "lastTickAt": None,
@@ -18,6 +19,7 @@ _AUTOMATION_STATE: dict[str, Any] = {
     "lastApkCheckAt": None,
     "lastApkJobId": None,
     "lastIngestCount": 0,
+    "lastStuckActions": 0,
     "lastActions": [],
     "lastError": None,
 }
@@ -32,21 +34,30 @@ def automation_enabled(config: dict[str, Any]) -> bool:
         config.get("auto_stop_gnbots_on_trouble")
         or config.get("auto_update_apks")
         or config.get("issue_history_enabled", True)
+        or config.get("stuck_screen_learning_enabled", True)
+        or config.get("stuck_screen_auto_fix_enabled")
     )
 
 
 def get_automation_status(config: dict[str, Any]) -> dict[str, Any]:
+    stuck = stuck_rules_status(config)
     return {
         "ok": True,
         "enabled": automation_enabled(config),
         "autoStopGnbotsOnTrouble": bool(config.get("auto_stop_gnbots_on_trouble")),
         "autoUpdateApks": bool(config.get("auto_update_apks")),
         "issueHistoryEnabled": bool(config.get("issue_history_enabled", True)),
+        "stuckScreenLearningEnabled": bool(config.get("stuck_screen_learning_enabled", True)),
+        "stuckScreenAutoFixEnabled": bool(config.get("stuck_screen_auto_fix_enabled", False)),
         "pollSeconds": max(30, int(config.get("automation_poll_seconds", 60))),
         "troubleStopCooldownMinutes": max(
             5, int(config.get("auto_stop_gnbots_cooldown_minutes", 30))
         ),
         "apkCheckMinutes": max(5, int(config.get("auto_update_apks_check_minutes", 30))),
+        "stuckRules": {
+            "ruleCount": stuck.get("ruleCount"),
+            "enabledRuleCount": stuck.get("enabledRuleCount"),
+        },
         "state": dict(_AUTOMATION_STATE),
         "logFile": str(get_logs_dir() / "automation.log"),
     }
@@ -330,6 +341,50 @@ def _ingest_recent_issues(config: dict[str, Any]) -> int:
     return added
 
 
+def _recent_same_screen_events(*, limit: int = 40) -> list[dict[str, Any]]:
+    history = load_issue_history()
+    events = [
+        row
+        for row in (history.get("events") or [])
+        if str(row.get("category") or "") == "same_screen_timeout"
+        and str(row.get("source") or "") != "stuck_auto_fix"
+    ]
+    return events[-limit:]
+
+
+def _maybe_process_stuck_screens(config: dict[str, Any]) -> list[dict[str, Any]]:
+    learning = bool(config.get("stuck_screen_learning_enabled", True))
+    auto_fix = bool(config.get("stuck_screen_auto_fix_enabled", False))
+    if not learning and not auto_fix:
+        return []
+    events = _recent_same_screen_events(limit=40)
+    if not events:
+        return []
+    actions = process_stuck_screen_events(
+        config,
+        events,
+        learning_enabled=learning,
+        auto_fix_enabled=auto_fix,
+    )
+    _AUTOMATION_STATE["lastStuckActions"] = len(actions)
+    for action in actions:
+        _append_action(action)
+        kind = action.get("type")
+        if kind == "stuck_screen_auto_fix":
+            _append_automation_log(
+                f"stuck auto-fix ({action.get('remediation')}): "
+                f"{action.get('actionHint') or 'screen'} "
+                f"account={action.get('account') or '-'} "
+                f"{'ok' if action.get('ok') else 'failed'} — {action.get('detail')}"
+            )
+        elif kind == "stuck_screen_learn":
+            _append_automation_log(
+                f"stuck-screen learning: learned={action.get('learned')} "
+                f"reinforced={action.get('reinforced')}"
+            )
+    return actions
+
+
 def run_automation_tick(config: dict[str, Any]) -> dict[str, Any]:
     _AUTOMATION_STATE["lastTickAt"] = _utc_now_iso()
     _AUTOMATION_STATE["lastError"] = None
@@ -342,6 +397,13 @@ def run_automation_tick(config: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         _AUTOMATION_STATE["lastError"] = str(exc)
         _append_automation_log(f"ingest failed: {exc}")
+
+    try:
+        stuck_actions = _maybe_process_stuck_screens(config)
+        actions.extend(stuck_actions)
+    except Exception as exc:  # noqa: BLE001
+        _AUTOMATION_STATE["lastError"] = str(exc)
+        _append_automation_log(f"stuck-screen failed: {exc}")
 
     try:
         stop_action = _maybe_stop_gnbots_for_trouble(config)
@@ -364,6 +426,7 @@ def run_automation_tick(config: dict[str, Any]) -> dict[str, Any]:
         "at": _AUTOMATION_STATE["lastTickAt"],
         "actions": actions,
         "reportPreview": build_issue_report(days=1, limit=5),
+        "stuckRules": stuck_rules_status(config),
     }
 
 

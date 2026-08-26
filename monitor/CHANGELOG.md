@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.10 — 2026-08-26
+
+### Stuck-screen learning
+- Learn same-screen timeout patterns (for example event pages) into reviewable rules
+- Optional auto-fix: Press Back, restart emulator, or warn the user (web push)
+- Settings → Automation panel to enable learning/auto-fix and edit rules
+- Docs: `docs/AUTOMATION.md`
+
 ## 0.1.9 — 2026-08-26
 
 ### Bug fix

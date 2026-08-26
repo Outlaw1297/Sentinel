@@ -32,13 +32,14 @@ ISSUE_PLAYBOOK: dict[str, dict[str, Any]] = {
     },
     "same_screen_timeout": {
         "title": "Same-screen timeout",
-        "summary": "The bot stayed on one screen too long — usually a script/UI timing issue.",
+        "summary": "The bot stayed on one screen too long — often an event overlay, dialog, or UI timing issue.",
         "suggestions": [
-            "Review the account action schedule and timeouts in Account Settings.",
+            "If this is an event/overlay page, enable Stuck-screen learning + Auto-fix so Sentinel can press Back.",
+            "Review learned stuck-screen rules on Settings → Automation and pick Back, Restart emulator, or Warn.",
             "Check whether Whiteout is prompting for an in-game update or resource download.",
             "Increase TimeoutSameScreen slightly if the farm action is legitimately slow.",
         ],
-        "actions": ["check_apk", "review_timeouts"],
+        "actions": ["press_back", "restart_emulator", "warn_user", "check_apk", "review_timeouts"],
     },
     "activity_timeout": {
         "title": "Activity timeout",

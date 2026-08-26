@@ -367,9 +367,9 @@
     <div class="settings-tab-panel hidden" id="tab-automation" data-tab-panel="automation">
       <div class="settings-banner panel">
         <p>
-          Automation watches for troubled emulators and APK updates, records common issues, and offers
-          fix suggestions. See <code>docs/AUTOMATION.md</code> for the full playbook. Features are off
-          until enabled below (saved in <code>config.json</code>).
+          Automation watches for troubled emulators and APK updates, records common issues, learns
+          stuck-screen patterns (for example event pages), and offers fix suggestions. See
+          <code>docs/AUTOMATION.md</code>. Most actions stay off until enabled below.
         </p>
       </div>
 
@@ -390,6 +390,24 @@
           <button class="btn btn-small" id="automation-run-tick-btn" type="button">Run check now</button>
         </div>
         <p class="restore-path-meta" id="automation-meta">—</p>
+      </section>
+
+      <section class="panel" id="automation-stuck-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Stuck-screen learning</h2>
+            <p class="settings-group-desc">
+              When GnBots reports a same-screen timeout (for example stuck on an event page), Sentinel
+              learns a rule and can press Back, restart the emulator, or warn you — once Auto-fix is on.
+            </p>
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn-small" id="automation-stuck-learn-btn" type="button">Learn from history</button>
+          </div>
+        </div>
+        <div id="automation-stuck-rules-body">
+          <p class="settings-loading">Loading stuck-screen rules…</p>
+        </div>
       </section>
 
       <section class="panel" id="automation-report-panel">

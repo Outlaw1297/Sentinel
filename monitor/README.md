@@ -52,6 +52,8 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 
 ### Automation (`/settings?tab=automation`)
 - **Record issue history** from alertable bot logs
+- **Learn stuck-screen patterns** from same-screen timeouts (for example event pages)
+- **Auto-fix stuck screens** — Press Back, restart the emulator, or warn you (opt-in)
 - **Auto-stop GnBots** when problem emulators cluster (cooldown-protected)
 - **Auto-update APKs** when a newer package is available (only while GnBots is stopped)
 - **Common-issues report** and **playbook suggestions** (optional OpenAI-compatible LLM enrichment)
@@ -157,8 +159,10 @@ Expect GnBots offline and screenshot **503**s — that is normal without Windows
 ### Turn on automation
 
 1. Open **Settings → Automation**
-2. Enable issue history (default), auto-stop, and/or auto-APK as needed
-3. Review the issue report and suggestions after the farm has been running
+2. Enable issue history (default), stuck-screen learning (default), and optionally Auto-fix stuck screens
+3. Review stuck-screen rules (event pages default to Press Back)
+4. Enable auto-stop / auto-APK as needed
+5. Review the issue report and suggestions after the farm has been running
 
 Full toggle reference: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 
@@ -188,7 +192,7 @@ First run copies `config.example.json` → `config.json`. Important groups:
 | Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
 | Dashboard | `dashboard_host`, `dashboard_port`, refresh/cache intervals, screenshot interval | UI polling behavior |
 | Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
-| Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `assistant_api_*` | See Automation docs |
+| Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
 | Push / tray | `push_*`, `tray_*` | Web push + Windows tray |
 | Updates | `update_repo`, `update_branch`, `update_channel` | Self-update Check / Apply |
 
@@ -239,6 +243,7 @@ Artifacts: portable **Sentinel.zip** / `gnbot-monitor.exe`, **Sentinel-Setup.exe
 
 ## Version & changelog
 
-Current app version: **0.1.9** — see [`CHANGELOG.md`](CHANGELOG.md).
+Current app version: **0.1.10** — see [`CHANGELOG.md`](CHANGELOG.md).
 
-Highlights in 0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
+Highlights in 0.1.10: stuck-screen learning (event page → Back / restart / warn).  
+0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
