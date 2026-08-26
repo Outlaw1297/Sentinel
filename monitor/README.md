@@ -220,6 +220,21 @@ Tests (run with `monitor/` as the working directory):
 
 Known pre-existing failure on some environments: `tests/test_paths.py::test_get_static_dir_prefers_bundle`.
 
+Stuck-screen learning unit coverage: `tests/test_stuck_screen_learning.py` (plus related cases in `test_issue_history.py` / `test_automation.py`). Operator runbook: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
+
+### PWA notification icons
+
+Status-bar / condensed notifications use a **white silhouette on transparent** badge (`static/icons/notification-badge.png`). The expanded notification popup uses the color transparent icon (`notification-icon.png`). Do **not** reuse the opaque logo for `badge` — Android treats badge pixels as a white mask and shows a white square.
+
+Regenerate after logo changes:
+
+```bash
+cd monitor
+./venv/bin/python scripts/generate_browser_icons.py
+```
+
+Then bump the service-worker cache name / `?v=` query on the icon URLs so installed PWAs pick up the new assets.
+
 Elevation capability probe (Windows):
 
 ```powershell
