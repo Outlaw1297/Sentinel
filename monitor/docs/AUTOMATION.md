@@ -50,17 +50,61 @@ Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk
 
 ### 3. Stuck-screen learning (same-screen timeouts)
 
-GnBots already detects “same screen” timeouts (for example stuck on an **event** page). Sentinel:
+GnBots already detects “same screen” timeouts (for example stuck on an **event** page). Sentinel turns those logs into reviewable rules and (optionally) remediations.
 
-1. Parses the screen/action name from lines like `Same screen timeout at EventPage. Restarting.`
-2. **Learns** rules keyed by that screen hint (stored in `logs/stuck-screen-rules.json`)
-3. Suggests a remediation:
-   - Event / overlay style screens → **Press Back** (Android keyevent 4 via LDPlayer ADB)
-   - Boot / loading style screens → **Restart emulator**
-   - Everything else → **Warn user** (web push / event log)
-4. When **Auto-fix stuck screens** is enabled, runs matching **enabled** rules (with cooldown)
+#### Pipeline
 
-A seed rule matches screens whose name contains `event` and defaults to Press Back. Use **Learn from history** to mine past issue events. Enable/disable rules and change the action in the Automation tab.
+```
+GnBots log: "Same screen timeout at EventPage. Restarting. [Account]"
+        │
+        ▼
+issue_history  → category=same_screen_timeout, meta.actionHint="EventPage"
+        │
+        ▼
+automation tick (every automation_poll_seconds, default 60s)
+        │
+        ├─ learning on  → propose / reinforce rules in logs/stuck-screen-rules.json
+        └─ auto-fix on → run first matching *enabled* rule (cooldown-aware)
+```
+
+Codepaths: `issue_history.enrich_issue_meta` → `automation._maybe_process_stuck_screens` → `stuck_screen_learning.process_stuck_screen_events`.
+
+Each tick scans the **last 40** `same_screen_timeout` events (excluding `source=stuck_auto_fix` to avoid feedback loops).
+
+#### Heuristic remediation when a new screen is learned
+
+| Screen hint contains… | Suggested remediation |
+|-----------------------|------------------------|
+| `event`, `events`, `eventpage`, `event_page`, `eventui`, `festival`, `carnival`, `popup`, `dialog`, `modal` | `press_back` |
+| `boot`, `loading`, `splash`, `login` | `restart_emulator` |
+| anything else | `warn_user` |
+
+A **seed rule** (`seed-event-press-back`) matches screens whose name contains `event` and defaults to Press Back. It is enabled by default. **Learned** and **manual** rules start **disabled** until you flip them on in the UI (or via PATCH).
+
+#### Remediations
+
+| Value | What it does | Needs |
+|-------|--------------|-------|
+| `press_back` | LDPlayer ADB `shell input keyevent 4` | Windows + LDPlayer; resolvable instance index |
+| `restart_emulator` | `ldconsole quit` then `launch` for that index | Windows + LDPlayer; resolvable instance index |
+| `warn_user` | Web-push + event log (`tag=stuck-screen`) | Push configured (still records a detail if push fails) |
+
+If Back/restart cannot resolve an emulator index from the account name, Sentinel **falls back to warn**.
+
+#### Rule store (`logs/stuck-screen-rules.json`)
+
+| Field | Notes |
+|-------|--------|
+| `match.category` | Always `same_screen_timeout` for this feature |
+| `match.actionContains` | Substring match on normalized action hint (preferred) |
+| `match.actionExact` | Optional exact match (wins over contains when set) |
+| `remediation` | One of `press_back`, `restart_emulator`, `warn_user` |
+| `enabled` | Auto-fix only runs enabled rules |
+| `cooldownSeconds` | Default **120**; clamped **30–3600** |
+| `hits` / `autoFixCount` | Counters for learning vs executed fixes |
+| Cap | At most **80** rules; processed/auto-fixed event id lists keep last **500** |
+
+When several enabled rules match, the one with the **longest** `actionContains` wins.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -68,6 +112,12 @@ A seed rule matches screens whose name contains `event` and defaults to Press Ba
 | `stuck_screen_auto_fix_enabled` | `false` | Execute enabled rules |
 
 > This is **rule learning from farm history**, not training a local neural model. Optional LLM enrichment (below) can still refine written suggestions.
+
+#### Operator tips
+
+- Use **Learn from history** (or `POST /api/automation/stuck-rules/learn?days=7`) to mine past same-screen events after enabling issue history.
+- Enable auto-fix only after reviewing rules; leave risky screens on `warn_user` first.
+- Check `logs/automation.log` for `stuck-screen learning:` and `stuck auto-fix (` lines.
 
 ### 4. Common issues report
 
@@ -98,7 +148,7 @@ Pass `?llm=1` to request enrichment. Without keys, Sentinel returns playbook sug
 | GET | `/api/automation/status` | Toggles + last tick state |
 | POST | `/api/automation/tick` | Run one automation pass now |
 | GET | `/api/automation/stuck-rules` | List learned/seed stuck-screen rules |
-| POST | `/api/automation/stuck-rules/learn` | Learn rules from issue history |
+| POST | `/api/automation/stuck-rules/learn` | Learn rules from issue history (`?days=1..90`) |
 | POST | `/api/automation/stuck-rules` | Create a manual rule |
 | PATCH | `/api/automation/stuck-rules/{id}` | Enable/disable or change remediation |
 | GET | `/api/reports/issues` | Common-issue aggregation |
@@ -107,19 +157,57 @@ Pass `?llm=1` to request enrichment. Without keys, Sentinel returns playbook sug
 | GET | `/api/emulators/apk/jobs/{id}` | Poll one APK job |
 | POST | `/api/emulators/update-apk` | Queue bulk APK update job |
 
+There is **no DELETE** endpoint for rules — disable unused rules instead.
+
+### Stuck-rules examples
+
+Create a manual rule (starts disabled unless `"enabled": true`):
+
+```bash
+curl -s -X POST http://localhost:8787/api/automation/stuck-rules \
+  -H 'Content-Type: application/json' \
+  -d '{"actionContains":"dailies","remediation":"press_back","label":"Dailies overlay → Back"}'
+```
+
+Enable an existing rule and change remediation:
+
+```bash
+curl -s -X PATCH http://localhost:8787/api/automation/stuck-rules/seed-event-press-back \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"remediation":"press_back","cooldownSeconds":180}'
+```
+
+Learn from the last week of issue history:
+
+```bash
+curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
+```
+
 ## Logs
 
 | File | Contents |
 |------|----------|
 | `logs/apk-update-jobs.log` | Background APK job timeline |
-| `logs/automation.log` | Automation actions |
-| `logs/issue-history.json` | Persisted issue events |
+| `logs/automation.log` | Automation actions (including stuck learn / auto-fix) |
+| `logs/issue-history.json` | Persisted issue events (`meta.actionHint` on same-screen rows) |
 | `logs/stuck-screen-rules.json` | Learned / seed stuck-screen rules |
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to check |
+|---------|--------------|---------------|
+| No new rules appear | Learning off, or no same-screen log lines ingested | `stuck_screen_learning_enabled`; issue history toggle; bot logs contain `Same screen timeout at …` |
+| Rules exist but nothing runs | Auto-fix off, or rules still disabled | `stuck_screen_auto_fix_enabled`; enable specific rules in the Automation tab |
+| Auto-fix only warns | Instance index unknown, or not on Windows/LDPlayer | Account name must map to a profile instance; Back/restart need `ldconsole` + ADB |
+| Same event never re-fixed | Event id already in `autoFixedEventIds` | Expected once-per-event; wait for a new timeout log |
+| Fixes feel spammy | Cooldown too low | Raise `cooldownSeconds` (30–3600) on the rule |
+| Linux / Cloud Agent | Remediations that need LDPlayer fail gracefully | Dashboard + learning still work; expect warn fallback / offline GnBots |
 
 ## Safety notes
 
 - Auto APK updates **never** run while GnBots is running (same lock as manual updates).
 - Stuck-screen **auto-fix is off by default**; learning can still propose rules safely.
+- Learned/manual rules are **disabled until you enable them**; only the seed event→Back rule ships enabled.
 - Press Back / restart emulator require Windows + LDPlayer ADB; if the instance cannot be resolved, Sentinel falls back to warning you.
 - Auto-stop is off by default; enable only if you want Sentinel to halt the farm when emulators look broken.
 - Issue history grows up to ~5000 events and rolls older rows off.
