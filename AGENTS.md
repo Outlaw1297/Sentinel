@@ -13,6 +13,7 @@ Sentinel is a **Windows-oriented** Python FastAPI dashboard (in `monitor/`) that
 - Standard Windows entry is `monitor/run.bat`; on Linux run the equivalent directly: from `monitor/`, `./venv/bin/python app.py`.
 - Serves on `0.0.0.0:8787` → open http://localhost:8787.
 - Expected on Linux (not failures): GnBots shows offline / `[Errno 111] Connection refused`, screenshot endpoints return 503. The app degrades gracefully because the Windows-only GnBots Remote API (`:5508`) and LDPlayer are absent.
+- Stuck-screen **learning** can run from ingested logs on Linux; **Press Back / restart emulator** remediations need Windows + LDPlayer ADB and otherwise fall back to warn. See `monitor/docs/AUTOMATION.md`.
 
 ### Tests / lint / build
 - Tests: from `monitor/`, `./venv/bin/python -m pytest tests -q`. Run with `monitor/` as CWD (tests add repo root to `sys.path`).
