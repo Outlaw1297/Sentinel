@@ -7,7 +7,7 @@ Windows monitor and control stack for **GnBots** — live dashboard, LDPlayer re
 | **Dashboard** | http://localhost:8787 |
 | **Primary OS** | Windows bot PC (GnBots + LDPlayer) |
 | **Dev / CI** | Python FastAPI app + pytest also run on Linux (GnBots/LDPlayer offline) |
-| **Current version** | 0.1.9 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
+| **Current version** | 0.1.10 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
 
 Full feature list, compatibility matrix, and how-to: **[`monitor/README.md`](monitor/README.md)**.
 
@@ -17,7 +17,7 @@ Full feature list, compatibility matrix, and how-to: **[`monitor/README.md`](mon
 - **Control GnBots** — launch/close on the host; start/stop sessions and emulators via the Remote API
 - **Restore LDPlayer** — `.ldbk` backups, fix recommended emulator settings, provision new accounts
 - **Update Whiteout APKs** — single or bulk; bulk work runs as background jobs (safe to refresh)
-- **Automate recovery** — optional auto-stop on problem emulators, auto-APK when newer, issue reports + fix suggestions ([`monitor/docs/AUTOMATION.md`](monitor/docs/AUTOMATION.md))
+- **Automate recovery** — optional stuck-screen learning (event page → Back / restart / warn), auto-stop on problem emulators, auto-APK when newer, issue reports + fix suggestions ([`monitor/docs/AUTOMATION.md`](monitor/docs/AUTOMATION.md))
 - **Notify & reach remotely** — browser web push; expose `:8787` through your own tunnel/proxy
 
 ## Downloads

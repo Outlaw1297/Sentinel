@@ -266,7 +266,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
     {
         "id": "automation",
         "title": "Automation",
-        "description": "Background issue tracking, auto-stop on trouble, and auto APK updates. Applies on the next automation poll.",
+        "description": "Background issue tracking, stuck-screen learning, auto-stop on trouble, and auto APK updates. Applies on the next automation poll.",
         "restart": "immediate",
         "fields": [
             {
@@ -314,6 +314,18 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "label": "Automation poll (seconds)",
                 "min": 30,
                 "max": 3600,
+            },
+            {
+                "key": "stuck_screen_learning_enabled",
+                "type": "boolean",
+                "label": "Learn stuck-screen patterns",
+                "hint": "From same-screen timeouts, learn which screens (e.g. event pages) need Back, restart, or a warning.",
+            },
+            {
+                "key": "stuck_screen_auto_fix_enabled",
+                "type": "boolean",
+                "label": "Auto-fix stuck screens",
+                "hint": "Execute enabled stuck-screen rules (Back / restart emulator / warn). Off by default.",
             },
             {
                 "key": "assistant_api_url",

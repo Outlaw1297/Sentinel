@@ -94,6 +94,12 @@ from apk_update_jobs import (
 from automation import automation_loop, get_automation_status, run_automation_tick
 from assistant import build_assistant_report, enrich_with_llm
 from issue_history import build_issue_report
+from stuck_screen_learning import (
+    create_stuck_rule,
+    learn_from_issue_history,
+    stuck_rules_status,
+    update_stuck_rule,
+)
 
 from profile_discovery import (
     list_gnbots_profiles,
@@ -3329,6 +3335,64 @@ async def assistant_suggestions(
     if llm:
         suggestions = await asyncio.to_thread(enrich_with_llm, config, suggestions)
     return suggestions
+
+
+@app.get("/api/automation/stuck-rules")
+async def automation_stuck_rules() -> dict[str, Any]:
+    return await asyncio.to_thread(stuck_rules_status, config)
+
+
+@app.post("/api/automation/stuck-rules/learn")
+async def automation_stuck_rules_learn(
+    days: int = Query(7, ge=1, le=90),
+) -> dict[str, Any]:
+    return await asyncio.to_thread(learn_from_issue_history, days=days, limit=300)
+
+
+@app.post("/api/automation/stuck-rules")
+async def automation_stuck_rules_create(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    try:
+        rule = await asyncio.to_thread(
+            create_stuck_rule,
+            action_contains=str(payload.get("actionContains") or payload.get("action_contains") or ""),
+            remediation=str(payload.get("remediation") or "warn_user"),
+            enabled=bool(payload.get("enabled", False)),
+            label=str(payload.get("label") or "") or None,
+            cooldown_seconds=int(payload.get("cooldownSeconds") or payload.get("cooldown_seconds") or 120),
+            source="manual",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "rule": rule}
+
+
+@app.patch("/api/automation/stuck-rules/{rule_id}")
+async def automation_stuck_rules_update(
+    rule_id: str,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    try:
+        rule = await asyncio.to_thread(
+            update_stuck_rule,
+            rule_id,
+            enabled=payload.get("enabled") if "enabled" in payload else None,
+            remediation=payload.get("remediation") if "remediation" in payload else None,
+            label=payload.get("label") if "label" in payload else None,
+            cooldown_seconds=(
+                int(payload["cooldownSeconds"])
+                if "cooldownSeconds" in payload
+                else (
+                    int(payload["cooldown_seconds"])
+                    if "cooldown_seconds" in payload
+                    else None
+                )
+            ),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "rule": rule}
 
 
 @app.post("/api/emulators/{instance_index}/fix-settings")

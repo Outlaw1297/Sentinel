@@ -49,6 +49,21 @@ def classify_issue_message(message: str, *, fallback: str = "other") -> tuple[st
     return fallback, text[:80]
 
 
+def enrich_issue_meta(message: str, category: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Attach structured hints (e.g. same-screen action name) for learning."""
+    out = dict(meta or {})
+    if category == "same_screen_timeout" and not out.get("actionHint"):
+        try:
+            from stuck_screen_learning import parse_same_screen_action
+
+            action = parse_same_screen_action(message)
+            if action:
+                out["actionHint"] = action
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
 def _default_history() -> dict[str, Any]:
     return {"version": 1, "events": [], "updatedAt": None}
 
@@ -108,7 +123,7 @@ def record_issue_event(
         "account": str(account).strip() if account else None,
         "instanceIndex": int(instance_index) if instance_index is not None else None,
         "source": source,
-        "meta": meta or {},
+        "meta": enrich_issue_meta(str(message or ""), resolved_category, meta),
     }
     with _HISTORY_LOCK:
         history = load_issue_history()
@@ -155,7 +170,7 @@ def ingest_log_alerts(entries: list[dict[str, Any]], *, source: str = "bot_log")
                 "account": account,
                 "instanceIndex": None,
                 "source": source,
-                "meta": {"level": level},
+                "meta": enrich_issue_meta(message, category, {"level": level}),
             }
         )
         existing_keys.add(key)

@@ -56,6 +56,8 @@
   "auto_update_apks": false,
   "auto_update_apks_check_minutes": 30,
   "automation_poll_seconds": 60,
+  "stuck_screen_learning_enabled": true,
+  "stuck_screen_auto_fix_enabled": false,
   "assistant_api_url": "",
   "assistant_api_key": "",
   "assistant_model": "gpt-4o-mini",
