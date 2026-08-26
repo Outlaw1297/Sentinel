@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -234,8 +235,6 @@ def _maybe_auto_update_apks(config: dict[str, Any]) -> dict[str, Any] | None:
     from profile_discovery import resolve_selected_profile_for_root
     from whiteout_apk import check_whiteout_apk_remote, get_persisted_apk_update_instance_indexes
 
-    _AUTOMATION_STATE["lastApkCheckAt"] = _utc_now_iso()
-
     if find_active_apk_update_job():
         return None
     # Only auto-update while GnBots is fully stopped (same lock as manual APK updates).
@@ -244,13 +243,14 @@ def _maybe_auto_update_apks(config: dict[str, Any]) -> dict[str, Any] | None:
     if gnbots_exe.get("running"):
         return None
 
-    remote = check_whiteout_apk_remote(config, sync=True)
-
     gnbots_root = resolve_gnbots_root(config)
     profile_name = resolve_selected_profile_for_root(gnbots_root) or ""
     indexes = get_persisted_apk_update_instance_indexes(config, profile_name) if profile_name else []
     if not indexes:
         return None
+
+    _AUTOMATION_STATE["lastApkCheckAt"] = _utc_now_iso()
+    remote = check_whiteout_apk_remote(config, sync=True)
 
     # Prefer newly downloaded / remote-newer APKs; otherwise update outdated selected instances.
     should_update = bool(remote.get("downloaded")) or bool(remote.get("updateAvailable"))
@@ -430,13 +430,14 @@ def run_automation_tick(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def automation_loop(config_ref: dict[str, Any]) -> None:
+async def automation_loop(get_config: Callable[[], dict[str, Any]]) -> None:
     await asyncio.sleep(20)
     while True:
+        config = get_config()
         try:
-            await asyncio.to_thread(run_automation_tick, config_ref)
+            await asyncio.to_thread(run_automation_tick, config)
         except Exception as exc:  # noqa: BLE001
             _AUTOMATION_STATE["lastError"] = str(exc)
             _append_automation_log(f"tick failed: {exc}")
-        interval = max(30, int(config_ref.get("automation_poll_seconds", 60)))
+        interval = max(30, int(config.get("automation_poll_seconds", 60)))
         await asyncio.sleep(interval)

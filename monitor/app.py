@@ -2495,7 +2495,7 @@ async def on_startup() -> None:
     refresh_profiles_manifest()
     asyncio.create_task(gnbots_api_health_loop())
     asyncio.create_task(session_apk_probe_loop())
-    asyncio.create_task(automation_loop(config))
+    asyncio.create_task(automation_loop(lambda: config))
     if push_enabled(config):
         asyncio.create_task(event_monitor_loop())
 

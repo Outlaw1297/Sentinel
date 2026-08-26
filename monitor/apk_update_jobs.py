@@ -240,7 +240,6 @@ def _apk_update_worker(
 ) -> None:
     from whiteout_apk import (
         get_persisted_apk_cache_state,
-        save_persisted_apk_update_instance_indexes,
         update_whiteout_apk_on_instance,
     )
 
@@ -318,11 +317,6 @@ def _apk_update_worker(
         }
         job = _set_job(job_id, **finished)
         _append_apk_job_log(f"[{job_id}] {status}: {message}")
-        if indexes:
-            try:
-                save_persisted_apk_update_instance_indexes(indexes)
-            except Exception:  # noqa: BLE001
-                pass
         _record_job_issues(job)
         _notify_apk_job_finished(job, config)
     except Exception as exc:  # noqa: BLE001
@@ -356,23 +350,8 @@ def start_apk_update_job(
     source: str = "manual",
 ) -> dict[str, Any]:
     """Queue a background APK update job and return immediately."""
-    active = find_active_apk_update_job()
-    if active:
-        raise RuntimeError(
-            f"APK update already running (job {active.get('id')}, status {active.get('status')})."
-        )
-
     if force:
         only_outdated = False
-
-    targets, meta = _resolve_target_indexes(
-        config,
-        scope=scope,
-        indexes=indexes,
-        only_outdated=only_outdated,
-        force=force,
-        check_game_update=check_game_update,
-    )
 
     job_id = uuid.uuid4().hex[:12]
     started_at = _utc_now_iso()
@@ -380,10 +359,10 @@ def start_apk_update_job(
         "id": job_id,
         "kind": "apk_update",
         "source": source,
-        "scope": meta.get("scope"),
-        "profileName": meta.get("profileName"),
-        "indexes": list(targets),
-        "total": len(targets),
+        "scope": scope or "indexes",
+        "profileName": None,
+        "indexes": list(indexes or []),
+        "total": 0,
         "completedCount": 0,
         "updated": 0,
         "failed": 0,
@@ -391,20 +370,54 @@ def start_apk_update_job(
         "failures": [],
         "status": "queued",
         "progress": 5,
-        "message": (
-            f"Queued APK update for {len(targets)} instance{'s' if len(targets) != 1 else ''}."
-            if targets
-            else "Queued APK check — no updates needed."
-        ),
+        "message": "Resolving APK update targets…",
         "startedAt": started_at,
         "updatedAt": started_at,
         "force": bool(force),
         "onlyOutdated": bool(only_outdated),
     }
     with _APK_JOB_LOCK:
+        active = find_active_apk_update_job()
+        if active:
+            raise RuntimeError(
+                f"APK update already running (job {active.get('id')}, status {active.get('status')})."
+            )
         _APK_UPDATE_JOBS[job_id] = job
+
+    try:
+        targets, meta = _resolve_target_indexes(
+            config,
+            scope=scope,
+            indexes=indexes,
+            only_outdated=only_outdated,
+            force=force,
+            check_game_update=check_game_update,
+        )
+    except Exception:
+        with _APK_JOB_LOCK:
+            _APK_UPDATE_JOBS.pop(job_id, None)
+        raise
+
+    message = (
+        f"Queued APK update for {len(targets)} instance{'s' if len(targets) != 1 else ''}."
+        if targets
+        else "Queued APK check — no updates needed."
+    )
+    with _APK_JOB_LOCK:
+        live = _APK_UPDATE_JOBS.get(job_id) or job
+        live.update(
+            {
+                "scope": meta.get("scope"),
+                "profileName": meta.get("profileName"),
+                "indexes": list(targets),
+                "total": len(targets),
+                "message": message,
+                "updatedAt": _utc_now_iso(),
+            }
+        )
         for index in targets:
             _APK_INSTANCE_BUSY[index] = job_id
+        snapshot = dict(live)
 
     thread = threading.Thread(
         target=_apk_update_worker,
@@ -415,7 +428,7 @@ def start_apk_update_job(
     )
     thread.start()
     _append_apk_job_log(f"[{job_id}] queued indexes={targets} source={source}")
-    return dict(job)
+    return snapshot
 
 
 def wait_for_apk_update_job(job_id: str, *, timeout_seconds: float = 10.0) -> dict[str, Any] | None:
