@@ -4139,3 +4139,90 @@ textarea.setting-input:focus {
     animation: none;
   }
 }
+
+/* Automation tab */
+.automation-toggles {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.automation-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  line-height: 1.35;
+}
+
+.automation-toggle-row input {
+  margin-top: 0.2rem;
+}
+
+.automation-report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.automation-subhead {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+.automation-list,
+.automation-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.automation-list li,
+.automation-recent-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #243044) 70%, transparent);
+  font-size: 0.9rem;
+}
+
+.automation-recent-list li {
+  display: block;
+}
+
+.automation-recent-at {
+  opacity: 0.7;
+  margin-right: 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.automation-suggestion-card {
+  margin: 0.85rem 0 0;
+  padding: 0.85rem 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--border, #243044) 70%, transparent);
+}
+
+.automation-suggestion-card h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.automation-count {
+  opacity: 0.7;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.automation-suggestion-card p {
+  margin: 0 0 0.5rem;
+  opacity: 0.9;
+}
+
+.automation-suggestion-card ol {
+  margin: 0;
+  padding-left: 1.2rem;
+}

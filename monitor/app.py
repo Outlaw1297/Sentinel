@@ -84,11 +84,17 @@ from whiteout_apk import (
     merge_persisted_apk_cache,
     probe_apk_versions_for_active_sessions,
     save_persisted_apk_update_instance_indexes,
-    update_active_account_apks,
-    update_all_whiteout_apks,
-    update_selected_instance_apks,
-    update_whiteout_apk_on_instance,
 )
+from apk_update_jobs import (
+    find_active_apk_update_job,
+    get_apk_update_job,
+    list_apk_update_jobs,
+    start_apk_update_job,
+)
+from automation import automation_loop, get_automation_status, run_automation_tick
+from assistant import build_assistant_report, enrich_with_llm
+from issue_history import build_issue_report
+
 from profile_discovery import (
     list_gnbots_profiles,
     read_gnbots_settings_file,
@@ -2483,6 +2489,7 @@ async def on_startup() -> None:
     refresh_profiles_manifest()
     asyncio.create_task(gnbots_api_health_loop())
     asyncio.create_task(session_apk_probe_loop())
+    asyncio.create_task(automation_loop(config))
     if push_enabled(config):
         asyncio.create_task(event_monitor_loop())
 
@@ -3200,6 +3207,30 @@ async def get_emulator_apk_status(instance_index: int) -> dict[str, Any]:
     return {"ok": True, "apk": apk}
 
 
+def _parse_index_list(indexes: str | None) -> list[int]:
+    index_list: list[int] = []
+    if not indexes:
+        return index_list
+    for part in indexes.split(","):
+        text = part.strip()
+        if text.isdigit():
+            index_list.append(int(text))
+    return index_list
+
+
+@app.get("/api/emulators/apk/jobs")
+async def list_emulator_apk_update_jobs() -> dict[str, Any]:
+    return {"ok": True, "jobs": list_apk_update_jobs(), "active": find_active_apk_update_job()}
+
+
+@app.get("/api/emulators/apk/jobs/{job_id}")
+async def get_emulator_apk_update_job(job_id: str) -> dict[str, Any]:
+    job = get_apk_update_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Unknown APK update job: {job_id}")
+    return {"ok": True, "job": job}
+
+
 @app.post("/api/emulators/update-apk")
 async def update_all_emulator_apks(
     indexes: str | None = Query(None),
@@ -3208,6 +3239,7 @@ async def update_all_emulator_apks(
     scope: str | None = Query(None),
     check_game_update: bool = Query(True),
 ) -> dict[str, Any]:
+    """Queue a background APK update job (returns immediately to avoid proxy 502s)."""
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
@@ -3215,77 +3247,34 @@ async def update_all_emulator_apks(
             detail="Stop the bot before updating emulator APKs.",
         )
 
+    index_list = _parse_index_list(indexes)
     try:
-        if scope == "active":
-            profile_name = active_profile_name(config)
-            if not profile_name:
-                raise HTTPException(status_code=400, detail="No active profile selected.")
-            result = await asyncio.to_thread(
-                update_active_account_apks,
-                config,
-                profile_name,
-                only_outdated=only_outdated,
-                check_game_update=check_game_update,
-                force=force,
-            )
-        elif scope == "selected":
-            profile_name = active_profile_name(config)
-            if not profile_name:
-                raise HTTPException(status_code=400, detail="No active profile selected.")
-            index_list: list[int] = []
-            if indexes:
-                for part in indexes.split(","):
-                    text = part.strip()
-                    if text.isdigit():
-                        index_list.append(int(text))
-            if not index_list:
-                from whiteout_apk import get_persisted_apk_update_instance_indexes
-
-                index_list = get_persisted_apk_update_instance_indexes(config, profile_name)
-            if not index_list:
-                raise HTTPException(status_code=400, detail="No emulator instances selected for APK update.")
-            result = await asyncio.to_thread(
-                update_selected_instance_apks,
-                config,
-                index_list,
-                only_outdated=only_outdated,
-                check_game_update=check_game_update,
-                force=force,
-            )
-        else:
-            index_list: list[int] | None = None
-            if indexes:
-                index_list = []
-                for part in indexes.split(","):
-                    text = part.strip()
-                    if text.isdigit():
-                        index_list.append(int(text))
-
-            result = await asyncio.to_thread(
-                update_all_whiteout_apks,
-                config,
-                indexes=index_list,
-                only_outdated=only_outdated,
-                force=force,
-            )
+        job = await asyncio.to_thread(
+            start_apk_update_job,
+            config,
+            indexes=index_list or None,
+            only_outdated=only_outdated,
+            force=force,
+            scope=scope,
+            check_game_update=check_game_update,
+            source="manual",
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if result.get("failed") and not result.get("updated"):
-        if push_enabled(config):
-            await asyncio.to_thread(notify_apk_update_result, result, config=config)
-        raise HTTPException(status_code=500, detail=result.get("message") or "Could not update emulator APKs.")
-
     invalidate_dashboard_cache()
-    if push_enabled(config):
-        await asyncio.to_thread(notify_apk_update_result, result, config=config)
-    return {"ok": True, **result}
+    return {"ok": True, "queued": True, "job": job, "message": job.get("message")}
 
 
 @app.post("/api/emulators/{instance_index}/update-apk")
 async def update_emulator_apk(instance_index: int) -> dict[str, Any]:
+    """Queue a single-instance APK update as a background job."""
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
@@ -3294,47 +3283,52 @@ async def update_emulator_apk(instance_index: int) -> dict[str, Any]:
         )
 
     try:
-        result = await asyncio.to_thread(update_whiteout_apk_on_instance, config, int(instance_index))
+        job = await asyncio.to_thread(
+            start_apk_update_job,
+            config,
+            indexes=[int(instance_index)],
+            only_outdated=False,
+            force=True,
+            scope=None,
+            check_game_update=False,
+            source="manual-single",
+        )
     except FileNotFoundError as exc:
-        if push_enabled(config):
-            await asyncio.to_thread(
-                notify_apk_update_failed,
-                int(instance_index),
-                str(exc),
-                config=config,
-            )
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
-        if push_enabled(config):
-            await asyncio.to_thread(
-                notify_apk_update_failed,
-                int(instance_index),
-                str(exc),
-                config=config,
-            )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except TimeoutError as exc:
-        if push_enabled(config):
-            await asyncio.to_thread(
-                notify_apk_update_failed,
-                int(instance_index),
-                str(exc),
-                config=config,
-            )
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        if push_enabled(config):
-            await asyncio.to_thread(
-                notify_apk_update_failed,
-                int(instance_index),
-                str(exc),
-                config=config,
-            )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     invalidate_dashboard_cache()
-    if push_enabled(config):
-        await asyncio.to_thread(notify_apk_update_result, result, config=config)
-    return {"ok": True, **result}
+    return {"ok": True, "queued": True, "job": job, "message": job.get("message")}
+
+
+@app.get("/api/automation/status")
+async def automation_status() -> dict[str, Any]:
+    return get_automation_status(config)
+
+
+@app.post("/api/automation/tick")
+async def automation_tick_now() -> dict[str, Any]:
+    return await asyncio.to_thread(run_automation_tick, config)
+
+
+@app.get("/api/reports/issues")
+async def issues_report(days: int = Query(7, ge=1, le=90)) -> dict[str, Any]:
+    return await asyncio.to_thread(build_issue_report, days=days, limit=25)
+
+
+@app.get("/api/assistant/suggestions")
+async def assistant_suggestions(
+    days: int = Query(7, ge=1, le=90),
+    llm: bool = Query(False),
+) -> dict[str, Any]:
+    report = await asyncio.to_thread(build_issue_report, days=days, limit=25)
+    suggestions = build_assistant_report(report)
+    if llm:
+        suggestions = await asyncio.to_thread(enrich_with_llm, config, suggestions)
+    return suggestions
 
 
 @app.post("/api/emulators/{instance_index}/fix-settings")
