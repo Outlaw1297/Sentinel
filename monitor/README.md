@@ -151,6 +151,17 @@ Copy `config.example.json` to `config.json` on first run (installer does this au
 | `whiteout_apk_url` | *(your game.zip URL)* | Remote APK source for restore/update |
 | `push_contact` | `mailto:you@example.com` | VAPID subject for web push |
 
+### Automation & issue reports
+
+Open **Settings → Automation** (or see [`docs/AUTOMATION.md`](docs/AUTOMATION.md)) to:
+
+- Auto-stop GnBots when problem emulators are detected
+- Auto-update selected Whiteout APKs when a newer package is available (bot must be stopped)
+- View a common-issues report built from bot logs
+- Get playbook (and optional LLM) fix suggestions
+
+Bulk APK updates run as background jobs so a page refresh / reverse-proxy timeout no longer shows a blank **HTTP 502** while installs continue.
+
 ### Emulator health settings
 
 On the **Monitor** tab → **Emulator health settings**, you can override the recommended LDPlayer resolution, CPU, RAM, DPI, FPS, and phone model used by **Fix settings** and the post-restore health check. Settings are stored in `config.json` as `ldplayer_health_settings`. Use **Reset to defaults** to clear overrides and return to the built-in GnBots values (400×652 @ 120 DPI, 2 CPU, 4096 MB RAM, etc.).

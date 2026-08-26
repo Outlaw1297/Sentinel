@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.9 — 2026-08-26
+
+### Bug fix
+- Bulk / selected APK updates now queue background jobs and return immediately, so reverse proxies no longer surface HTTP 502 on refresh while emulators are still updating
+- Restore tab resumes in-progress APK jobs after refresh and shows live progress
+
+### Automation
+- Settings → Automation: optional auto-stop GnBots on problem emulators, auto APK updates when newer packages are available (bot stopped), common-issues report, and playbook suggestions
+- Optional OpenAI-compatible assistant enrichment via `assistant_api_url` / `assistant_api_key`
+- Docs: `docs/AUTOMATION.md`
+
 ## 0.1.8 — 2026-07-23
 
 ### Updates
