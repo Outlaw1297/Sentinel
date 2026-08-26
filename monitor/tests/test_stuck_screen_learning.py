@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ if str(ROOT) not in sys.path:
 from issue_history import record_issue_event, reset_issue_history_for_tests
 from stuck_screen_learning import (
     create_stuck_rule,
+    get_stuck_rule,
     learn_from_issue_events,
     parse_same_screen_action,
     process_stuck_screen_events,
@@ -96,6 +98,82 @@ class StuckScreenLearningTests(unittest.TestCase):
         mocked.assert_called()
         call_kwargs = mocked.call_args.kwargs
         self.assertEqual(call_kwargs.get("remediation"), "press_back")
+
+    def test_auto_fix_skips_stale_history(self) -> None:
+        """Enabling auto-fix must not remediate day-old timeouts."""
+        stale_at = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        events = [
+            {
+                "id": "stale-1",
+                "at": stale_at,
+                "category": "same_screen_timeout",
+                "message": "Same screen timeout at EventPage. Restarting.",
+                "account": "Cheryl",
+                "instanceIndex": 2,
+                "meta": {"actionHint": "EventPage"},
+            }
+        ]
+        update_stuck_rule("seed-event-press-back", enabled=True, remediation="press_back")
+        with patch(
+            "stuck_screen_learning.execute_remediation",
+            return_value={"ok": True, "remediation": "press_back", "index": 2, "detail": "ok"},
+        ) as mocked:
+            actions = process_stuck_screen_events(
+                {},
+                events,
+                learning_enabled=False,
+                auto_fix_enabled=True,
+            )
+        mocked.assert_not_called()
+        self.assertFalse(any(row.get("type") == "stuck_screen_auto_fix" for row in actions))
+
+    def test_failed_auto_fix_does_not_burn_cooldown(self) -> None:
+        """A failed remediation must not block other fresh accounts on the same rule."""
+        now = datetime.now(timezone.utc)
+        # Newer event fails first; older event must still be attempted in the same pass.
+        events = [
+            {
+                "id": "fail-1",
+                "at": (now - timedelta(seconds=1)).isoformat(),
+                "category": "same_screen_timeout",
+                "message": "Same screen timeout at EventPage. Restarting.",
+                "account": "A",
+                "instanceIndex": 1,
+                "meta": {"actionHint": "EventPage"},
+            },
+            {
+                "id": "ok-2",
+                "at": (now - timedelta(seconds=5)).isoformat(),
+                "category": "same_screen_timeout",
+                "message": "Same screen timeout at EventShop. Restarting.",
+                "account": "B",
+                "instanceIndex": 2,
+                "meta": {"actionHint": "EventShop"},
+            },
+        ]
+        update_stuck_rule("seed-event-press-back", enabled=True, remediation="press_back")
+
+        def _remediate(_config, **kwargs):
+            if kwargs.get("account") == "B":
+                return {"ok": True, "remediation": "press_back", "index": 2, "detail": "ok"}
+            return {"ok": False, "remediation": "press_back", "index": 1, "detail": "adb failed"}
+
+        with patch("stuck_screen_learning.execute_remediation", side_effect=_remediate) as mocked:
+            actions = process_stuck_screen_events(
+                {},
+                events,
+                learning_enabled=False,
+                auto_fix_enabled=True,
+            )
+        fixes = [row for row in actions if row.get("type") == "stuck_screen_auto_fix"]
+        self.assertEqual(len(fixes), 2)
+        self.assertEqual(mocked.call_count, 2)
+        self.assertEqual([row.get("account") for row in fixes], ["A", "B"])
+        rule = get_stuck_rule("seed-event-press-back")
+        self.assertIsNotNone(rule)
+        assert rule is not None
+        self.assertEqual(int(rule.get("autoFixCount") or 0), 1)
+        self.assertIsNotNone(rule.get("lastFixAt"))
 
     def test_manual_rule_warn_user(self) -> None:
         rule = create_stuck_rule(

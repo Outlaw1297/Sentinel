@@ -23,6 +23,9 @@ from paths import get_logs_dir
 _RULES_LOCK = threading.RLock()
 _RULES_PATH = get_logs_dir() / "stuck-screen-rules.json"
 _MAX_RULES = 80
+# Auto-fix must only act on recent timeouts. Historical backlog (days of
+# same-screen events) would otherwise get Back/restart when auto-fix is enabled.
+_AUTO_FIX_MAX_AGE_SECONDS = 180
 
 # "Same screen timeout at dailies. Restarting. [Cheryl]"
 _SAME_SCREEN_ACTION_RE = re.compile(
@@ -310,6 +313,48 @@ def _cooldown_ok(last_iso: str | None, seconds: int) -> bool:
     except ValueError:
         return True
     return (time.time() - last) >= max(30, int(seconds))
+
+
+def _event_timestamp(event: dict[str, Any]) -> float | None:
+    """Parse issue-event `at` (ISO or GnBots log time) to epoch seconds."""
+    at = str(event.get("at") or "").strip()
+    if not at:
+        return None
+    try:
+        if "T" in at:
+            return datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
+        return datetime.strptime(at[:19], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        ).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_is_fresh(
+    event: dict[str, Any],
+    *,
+    max_age_seconds: int = _AUTO_FIX_MAX_AGE_SECONDS,
+    now: float | None = None,
+) -> bool:
+    """True when the event is recent enough to auto-remediate."""
+    ts = _event_timestamp(event)
+    if ts is None:
+        # Missing/unparseable timestamps are treated as stale so we never
+        # blindly act on undated historical rows.
+        return False
+    age = (time.time() if now is None else now) - ts
+    # Allow a small future skew (bot PC clock vs monitor clock).
+    return -60 <= age <= max(30, int(max_age_seconds))
+
+
+def _safe_instance_index(value: Any) -> int | None:
+    if value is None or value is False:
+        return None
+    try:
+        idx = int(value)
+    except (TypeError, ValueError):
+        return None
+    return idx if idx >= 0 else None
 
 
 def _bump_rule_hit(rule_id: str) -> dict[str, Any] | None:
@@ -654,7 +699,20 @@ def process_stuck_screen_events(
         store = load_stuck_rules()
         fixed_ids = {str(item) for item in (store.get("autoFixedEventIds") or [])}
 
-    for event in events:
+    # Only remediate fresh timeouts, newest first. Learning may still scan history;
+    # acting on a multi-day backlog would Back/restart accounts that already recovered.
+    now = time.time()
+    auto_fix_events = [
+        event
+        for event in events
+        if _event_is_fresh(event, now=now)
+    ]
+    auto_fix_events.sort(
+        key=lambda row: _event_timestamp(row) or 0.0,
+        reverse=True,
+    )
+
+    for event in auto_fix_events:
         category = str(event.get("category") or "")
         if category != "same_screen_timeout":
             continue
@@ -665,7 +723,7 @@ def process_stuck_screen_events(
         meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
         action_hint = meta.get("actionHint") or parse_same_screen_action(message)
         account = event.get("account")
-        instance_index = event.get("instanceIndex")
+        instance_index = _safe_instance_index(event.get("instanceIndex"))
         matches = find_matching_rules(
             category=category,
             action=action_hint,
@@ -687,11 +745,15 @@ def process_stuck_screen_events(
             config,
             remediation=str(rule.get("remediation") or "warn_user"),
             account=str(account) if account else None,
-            instance_index=int(instance_index) if instance_index is not None else None,
+            instance_index=instance_index,
             action_hint=action_hint,
             message=message,
         )
-        _bump_rule_fix(str(rule["id"]))
+        ok = bool(result.get("ok"))
+        # Only successful remediations burn the shared rule cooldown — a failed
+        # adb/restart must not block other stuck accounts for cooldownSeconds.
+        if ok:
+            _bump_rule_fix(str(rule["id"]))
         if event_id:
             with _RULES_LOCK:
                 store = load_stuck_rules()
@@ -703,7 +765,7 @@ def process_stuck_screen_events(
         action = {
             "at": _utc_now_iso(),
             "type": "stuck_screen_auto_fix",
-            "ok": bool(result.get("ok")),
+            "ok": ok,
             "ruleId": rule.get("id"),
             "remediation": result.get("remediation"),
             "account": account,
@@ -725,7 +787,7 @@ def process_stuck_screen_events(
                 "actionHint": action_hint,
                 "ruleId": rule.get("id"),
                 "remediation": result.get("remediation"),
-                "ok": bool(result.get("ok")),
+                "ok": ok,
             },
         )
     return actions
