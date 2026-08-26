@@ -10,13 +10,13 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=6">
-  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=6">
-  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v=6">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=7">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=7">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v=7">
 
   <title>Sentinel Settings</title>
 
-  <link rel="stylesheet" href="/static/styles.css?v=69">
+  <link rel="stylesheet" href="/static/styles.css?v=74">
 </head>
 <body>
   <div class="layout settings-layout">
@@ -53,6 +53,7 @@
       <button class="settings-tab" type="button" data-tab="bulk" aria-selected="false">Bulk Actions</button>
       <button class="settings-tab" type="button" data-tab="provision" aria-selected="false">Add Account</button>
       <button class="settings-tab" type="button" data-tab="restore" aria-selected="false">Emulator Restore</button>
+      <button class="settings-tab" type="button" data-tab="automation" aria-selected="false">Automation</button>
       <button class="settings-tab" type="button" data-tab="monitor" aria-selected="false">Sentinel</button>
     </nav>
 
@@ -363,6 +364,89 @@
       <div class="restore-instance-list" id="restore-instance-list"></div>
     </div>
 
+    <div class="settings-tab-panel hidden" id="tab-automation" data-tab-panel="automation">
+      <div class="settings-banner panel">
+        <p>
+          Automation watches for troubled emulators and APK updates, records common issues, learns
+          stuck-screen patterns (for example event pages), and offers fix suggestions. See
+          <code>docs/AUTOMATION.md</code>. Most actions stay off until enabled below.
+        </p>
+      </div>
+
+      <div class="settings-status controls-meta" id="automation-page-status"></div>
+
+      <section class="panel" id="automation-controls-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Automation controls</h2>
+            <p class="settings-group-desc">Toggle background actions. Changes apply on the next automation poll.</p>
+          </div>
+          <button class="btn btn-small" id="automation-refresh-btn" type="button">Refresh</button>
+        </div>
+        <div class="automation-toggles" id="automation-toggles">
+          <p class="settings-loading">Loading automation status…</p>
+        </div>
+        <div class="settings-actions" style="margin-top: 0.75rem;">
+          <button class="btn btn-small" id="automation-run-tick-btn" type="button">Run check now</button>
+        </div>
+        <p class="restore-path-meta" id="automation-meta">—</p>
+      </section>
+
+      <section class="panel" id="automation-stuck-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Stuck-screen learning</h2>
+            <p class="settings-group-desc">
+              When GnBots reports a same-screen timeout (for example stuck on an event page), Sentinel
+              learns a rule and can press Back, restart the emulator, or warn you — once Auto-fix is on.
+            </p>
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn-small" id="automation-stuck-learn-btn" type="button">Learn from history</button>
+          </div>
+        </div>
+        <div id="automation-stuck-rules-body">
+          <p class="settings-loading">Loading stuck-screen rules…</p>
+        </div>
+      </section>
+
+      <section class="panel" id="automation-report-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Common issues report</h2>
+            <p class="settings-group-desc">Aggregated from bot logs and automation events.</p>
+          </div>
+          <label class="account-settings-label" for="automation-report-days">
+            Days
+            <select id="automation-report-days" class="setting-input" style="width: auto; margin-left: 0.5rem;">
+              <option value="1">1</option>
+              <option value="7" selected>7</option>
+              <option value="30">30</option>
+            </select>
+          </label>
+        </div>
+        <div id="automation-report-body">
+          <p class="settings-loading">Loading report…</p>
+        </div>
+      </section>
+
+      <section class="panel" id="automation-assistant-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Fix suggestions</h2>
+            <p class="settings-group-desc">
+              Built-in playbooks for the most common categories. Optional LLM enrichment uses
+              <code>assistant_api_url</code> / <code>assistant_api_key</code> in config.
+            </p>
+          </div>
+          <button class="btn btn-small" id="automation-suggest-btn" type="button">Refresh suggestions</button>
+        </div>
+        <div id="automation-assistant-body">
+          <p class="settings-loading">Loading suggestions…</p>
+        </div>
+      </section>
+    </div>
+
     <div class="settings-tab-panel hidden" id="tab-monitor" data-tab-panel="monitor">
       <div class="settings-banner panel">
         <p>
@@ -400,7 +484,7 @@
     </div>
   </div>
 
-  <script src="/static/restore-shared.js?v=4"></script>
-  <script src="/static/settings.js?v=58"></script>
+  <script src="/static/restore-shared.js?v=5"></script>
+  <script src="/static/settings.js?v=59"></script>
 </body>
 </html>

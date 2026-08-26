@@ -269,6 +269,108 @@ async function startInstanceRestore(index, options = {}) {
   return pollRestoreJob(jobId, { ...options, onStatus });
 }
 
+function formatApkUpdateJobStatus(job) {
+  const status = String(job?.status || "");
+  const progress = Math.max(0, Math.min(100, Number(job?.progress) || 5));
+  const current = job?.currentIndex;
+  const completed = Number(job?.completedCount) || 0;
+  const total = Number(job?.total) || 0;
+  let message = job?.message || "Updating APKs…";
+  if (status === "updating" && current != null && total) {
+    message = job?.message || `Updating instance ${current} (${completed + 1}/${total})…`;
+  }
+  return { progress, message, status };
+}
+
+async function pollApkUpdateJob(jobId, options = {}) {
+  const onStatus = typeof options.onStatus === "function" ? options.onStatus : () => {};
+  const deadline = Date.now() + (options.timeoutMs || 4 * 60 * 60 * 1000);
+  try {
+    sessionStorage.setItem("sentinelApkUpdateJobId", jobId);
+  } catch {
+    // ignore storage failures
+  }
+  while (Date.now() < deadline) {
+    const response = await fetch(`/api/emulators/apk/jobs/${jobId}`, { cache: "no-store" });
+    if (response.status === 404) {
+      throw new Error("APK update job not found — the monitor may have restarted. Check instance versions.");
+    }
+    if (!response.ok) {
+      await new Promise((resolve) => setTimeout(resolve, options.pollMs || 3000));
+      continue;
+    }
+    const payload = await response.json();
+    const job = payload.job || {};
+    const status = String(job.status || "");
+    onStatus(job);
+    if (status === "completed") {
+      try {
+        sessionStorage.removeItem("sentinelApkUpdateJobId");
+      } catch {
+        // ignore
+      }
+      return job;
+    }
+    if (status === "failed") {
+      try {
+        sessionStorage.removeItem("sentinelApkUpdateJobId");
+      } catch {
+        // ignore
+      }
+      throw new Error(job.message || "APK update failed.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, options.pollMs || 2500));
+  }
+  throw new Error("Timed out waiting for APK update to finish. The job may still be running — refresh this page.");
+}
+
+async function findActiveApkUpdateJob() {
+  try {
+    const response = await fetch("/api/emulators/apk/jobs", { cache: "no-store" });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    if (payload.active?.id) return payload.active;
+    const jobs = payload.jobs || [];
+    return (
+      jobs.find((job) => {
+        const status = String(job.status || "");
+        return status && status !== "completed" && status !== "failed";
+      }) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function resumeApkUpdateJobPolling(options = {}) {
+  const onStatus = typeof options.onStatus === "function" ? options.onStatus : () => {};
+  const onComplete = typeof options.onComplete === "function" ? options.onComplete : () => {};
+  const onError = typeof options.onError === "function" ? options.onError : () => {};
+
+  let jobId = options.jobId || null;
+  if (!jobId) {
+    try {
+      jobId = sessionStorage.getItem("sentinelApkUpdateJobId");
+    } catch {
+      jobId = null;
+    }
+  }
+  if (!jobId) {
+    const active = await findActiveApkUpdateJob();
+    jobId = active?.id || null;
+  }
+  if (!jobId) return null;
+
+  try {
+    const job = await pollApkUpdateJob(jobId, { ...options, onStatus });
+    await onComplete(job);
+    return job;
+  } catch (error) {
+    await onError(error);
+    throw error;
+  }
+}
+
 window.GnBotsRestore = {
   escapeRestoreHtml,
   buildAccountMetaByInstance,
@@ -283,4 +385,8 @@ window.GnBotsRestore = {
   findActiveRestoreJob,
   resumeRestoreJobPolling,
   startInstanceRestore,
+  formatApkUpdateJobStatus,
+  pollApkUpdateJob,
+  findActiveApkUpdateJob,
+  resumeApkUpdateJobPolling,
 };

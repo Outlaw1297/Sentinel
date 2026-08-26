@@ -1,24 +1,28 @@
-const SHELL_CACHE = "sentinel-shell-v7";
+const SHELL_CACHE = "sentinel-shell-v8";
 const NETWORK_FIRST_STATIC = new Set([
   "/static/settings.js",
   "/static/app.js",
   "/static/restore-shared.js",
 ]);
+const NOTIFICATION_ICON = "/static/icons/notification-icon.png?v=1";
+const NOTIFICATION_BADGE = "/static/icons/notification-badge.png?v=1";
 const SHELL_ASSETS = [
   "/",
   "/favicon.ico",
-  "/favicon.png?v=6",
+  "/favicon.png?v=7",
   "/static/styles.css?v=73",
   "/static/app.js?v=73",
   "/static/settings.js?v=56",
   "/static/restore-shared.js?v=4",
-  "/static/notifications.js?v=7",
+  "/static/notifications.js?v=8",
   "/static/sentinel-icons.js?v=1",
   "/static/manifest.webmanifest",
   "/static/icons/sentinel-logo.png?v=5",
-  "/static/icons/icon-192.png?v=6",
-  "/static/icons/icon-512.png?v=6",
-  "/static/icons/apple-touch-icon.png?v=6",
+  "/static/icons/icon-192.png?v=7",
+  "/static/icons/icon-512.png?v=7",
+  "/static/icons/apple-touch-icon.png?v=7",
+  "/static/icons/notification-icon.png?v=1",
+  "/static/icons/notification-badge.png?v=1",
 ];
 
 self.addEventListener("install", (event) => {
@@ -77,6 +81,21 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+function notificationOptions(payload = {}) {
+  return {
+    body: payload.body || "",
+    tag: payload.tag || "sentinel",
+    // Large color icon for expanded/popup notifications.
+    icon: payload.icon || NOTIFICATION_ICON,
+    // Status-bar / condensed tray icon: Android expects a white alpha mask.
+    badge: payload.badge || NOTIFICATION_BADGE,
+    data: {
+      url: payload.url || "/",
+    },
+    renotify: true,
+  };
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -86,18 +105,24 @@ self.addEventListener("push", (event) => {
   }
 
   const title = payload.title || "Sentinel";
-  const options = {
-    body: payload.body || "",
-    tag: payload.tag || "sentinel",
-    icon: "/static/icons/icon-192.png?v=6",
-    badge: "/static/icons/icon-192.png?v=6",
-    data: {
-      url: payload.url || "/",
-    },
-    renotify: true,
-  };
+  event.waitUntil(self.registration.showNotification(title, notificationOptions(payload)));
+});
 
-  event.waitUntil(self.registration.showNotification(title, options));
+self.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "local-notification") {
+    return;
+  }
+  event.waitUntil(
+    self.registration.showNotification(
+      data.title || "Sentinel",
+      notificationOptions({
+        body: data.body || "",
+        tag: data.tag || "sentinel-local",
+        url: data.url || "/",
+      }),
+    ),
+  );
 });
 
 self.addEventListener("notificationclick", (event) => {

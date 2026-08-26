@@ -195,6 +195,7 @@ const els = {
   accountActionsList: document.getElementById("account-actions-list"),
   tabMonitor: document.getElementById("tab-monitor"),
   tabRestore: document.getElementById("tab-restore"),
+  tabAutomation: document.getElementById("tab-automation"),
   restoreLockedBanner: document.getElementById("restore-locked-banner"),
   restoreElevationBanner: document.getElementById("restore-elevation-banner"),
   restorePageStatus: document.getElementById("restore-page-status"),
@@ -211,6 +212,17 @@ const els = {
   apkSelectAllBtn: document.getElementById("apk-select-all-btn"),
   apkSelectNoneBtn: document.getElementById("apk-select-none-btn"),
   restoreInstanceList: document.getElementById("restore-instance-list"),
+  automationPageStatus: document.getElementById("automation-page-status"),
+  automationToggles: document.getElementById("automation-toggles"),
+  automationMeta: document.getElementById("automation-meta"),
+  automationStuckRulesBody: document.getElementById("automation-stuck-rules-body"),
+  automationStuckLearnBtn: document.getElementById("automation-stuck-learn-btn"),
+  automationReportBody: document.getElementById("automation-report-body"),
+  automationAssistantBody: document.getElementById("automation-assistant-body"),
+  automationReportDays: document.getElementById("automation-report-days"),
+  automationRefreshBtn: document.getElementById("automation-refresh-btn"),
+  automationRunTickBtn: document.getElementById("automation-run-tick-btn"),
+  automationSuggestBtn: document.getElementById("automation-suggest-btn"),
   monitorPageStatus: document.getElementById("monitor-page-status"),
   monitorConfigPath: document.getElementById("monitor-config-path"),
   monitorSettingsGroups: document.getElementById("monitor-settings-groups"),
@@ -759,6 +771,7 @@ let updateApkBusyIndex = null;
 let updateAllApksBusy = false;
 let updateSelectedApksBusy = false;
 let forceUpdateSelectedApksBusy = false;
+let activeApkUpdatePollToken = 0;
 let checkRemoteApkBusy = false;
 let remoteApkStatus = null;
 let apkUpdateInstances = [];
@@ -1891,12 +1904,24 @@ async function loadRestoreTab({ forceApk = false } = {}) {
 
     const hasActiveRestore = restoreRows.some((row) => row.restoreBusy);
     void resumeActiveRestorePolling(restoreRows);
+    let hasActiveApkJob = Boolean(
+      updateAllApksBusy || updateSelectedApksBusy || forceUpdateSelectedApksBusy || updateApkBusyIndex != null,
+    );
+    if (!hasActiveApkJob && window.GnBotsRestore) {
+      try {
+        const activeApk = await window.GnBotsRestore.findActiveApkUpdateJob();
+        hasActiveApkJob = Boolean(activeApk?.id);
+      } catch {
+        hasActiveApkJob = false;
+      }
+    }
+    void resumeActiveApkUpdatePolling();
 
     if (restoreLocked()) {
       setRestorePageStatus("Restore is disabled while the bot is running. Stop the bot to continue.", "warn");
     } else if (!restoreRows.length) {
       setRestorePageStatus("No backups are mapped to LDPlayer instances.", "warn");
-    } else if (!hasActiveRestore) {
+    } else if (!hasActiveRestore && !hasActiveApkJob) {
       const troubled = restoreRows.filter((row) => row.troubled).length;
       const ldIssues = Object.values(emulatorHealthByIndex).filter(
         (health) => health && !health.error && Number(health.issueCount) > 0,
@@ -2240,6 +2265,150 @@ function indexesWithApkUpdates() {
     .sort((a, b) => a - b);
 }
 
+function applyApkJobResultToUi(job) {
+  for (const result of job?.results || []) {
+    if (result?.apk && result.index != null) {
+      emulatorApkByIndex[Number(result.index)] = result.apk;
+    }
+  }
+  if (job?.localVersion || job?.cacheVersion) {
+    remoteApkStatus = {
+      ...(remoteApkStatus || {}),
+      localVersion: job.localVersion || job.cacheVersion,
+      apkReady: true,
+    };
+  }
+}
+
+function markApkUpdateBusyFromJob(job) {
+  const indexes = Array.isArray(job?.indexes) ? job.indexes.map(Number) : [];
+  const current = job?.currentIndex != null ? Number(job.currentIndex) : null;
+  updateAllApksBusy = true;
+  updateSelectedApksBusy = true;
+  forceUpdateSelectedApksBusy = Boolean(job?.force);
+  updateApkBusyIndex = current != null && !Number.isNaN(current) ? current : indexes[0] ?? null;
+  applyRestoreLockState();
+  renderRestoreSummary(restoreRows);
+  renderRestoreInstanceList(restoreRows);
+  renderApkAccountSelection();
+}
+
+function clearApkUpdateBusyFlags() {
+  updateApkBusyIndex = null;
+  updateAllApksBusy = false;
+  updateSelectedApksBusy = false;
+  forceUpdateSelectedApksBusy = false;
+  applyRestoreLockState();
+  renderRestoreSummary(restoreRows);
+  renderRestoreInstanceList(restoreRows);
+  renderApkAccountSelection();
+}
+
+function updateApkJobProgress(job) {
+  const formatted = window.GnBotsRestore
+    ? window.GnBotsRestore.formatApkUpdateJobStatus(job)
+    : { progress: Number(job?.progress) || 10, message: job?.message || "Updating APKs…" };
+  if (job?.currentIndex != null) {
+    updateApkBusyIndex = Number(job.currentIndex);
+  }
+  setRestorePageStatus(formatted.message, "pending", formatted.progress);
+  renderRestoreSummary(restoreRows);
+  renderRestoreInstanceList(restoreRows);
+}
+
+async function followApkUpdateJob(job, { busyMode = "all" } = {}) {
+  if (!job?.id || !window.GnBotsRestore) {
+    throw new Error("APK update started but no job id was returned.");
+  }
+  const pollToken = ++activeApkUpdatePollToken;
+  if (busyMode === "single" && Array.isArray(job.indexes) && job.indexes.length === 1) {
+    updateApkBusyIndex = Number(job.indexes[0]);
+  } else if (busyMode === "force") {
+    forceUpdateSelectedApksBusy = true;
+    updateSelectedApksBusy = true;
+  } else if (busyMode === "selected") {
+    updateSelectedApksBusy = true;
+  } else {
+    updateAllApksBusy = true;
+  }
+  markApkUpdateBusyFromJob(job);
+  updateApkJobProgress(job);
+
+  try {
+    const finished = await window.GnBotsRestore.pollApkUpdateJob(job.id, {
+      onStatus: (liveJob) => {
+        if (pollToken !== activeApkUpdatePollToken) return;
+        updateApkJobProgress(liveJob);
+      },
+    });
+    if (pollToken !== activeApkUpdatePollToken) return finished;
+    applyApkJobResultToUi(finished);
+    await loadApkUpdateSelection();
+    await loadEmulatorApkForRows(restoreRows, { force: true });
+    const failed = Number(finished.failed) || 0;
+    setRestorePageStatus(
+      finished.message || (failed ? `Updated with ${failed} failure(s).` : "APK update complete."),
+      failed ? "warn" : "ok",
+      100,
+    );
+    return finished;
+  } finally {
+    if (pollToken === activeApkUpdatePollToken) {
+      clearApkUpdateBusyFlags();
+    }
+  }
+}
+
+async function resumeActiveApkUpdatePolling() {
+  if (!window.GnBotsRestore) return;
+  const active = await window.GnBotsRestore.findActiveApkUpdateJob();
+  let jobId = active?.id || null;
+  if (!jobId) {
+    try {
+      jobId = sessionStorage.getItem("sentinelApkUpdateJobId");
+    } catch {
+      jobId = null;
+    }
+  }
+  if (!jobId) return;
+
+  const pollToken = ++activeApkUpdatePollToken;
+  markApkUpdateBusyFromJob(active || { id: jobId, indexes: [], status: "updating", progress: 20 });
+  setRestorePageStatus("Resuming APK update in progress…", "pending", Number(active?.progress) || 20);
+
+  try {
+    await window.GnBotsRestore.resumeApkUpdateJobPolling({
+      jobId,
+      onStatus: (job) => {
+        if (pollToken !== activeApkUpdatePollToken) return;
+        updateApkJobProgress(job);
+      },
+      onComplete: async (job) => {
+        if (pollToken !== activeApkUpdatePollToken) return;
+        applyApkJobResultToUi(job);
+        await loadApkUpdateSelection();
+        await loadEmulatorApkForRows(restoreRows, { force: true });
+        const failed = Number(job.failed) || 0;
+        setRestorePageStatus(
+          job.message || (failed ? `Updated with ${failed} failure(s).` : "APK update complete."),
+          failed ? "warn" : "ok",
+          100,
+        );
+      },
+      onError: async (error) => {
+        if (pollToken !== activeApkUpdatePollToken) return;
+        setRestorePageStatus(error.message || "APK update failed.", "error");
+      },
+    });
+  } catch {
+    // onError already surfaced the message
+  } finally {
+    if (pollToken === activeApkUpdatePollToken) {
+      clearApkUpdateBusyFlags();
+    }
+  }
+}
+
 async function updateApkForIndex(index) {
   if (restoreLocked()) {
     setRestorePageStatus("Stop the bot before updating emulator APKs.", "warn");
@@ -2257,17 +2426,14 @@ async function updateApkForIndex(index) {
         `Latest cached version: ${latest}`,
         "",
         "The emulator will be started if needed. This can take several minutes.",
+        "You can refresh this page — the update keeps running in the background.",
       ].join("\n"),
     )
   ) {
     return;
   }
 
-  updateApkBusyIndex = index;
-  applyRestoreLockState();
-  renderRestoreSummary(restoreRows);
-  renderRestoreInstanceList(restoreRows);
-  setRestorePageStatus(`Updating Whiteout Survival on ${label}…`, "pending");
+  setRestorePageStatus(`Queuing Whiteout Survival update on ${label}…`, "pending", 5);
 
   try {
     const response = await fetch(`/api/emulators/${index}/update-apk`, { method: "POST" });
@@ -2276,19 +2442,11 @@ async function updateApkForIndex(index) {
       const detail = payload.detail || payload.message || `HTTP ${response.status}`;
       throw new Error(typeof detail === "string" ? detail : "Could not update Whiteout APK.");
     }
-    if (payload.apk) {
-      emulatorApkByIndex[Number(index)] = payload.apk;
-    }
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
-    setRestorePageStatus(payload.message || "APK updated.", "ok");
+    const job = payload.job || payload;
+    await followApkUpdateJob(job, { busyMode: "single" });
   } catch (error) {
+    clearApkUpdateBusyFlags();
     setRestorePageStatus(error.message || "Failed to update Whiteout APK.", "error");
-  } finally {
-    updateApkBusyIndex = null;
-    applyRestoreLockState();
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
   }
 }
 
@@ -2374,18 +2532,14 @@ async function updateSelectedInstanceApks() {
           : "All selected instances will be checked and updated if needed.",
         "Each instance update applies to every account on that emulator.",
         "Each emulator will be started if needed. This can take several minutes per instance.",
+        "You can refresh this page — progress continues in the background.",
       ].join("\n"),
     )
   ) {
     return;
   }
 
-  updateSelectedApksBusy = true;
-  applyRestoreLockState();
-  renderRestoreSummary(restoreRows);
-  renderRestoreInstanceList(restoreRows);
-  renderApkAccountSelection();
-  setRestorePageStatus(`Updating Whiteout Survival on ${targetIndexes.length} instance(s)…`, "pending");
+  setRestorePageStatus(`Queuing Whiteout Survival update on ${targetIndexes.length} instance(s)…`, "pending", 5);
 
   try {
     const response = await fetch(
@@ -2397,34 +2551,10 @@ async function updateSelectedInstanceApks() {
       const detail = payload.detail || payload.message || `HTTP ${response.status}`;
       throw new Error(typeof detail === "string" ? detail : "Could not update selected instance APKs.");
     }
-    for (const result of payload.results || []) {
-      if (result?.apk && result.index != null) {
-        emulatorApkByIndex[Number(result.index)] = result.apk;
-      }
-    }
-    if (payload.localVersion || payload.cacheVersion) {
-      remoteApkStatus = {
-        ...(remoteApkStatus || {}),
-        localVersion: payload.localVersion || payload.cacheVersion,
-        apkReady: true,
-      };
-    }
-    await loadApkUpdateSelection();
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
-    const failed = Number(payload.failed) || 0;
-    setRestorePageStatus(
-      payload.message || (failed ? `Updated with ${failed} failure(s).` : "Selected instance APKs updated."),
-      failed ? "warn" : "ok",
-    );
+    await followApkUpdateJob(payload.job || payload, { busyMode: "selected" });
   } catch (error) {
+    clearApkUpdateBusyFlags();
     setRestorePageStatus(error.message || "Failed to update selected instance APKs.", "error");
-  } finally {
-    updateSelectedApksBusy = false;
-    applyRestoreLockState();
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
-    renderApkAccountSelection();
   }
 }
 
@@ -2448,18 +2578,14 @@ async function forceUpdateSelectedApks() {
         "",
         "This bypasses version checks and reinstalls from the APK cache.",
         "Each emulator will be started if needed. This can take several minutes per instance.",
+        "You can refresh this page — progress continues in the background.",
       ].join("\n"),
     )
   ) {
     return;
   }
 
-  forceUpdateSelectedApksBusy = true;
-  applyRestoreLockState();
-  renderRestoreSummary(restoreRows);
-  renderRestoreInstanceList(restoreRows);
-  renderApkAccountSelection();
-  setRestorePageStatus(`Force updating Whiteout Survival on ${indexes.length} instance(s)…`, "pending");
+  setRestorePageStatus(`Queuing force update on ${indexes.length} instance(s)…`, "pending", 5);
 
   try {
     const response = await fetch(
@@ -2471,35 +2597,10 @@ async function forceUpdateSelectedApks() {
       const detail = payload.detail || payload.message || `HTTP ${response.status}`;
       throw new Error(typeof detail === "string" ? detail : "Could not force update selected instance APKs.");
     }
-    for (const result of payload.results || []) {
-      if (result?.apk && result.index != null) {
-        emulatorApkByIndex[Number(result.index)] = result.apk;
-      }
-    }
-    if (payload.localVersion || payload.cacheVersion) {
-      remoteApkStatus = {
-        ...(remoteApkStatus || {}),
-        localVersion: payload.localVersion || payload.cacheVersion,
-        apkReady: true,
-      };
-    }
-    await loadApkUpdateSelection();
-    await loadEmulatorApkForRows(restoreRows, { force: true });
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
-    const failed = Number(payload.failed) || 0;
-    setRestorePageStatus(
-      payload.message || (failed ? `Force updated with ${failed} failure(s).` : "Selected instance APKs force updated."),
-      failed ? "warn" : "ok",
-    );
+    await followApkUpdateJob(payload.job || payload, { busyMode: "force" });
   } catch (error) {
+    clearApkUpdateBusyFlags();
     setRestorePageStatus(error.message || "Failed to force update selected instance APKs.", "error");
-  } finally {
-    forceUpdateSelectedApksBusy = false;
-    applyRestoreLockState();
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
-    renderApkAccountSelection();
   }
 }
 
@@ -2522,17 +2623,14 @@ async function updateAllApks() {
         `Instances: ${indexes.map((index) => `#${index}`).join(", ")}`,
         "",
         "Each emulator will be started if needed. This can take several minutes per instance.",
+        "You can refresh this page — progress continues in the background.",
       ].join("\n"),
     )
   ) {
     return;
   }
 
-  updateAllApksBusy = true;
-  applyRestoreLockState();
-  renderRestoreSummary(restoreRows);
-  renderRestoreInstanceList(restoreRows);
-  setRestorePageStatus(`Updating Whiteout Survival on ${indexes.length} instance(s)…`, "pending");
+  setRestorePageStatus(`Queuing Whiteout Survival update on ${indexes.length} instance(s)…`, "pending", 5);
 
   try {
     const response = await fetch(
@@ -2544,25 +2642,10 @@ async function updateAllApks() {
       const detail = payload.detail || payload.message || `HTTP ${response.status}`;
       throw new Error(typeof detail === "string" ? detail : "Could not update emulator APKs.");
     }
-    for (const result of payload.results || []) {
-      if (result?.apk && result.index != null) {
-        emulatorApkByIndex[Number(result.index)] = result.apk;
-      }
-    }
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
-    const failed = Number(payload.failed) || 0;
-    setRestorePageStatus(
-      payload.message || (failed ? `Updated with ${failed} failure(s).` : "All APKs updated."),
-      failed ? "warn" : "ok",
-    );
+    await followApkUpdateJob(payload.job || payload, { busyMode: "all" });
   } catch (error) {
+    clearApkUpdateBusyFlags();
     setRestorePageStatus(error.message || "Failed to update emulator APKs.", "error");
-  } finally {
-    updateAllApksBusy = false;
-    applyRestoreLockState();
-    renderRestoreSummary(restoreRows);
-    renderRestoreInstanceList(restoreRows);
   }
 }
 
@@ -2588,6 +2671,7 @@ function setActiveSettingsTab(tabId) {
   els.tabBulk?.classList.toggle("hidden", tabId !== "bulk");
   els.tabProvision?.classList.toggle("hidden", tabId !== "provision");
   els.tabRestore?.classList.toggle("hidden", tabId !== "restore");
+  els.tabAutomation?.classList.toggle("hidden", tabId !== "automation");
   els.tabMonitor?.classList.toggle("hidden", tabId !== "monitor");
   if (els.settingsSubtitle) {
     if (tabId === "accounts") {
@@ -2604,6 +2688,9 @@ function setActiveSettingsTab(tabId) {
         "Create a new LDPlayer instance, install Whiteout Survival, and add a GnBots account";
     } else if (tabId === "restore") {
       els.settingsSubtitle.innerHTML = "Restore LDPlayer backups and reinstall Whiteout Survival";
+    } else if (tabId === "automation") {
+      els.settingsSubtitle.innerHTML =
+        "Background automation, common-issue reports, and fix suggestions";
     } else if (tabId === "monitor") {
       els.settingsSubtitle.innerHTML = "Sentinel and watcher options from <code>monitor/config.json</code>";
     } else {
@@ -2625,6 +2712,9 @@ function setActiveSettingsTab(tabId) {
   }
   if (tabId === "restore") {
     loadRestoreTab();
+  }
+  if (tabId === "automation") {
+    loadAutomationTab();
   }
   if (tabId === "monitor" && !monitorGroups.length) {
     loadMonitorConfig();
@@ -6010,6 +6100,337 @@ async function loadUpdateStatus(force = false) {
   }
 }
 
+function setAutomationPageStatus(message, tone = "") {
+  if (!els.automationPageStatus) return;
+  els.automationPageStatus.textContent = message || "";
+  els.automationPageStatus.className = `settings-status controls-meta${tone ? ` ${tone}` : ""}`;
+}
+
+function renderAutomationToggles(status, config) {
+  if (!els.automationToggles) return;
+  const cfg = config || {};
+  const fields = [
+    {
+      key: "issue_history_enabled",
+      label: "Record issue history",
+      checked: cfg.issue_history_enabled !== false,
+    },
+    {
+      key: "stuck_screen_learning_enabled",
+      label: "Learn stuck-screen patterns (same-screen timeouts)",
+      checked: cfg.stuck_screen_learning_enabled !== false,
+    },
+    {
+      key: "stuck_screen_auto_fix_enabled",
+      label: "Auto-fix stuck screens (Back / restart / warn)",
+      checked: Boolean(cfg.stuck_screen_auto_fix_enabled),
+    },
+    {
+      key: "auto_stop_gnbots_on_trouble",
+      label: "Auto-stop GnBots on problem emulators",
+      checked: Boolean(cfg.auto_stop_gnbots_on_trouble),
+    },
+    {
+      key: "auto_update_apks",
+      label: "Auto-update APKs when newer (bot must be stopped)",
+      checked: Boolean(cfg.auto_update_apks),
+    },
+  ];
+  els.automationToggles.innerHTML = fields
+    .map(
+      (field) => `
+    <label class="automation-toggle-row">
+      <input type="checkbox" data-automation-key="${field.key}" ${field.checked ? "checked" : ""}>
+      <span>${escapeHtml(field.label)}</span>
+    </label>`,
+    )
+    .join("");
+
+  if (els.automationMeta) {
+    const state = status?.state || {};
+    const lastTick = state.lastTickAt || "never";
+    const lastError = state.lastError ? ` Last error: ${state.lastError}` : "";
+    const stuck = status?.stuckRules || {};
+    els.automationMeta.textContent =
+      `Poll every ${status?.pollSeconds || 60}s · last tick ${lastTick} · ` +
+      `stuck rules ${stuck.enabledRuleCount || 0}/${stuck.ruleCount || 0} enabled.${lastError}`;
+  }
+}
+
+function remediationLabel(value) {
+  const map = {
+    press_back: "Press Back",
+    restart_emulator: "Restart emulator",
+    warn_user: "Warn user",
+  };
+  return map[value] || value || "Warn user";
+}
+
+function renderStuckRules(payload) {
+  if (!els.automationStuckRulesBody) return;
+  const rules = payload?.rules || [];
+  if (!rules.length) {
+    els.automationStuckRulesBody.innerHTML =
+      `<p class="settings-group-desc">No stuck-screen rules yet. Enable learning and wait for same-screen timeouts, or click Learn from history.</p>`;
+    return;
+  }
+  els.automationStuckRulesBody.innerHTML = `
+    <p class="settings-group-desc">
+      Learning ${payload?.learningEnabled === false ? "off" : "on"} ·
+      Auto-fix ${payload?.autoFixEnabled ? "on" : "off"} ·
+      ${rules.length} rule(s). Enable Auto-fix above to execute enabled rules.
+    </p>
+    <ul class="automation-stuck-list">
+      ${rules
+        .map((rule) => {
+          const match = rule.match || {};
+          const contains = match.actionContains || match.actionExact || "(any)";
+          const rem = rule.remediation || "warn_user";
+          return `
+        <li class="automation-stuck-row" data-rule-id="${escapeHtml(rule.id)}">
+          <label class="automation-toggle-row">
+            <input type="checkbox" data-stuck-enabled ${rule.enabled ? "checked" : ""}>
+            <span><strong>${escapeHtml(rule.label || rule.id)}</strong></span>
+          </label>
+          <div class="automation-stuck-meta">
+            Match screen contains <code>${escapeHtml(contains)}</code>
+            · hits ${Number(rule.hits) || 0}
+            · fixes ${Number(rule.autoFixCount) || 0}
+            · ${escapeHtml(rule.source || "rule")}
+          </div>
+          <label class="account-settings-label">
+            Action
+            <select class="setting-input" data-stuck-remediation style="width: auto; margin-left: 0.5rem;">
+              <option value="press_back" ${rem === "press_back" ? "selected" : ""}>Press Back</option>
+              <option value="restart_emulator" ${rem === "restart_emulator" ? "selected" : ""}>Restart emulator</option>
+              <option value="warn_user" ${rem === "warn_user" ? "selected" : ""}>Warn user</option>
+            </select>
+          </label>
+        </li>`;
+        })
+        .join("")}
+    </ul>`;
+}
+
+function renderIssueReport(report) {
+  if (!els.automationReportBody) return;
+  const common = report?.commonIssues || [];
+  const accounts = report?.topAccounts || [];
+  const recent = report?.recent || [];
+  if (!common.length && !recent.length) {
+    els.automationReportBody.innerHTML =
+      `<p class="settings-group-desc">No issues recorded in the last ${report?.days || 7} day(s) yet.</p>`;
+    return;
+  }
+  els.automationReportBody.innerHTML = `
+    <p class="settings-group-desc">${Number(report.totalEvents) || 0} event(s) in the last ${report.days} day(s).</p>
+    <div class="automation-report-grid">
+      <div>
+        <h3 class="automation-subhead">Most common</h3>
+        <ul class="automation-list">
+          ${common
+            .map(
+              (row) =>
+                `<li><strong>${escapeHtml(row.label || row.category)}</strong> <span>${Number(row.count) || 0}</span></li>`,
+            )
+            .join("") || "<li>None</li>"}
+        </ul>
+      </div>
+      <div>
+        <h3 class="automation-subhead">Top accounts</h3>
+        <ul class="automation-list">
+          ${accounts
+            .map(
+              (row) =>
+                `<li><strong>${escapeHtml(row.account)}</strong> <span>${Number(row.count) || 0}</span></li>`,
+            )
+            .join("") || "<li>None</li>"}
+        </ul>
+      </div>
+    </div>
+    <h3 class="automation-subhead">Recent</h3>
+    <ul class="automation-recent-list">
+      ${recent
+        .slice(0, 12)
+        .map(
+          (row) =>
+            `<li><span class="automation-recent-at">${escapeHtml(String(row.at || "").slice(0, 19))}</span> ${escapeHtml(row.label || row.category || "")}${row.account ? ` · ${escapeHtml(row.account)}` : ""}</li>`,
+        )
+        .join("")}
+    </ul>`;
+}
+
+function renderAssistantSuggestions(payload) {
+  if (!els.automationAssistantBody) return;
+  const items = payload?.items || [];
+  const llmNote =
+    payload?.llm?.enabled && payload?.llm?.result?.overview
+      ? `<p class="settings-group-desc">${escapeHtml(payload.llm.result.overview)}</p>`
+      : `<p class="settings-group-desc">${escapeHtml(payload?.message || "")}</p>`;
+  if (!items.length) {
+    els.automationAssistantBody.innerHTML = llmNote;
+    return;
+  }
+  els.automationAssistantBody.innerHTML =
+    llmNote +
+    items
+      .map(
+        (item) => `
+    <article class="automation-suggestion-card">
+      <h3>${escapeHtml(item.title || item.label || item.category)} <span class="automation-count">${Number(item.count) || 0}</span></h3>
+      <p>${escapeHtml(item.summary || "")}</p>
+      <ol>
+        ${(item.suggestions || []).map((tip) => `<li>${escapeHtml(tip)}</li>`).join("")}
+      </ol>
+    </article>`,
+      )
+      .join("");
+}
+
+async function saveAutomationToggle(key, enabled) {
+  const response = await fetch(
+    `/api/monitor-config/${encodeURIComponent(key)}/update?value=${encodeURIComponent(enabled ? "true" : "false")}`,
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = body.detail || body.error || response.statusText;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: enabled };
+}
+
+async function loadAutomationTab() {
+  setAutomationPageStatus("Loading automation…", "pending");
+  const days = Number(els.automationReportDays?.value || 7);
+  try {
+    const [statusRes, configRes, reportRes, suggestRes, stuckRes] = await Promise.all([
+      fetch("/api/automation/status", { cache: "no-store" }),
+      fetch("/api/monitor-config", { cache: "no-store" }),
+      fetch(`/api/reports/issues?days=${days}`, { cache: "no-store" }),
+      fetch(`/api/assistant/suggestions?days=${days}`, { cache: "no-store" }),
+      fetch("/api/automation/stuck-rules", { cache: "no-store" }),
+    ]);
+    const status = await statusRes.json().catch(() => ({}));
+    const configPayload = await configRes.json().catch(() => ({}));
+    const report = await reportRes.json().catch(() => ({}));
+    const suggestions = await suggestRes.json().catch(() => ({}));
+    const stuck = await stuckRes.json().catch(() => ({}));
+    if (!statusRes.ok) throw new Error(status.detail || `HTTP ${statusRes.status}`);
+    if (configRes.ok) {
+      currentMonitorConfig = configPayload.config || currentMonitorConfig;
+    }
+    renderAutomationToggles(status, currentMonitorConfig);
+    if (stuckRes.ok) renderStuckRules(stuck);
+    if (reportRes.ok) renderIssueReport(report);
+    if (suggestRes.ok) renderAssistantSuggestions(suggestions);
+    setAutomationPageStatus("Automation ready.", "ok");
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Failed to load automation.", "error");
+  }
+}
+
+els.automationRefreshBtn?.addEventListener("click", () => {
+  loadAutomationTab();
+});
+
+els.automationRunTickBtn?.addEventListener("click", async () => {
+  setAutomationPageStatus("Running automation check…", "pending");
+  try {
+    const response = await fetch("/api/automation/tick", { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    const count = Array.isArray(body.actions) ? body.actions.length : 0;
+    setAutomationPageStatus(
+      count ? `Automation tick finished (${count} action(s)).` : "Automation tick finished (no actions).",
+      "ok",
+    );
+    await loadAutomationTab();
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Automation tick failed.", "error");
+  }
+});
+
+els.automationSuggestBtn?.addEventListener("click", async () => {
+  const days = Number(els.automationReportDays?.value || 7);
+  setAutomationPageStatus("Refreshing suggestions…", "pending");
+  try {
+    const response = await fetch(`/api/assistant/suggestions?days=${days}&llm=1`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    renderAssistantSuggestions(body);
+    setAutomationPageStatus("Suggestions updated.", "ok");
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Could not refresh suggestions.", "error");
+  }
+});
+
+els.automationReportDays?.addEventListener("change", () => {
+  loadAutomationTab();
+});
+
+els.automationToggles?.addEventListener("change", async (event) => {
+  const input = event.target.closest("input[data-automation-key]");
+  if (!input) return;
+  const key = input.dataset.automationKey;
+  try {
+    setAutomationPageStatus(`Saving ${key}…`, "pending");
+    await saveAutomationToggle(key, Boolean(input.checked));
+    setAutomationPageStatus(`Saved ${key}.`, "ok");
+  } catch (error) {
+    input.checked = !input.checked;
+    setAutomationPageStatus(error.message || "Could not save automation setting.", "error");
+  }
+});
+
+els.automationStuckLearnBtn?.addEventListener("click", async () => {
+  const days = Number(els.automationReportDays?.value || 7);
+  setAutomationPageStatus("Learning stuck-screen patterns from history…", "pending");
+  try {
+    const response = await fetch(`/api/automation/stuck-rules/learn?days=${days}`, {
+      method: "POST",
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    renderStuckRules({
+      learningEnabled: currentMonitorConfig?.stuck_screen_learning_enabled !== false,
+      autoFixEnabled: Boolean(currentMonitorConfig?.stuck_screen_auto_fix_enabled),
+      rules: body.rules || [],
+    });
+    setAutomationPageStatus(
+      `Learned ${Number(body.learned) || 0}, reinforced ${Number(body.reinforced) || 0}.`,
+      "ok",
+    );
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Stuck-screen learning failed.", "error");
+  }
+});
+
+els.automationStuckRulesBody?.addEventListener("change", async (event) => {
+  const row = event.target.closest("[data-rule-id]");
+  if (!row) return;
+  const ruleId = row.dataset.ruleId;
+  const enabledInput = row.querySelector("input[data-stuck-enabled]");
+  const remSelect = row.querySelector("select[data-stuck-remediation]");
+  const payload = {};
+  if (event.target === enabledInput) payload.enabled = Boolean(enabledInput.checked);
+  if (event.target === remSelect) payload.remediation = remSelect.value;
+  if (!Object.keys(payload).length) return;
+  try {
+    setAutomationPageStatus(`Saving rule ${ruleId}…`, "pending");
+    const response = await fetch(`/api/automation/stuck-rules/${encodeURIComponent(ruleId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    setAutomationPageStatus("Stuck-screen rule saved.", "ok");
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Could not save stuck-screen rule.", "error");
+    await loadAutomationTab();
+  }
+});
+
 document.getElementById("monitor-check-updates-btn")?.addEventListener("click", () => {
   loadUpdateStatus(true);
 });
@@ -6065,7 +6486,9 @@ async function pollUpdateRestart(summary, applyBtn) {
 
 const initialTabHash = window.location.hash.replace("#", "");
 const initialTab = [initialTabParam, initialTabHash].find(
-  (value) => value && ["bot", "accounts", "names", "provision", "restore", "monitor"].includes(value),
+  (value) =>
+    value &&
+    ["bot", "accounts", "names", "bulk", "provision", "restore", "automation", "monitor"].includes(value),
 );
 if (initialTab) {
   setActiveSettingsTab(initialTab);
