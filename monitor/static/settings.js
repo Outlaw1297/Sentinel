@@ -215,6 +215,8 @@ const els = {
   automationPageStatus: document.getElementById("automation-page-status"),
   automationToggles: document.getElementById("automation-toggles"),
   automationMeta: document.getElementById("automation-meta"),
+  automationStuckRulesBody: document.getElementById("automation-stuck-rules-body"),
+  automationStuckLearnBtn: document.getElementById("automation-stuck-learn-btn"),
   automationReportBody: document.getElementById("automation-report-body"),
   automationAssistantBody: document.getElementById("automation-assistant-body"),
   automationReportDays: document.getElementById("automation-report-days"),
@@ -6114,6 +6116,16 @@ function renderAutomationToggles(status, config) {
       checked: cfg.issue_history_enabled !== false,
     },
     {
+      key: "stuck_screen_learning_enabled",
+      label: "Learn stuck-screen patterns (same-screen timeouts)",
+      checked: cfg.stuck_screen_learning_enabled !== false,
+    },
+    {
+      key: "stuck_screen_auto_fix_enabled",
+      label: "Auto-fix stuck screens (Back / restart / warn)",
+      checked: Boolean(cfg.stuck_screen_auto_fix_enabled),
+    },
+    {
       key: "auto_stop_gnbots_on_trouble",
       label: "Auto-stop GnBots on problem emulators",
       checked: Boolean(cfg.auto_stop_gnbots_on_trouble),
@@ -6138,8 +6150,66 @@ function renderAutomationToggles(status, config) {
     const state = status?.state || {};
     const lastTick = state.lastTickAt || "never";
     const lastError = state.lastError ? ` Last error: ${state.lastError}` : "";
-    els.automationMeta.textContent = `Poll every ${status?.pollSeconds || 60}s · last tick ${lastTick}.${lastError}`;
+    const stuck = status?.stuckRules || {};
+    els.automationMeta.textContent =
+      `Poll every ${status?.pollSeconds || 60}s · last tick ${lastTick} · ` +
+      `stuck rules ${stuck.enabledRuleCount || 0}/${stuck.ruleCount || 0} enabled.${lastError}`;
   }
+}
+
+function remediationLabel(value) {
+  const map = {
+    press_back: "Press Back",
+    restart_emulator: "Restart emulator",
+    warn_user: "Warn user",
+  };
+  return map[value] || value || "Warn user";
+}
+
+function renderStuckRules(payload) {
+  if (!els.automationStuckRulesBody) return;
+  const rules = payload?.rules || [];
+  if (!rules.length) {
+    els.automationStuckRulesBody.innerHTML =
+      `<p class="settings-group-desc">No stuck-screen rules yet. Enable learning and wait for same-screen timeouts, or click Learn from history.</p>`;
+    return;
+  }
+  els.automationStuckRulesBody.innerHTML = `
+    <p class="settings-group-desc">
+      Learning ${payload?.learningEnabled === false ? "off" : "on"} ·
+      Auto-fix ${payload?.autoFixEnabled ? "on" : "off"} ·
+      ${rules.length} rule(s). Enable Auto-fix above to execute enabled rules.
+    </p>
+    <ul class="automation-stuck-list">
+      ${rules
+        .map((rule) => {
+          const match = rule.match || {};
+          const contains = match.actionContains || match.actionExact || "(any)";
+          const rem = rule.remediation || "warn_user";
+          return `
+        <li class="automation-stuck-row" data-rule-id="${escapeHtml(rule.id)}">
+          <label class="automation-toggle-row">
+            <input type="checkbox" data-stuck-enabled ${rule.enabled ? "checked" : ""}>
+            <span><strong>${escapeHtml(rule.label || rule.id)}</strong></span>
+          </label>
+          <div class="automation-stuck-meta">
+            Match screen contains <code>${escapeHtml(contains)}</code>
+            · hits ${Number(rule.hits) || 0}
+            · fixes ${Number(rule.autoFixCount) || 0}
+            · ${escapeHtml(rule.source || "rule")}
+          </div>
+          <label class="account-settings-label">
+            Action
+            <select class="setting-input" data-stuck-remediation style="width: auto; margin-left: 0.5rem;">
+              <option value="press_back" ${rem === "press_back" ? "selected" : ""}>Press Back</option>
+              <option value="restart_emulator" ${rem === "restart_emulator" ? "selected" : ""}>Restart emulator</option>
+              <option value="warn_user" ${rem === "warn_user" ? "selected" : ""}>Warn user</option>
+            </select>
+          </label>
+        </li>`;
+        })
+        .join("")}
+    </ul>`;
 }
 
 function renderIssueReport(report) {
@@ -6233,21 +6303,24 @@ async function loadAutomationTab() {
   setAutomationPageStatus("Loading automation…", "pending");
   const days = Number(els.automationReportDays?.value || 7);
   try {
-    const [statusRes, configRes, reportRes, suggestRes] = await Promise.all([
+    const [statusRes, configRes, reportRes, suggestRes, stuckRes] = await Promise.all([
       fetch("/api/automation/status", { cache: "no-store" }),
       fetch("/api/monitor-config", { cache: "no-store" }),
       fetch(`/api/reports/issues?days=${days}`, { cache: "no-store" }),
       fetch(`/api/assistant/suggestions?days=${days}`, { cache: "no-store" }),
+      fetch("/api/automation/stuck-rules", { cache: "no-store" }),
     ]);
     const status = await statusRes.json().catch(() => ({}));
     const configPayload = await configRes.json().catch(() => ({}));
     const report = await reportRes.json().catch(() => ({}));
     const suggestions = await suggestRes.json().catch(() => ({}));
+    const stuck = await stuckRes.json().catch(() => ({}));
     if (!statusRes.ok) throw new Error(status.detail || `HTTP ${statusRes.status}`);
     if (configRes.ok) {
       currentMonitorConfig = configPayload.config || currentMonitorConfig;
     }
     renderAutomationToggles(status, currentMonitorConfig);
+    if (stuckRes.ok) renderStuckRules(stuck);
     if (reportRes.ok) renderIssueReport(report);
     if (suggestRes.ok) renderAssistantSuggestions(suggestions);
     setAutomationPageStatus("Automation ready.", "ok");
@@ -6306,6 +6379,55 @@ els.automationToggles?.addEventListener("change", async (event) => {
   } catch (error) {
     input.checked = !input.checked;
     setAutomationPageStatus(error.message || "Could not save automation setting.", "error");
+  }
+});
+
+els.automationStuckLearnBtn?.addEventListener("click", async () => {
+  const days = Number(els.automationReportDays?.value || 7);
+  setAutomationPageStatus("Learning stuck-screen patterns from history…", "pending");
+  try {
+    const response = await fetch(`/api/automation/stuck-rules/learn?days=${days}`, {
+      method: "POST",
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    renderStuckRules({
+      learningEnabled: currentMonitorConfig?.stuck_screen_learning_enabled !== false,
+      autoFixEnabled: Boolean(currentMonitorConfig?.stuck_screen_auto_fix_enabled),
+      rules: body.rules || [],
+    });
+    setAutomationPageStatus(
+      `Learned ${Number(body.learned) || 0}, reinforced ${Number(body.reinforced) || 0}.`,
+      "ok",
+    );
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Stuck-screen learning failed.", "error");
+  }
+});
+
+els.automationStuckRulesBody?.addEventListener("change", async (event) => {
+  const row = event.target.closest("[data-rule-id]");
+  if (!row) return;
+  const ruleId = row.dataset.ruleId;
+  const enabledInput = row.querySelector("input[data-stuck-enabled]");
+  const remSelect = row.querySelector("select[data-stuck-remediation]");
+  const payload = {};
+  if (event.target === enabledInput) payload.enabled = Boolean(enabledInput.checked);
+  if (event.target === remSelect) payload.remediation = remSelect.value;
+  if (!Object.keys(payload).length) return;
+  try {
+    setAutomationPageStatus(`Saving rule ${ruleId}…`, "pending");
+    const response = await fetch(`/api/automation/stuck-rules/${encodeURIComponent(ruleId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    setAutomationPageStatus("Stuck-screen rule saved.", "ok");
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Could not save stuck-screen rule.", "error");
+    await loadAutomationTab();
   }
 });
 

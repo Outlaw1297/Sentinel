@@ -39,6 +39,13 @@ class IssueHistoryTests(unittest.TestCase):
         category, _ = classify_issue_message("Same screen timeout at dailies. Restarting. [Cheryl]")
         self.assertEqual(category, "same_screen_timeout")
 
+    def test_same_screen_meta_includes_action_hint(self) -> None:
+        event = record_issue_event(
+            message="Same screen timeout at EventPage. Restarting. [Cheryl]",
+            account="Cheryl",
+        )
+        self.assertEqual(event["meta"].get("actionHint"), "EventPage")
+
     def test_report_aggregates(self) -> None:
         record_issue_event(message="device offline on launch", account="Rick", instance_index=1)
         record_issue_event(message="Same screen timeout at dailies. Restarting.", account="Cheryl")

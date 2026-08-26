@@ -27,12 +27,15 @@ class AutomationTests(unittest.TestCase):
             "issue_history_enabled": True,
             "auto_stop_gnbots_on_trouble": False,
             "auto_update_apks": False,
+            "stuck_screen_learning_enabled": False,
+            "stuck_screen_auto_fix_enabled": False,
             "gnbots_root": str(ROOT),
         }
         with patch("automation._ingest_recent_issues", return_value=0):
-            with patch("automation._maybe_stop_gnbots_for_trouble", return_value=None):
-                with patch("automation._maybe_auto_update_apks", return_value=None):
-                    result = run_automation_tick(config)
+            with patch("automation._maybe_process_stuck_screens", return_value=[]):
+                with patch("automation._maybe_stop_gnbots_for_trouble", return_value=None):
+                    with patch("automation._maybe_auto_update_apks", return_value=None):
+                        result = run_automation_tick(config)
         self.assertTrue(result["ok"])
         self.assertEqual(result["actions"], [])
 
