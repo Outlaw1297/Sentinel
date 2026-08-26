@@ -60,6 +60,8 @@ GnBots already detects “same screen” timeouts (for example stuck on an **eve
    - Everything else → **Warn user** (web push / event log)
 4. When **Auto-fix stuck screens** is enabled, runs matching **enabled** rules (with cooldown)
 
+Auto-fix only considers same-screen events from roughly the last **3 minutes** (newest first). Turning it on will not walk days of historical timeouts and Back/restart accounts that already recovered. Failed remediations do not burn the shared rule cooldown.
+
 A seed rule matches screens whose name contains `event` and defaults to Press Back. Use **Learn from history** to mine past issue events. Enable/disable rules and change the action in the Automation tab.
 
 | Key | Default | Meaning |
