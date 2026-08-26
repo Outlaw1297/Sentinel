@@ -232,8 +232,8 @@ async function showLocalNotification(title, body, tag) {
   await registration.showNotification(title, {
     body,
     tag,
-    icon: "/static/icons/icon-192.png?v=6",
-    badge: "/static/icons/icon-192.png?v=6",
+    icon: "/static/icons/notification-icon.png?v=1",
+    badge: "/static/icons/notification-badge.png?v=1",
   });
 }
 

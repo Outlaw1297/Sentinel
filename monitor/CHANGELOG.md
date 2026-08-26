@@ -8,6 +8,9 @@
 - Settings → Automation panel to enable learning/auto-fix and edit rules
 - Docs: `docs/AUTOMATION.md`
 
+### PWA notifications
+- Fix Android/iOS status-bar notification icon showing as a white box by shipping a transparent white silhouette badge (`notification-badge.png`) separate from the color popup icon
+
 ## 0.1.9 — 2026-08-26
 
 ### Bug fix
