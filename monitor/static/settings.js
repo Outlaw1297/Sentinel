@@ -351,6 +351,9 @@ async function refreshSettingsActivity() {
   try {
     const response = await fetch("/api/bot-activity", { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
+    // #region agent log
+    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'A',location:'settings.js:refreshSettingsActivity',message:'bot-activity poll',data:{ok:response.ok,status:response.status,writable:body.writable,botActive:body.botActive,profileEditLocked:body.profileEditLocked,runningSessions:body.runningSessions,pausedSessions:body.pausedSessions,botState:body.botState,bulkFieldsWritableBefore:bulkFieldsWritable,gnbotsOnlineBefore:gnbotsOnline,tab:activeSettingsTab},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (response.ok) {
       applyBotActivityFromServer(body);
     }
@@ -373,6 +376,9 @@ function applyBotActivityFromServer(body) {
   switchNamesWritable = writable;
   bulkFieldsWritable = writable;
   accountActionsWritable = writable;
+  // #region agent log
+  fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'C',location:'settings.js:applyBotActivityFromServer',message:'applied activity lock state',data:{writable,profileEditLocked,botActive,botState,wasBulkWritable,bulkFieldsWritable,gnbotsOnline,tab:activeSettingsTab},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 
   if (provisionPreview) {
     provisionPreview = { ...provisionPreview, writable, botActive: profileEditLocked };
@@ -399,10 +405,10 @@ function applyBotActivityFromServer(body) {
   } else if (activeSettingsTab === "bulk" && wasBulkWritable !== bulkFieldsWritable && bulkFieldRows.length) {
     renderBulkActionFieldList();
     setBulkPageStatus(
-      bulkActionsLocked()
+      bulkActionsSessionLocked()
         ? "Bulk action settings are read-only while bot sessions are running."
         : "Select accounts and save changes.",
-      bulkActionsLocked() ? "warn" : "ok",
+      bulkActionsSessionLocked() ? "warn" : "ok",
     );
   } else if (activeSettingsTab === "accounts" && wasAccountsWritable !== accountActionsWritable) {
     renderAccountActions(currentAccountActions);
@@ -3726,8 +3732,12 @@ async function saveAllSwitchNames() {
   }
 }
 
+function bulkActionsSessionLocked() {
+  return !bulkFieldsWritable;
+}
+
 function bulkActionsLocked() {
-  return !bulkFieldsWritable || bulkFieldsBusy;
+  return bulkActionsSessionLocked() || bulkFieldsBusy;
 }
 
 function setBulkPageStatus(message, tone = "") {
@@ -3739,11 +3749,14 @@ function setBulkPageStatus(message, tone = "") {
 function updateBulkLockedBanner() {
   const banner = els.bulkLockedBanner;
   if (!banner) return;
-  if (bulkFieldsWritable) {
+  if (!bulkActionsSessionLocked()) {
     banner.classList.add("hidden");
     banner.textContent = "";
     return;
   }
+  // #region agent log
+  fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'post-fix',hypothesisId:'D',location:'settings.js:updateBulkLockedBanner',message:'showing bulk lock banner',data:{bulkFieldsWritable,bulkFieldsBusy,botActive,botState,gnbotsOnline,profileEditLocked},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   banner.textContent =
     "Bulk action settings are read-only while bot sessions are running. Stop the bot from the dashboard, then edit here.";
   banner.classList.remove("hidden");
@@ -3752,7 +3765,7 @@ function updateBulkLockedBanner() {
 function applyBulkActionsLockState() {
   updateBulkLockedBanner();
   if (els.bulkActionsList) {
-    els.bulkActionsList.classList.toggle("locked", bulkActionsLocked());
+    els.bulkActionsList.classList.toggle("locked", bulkActionsSessionLocked());
   }
   const locked = bulkActionsLocked();
   if (els.bulkActionSelect) els.bulkActionSelect.disabled = locked || bulkFieldsBusy;
@@ -4088,7 +4101,7 @@ function renderBulkApplyControl() {
     els.bulkApplyControl.innerHTML = renderBulkScheduleRulesEditor(
       "bulk-apply",
       seed.length ? seed : [{ kind: "wait_after", duration: 1, durationUnit: "hours" }],
-      bulkActionsLocked(),
+      bulkActionsSessionLocked(),
     );
     return;
   }
@@ -4096,15 +4109,15 @@ function renderBulkApplyControl() {
     els.bulkApplyControl.innerHTML = renderBulkScheduleSingleRuleEditor(
       "bulk-apply",
       bulkScheduleRuleFromValue(bulkFieldMeta.value, bulkFieldMeta),
-      bulkActionsLocked(),
+      bulkActionsSessionLocked(),
     );
     return;
   }
   if (bulkFieldMeta.type === "schedule_reset") {
-    els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, false, { disabled: bulkActionsLocked() });
+    els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, false, { disabled: bulkActionsSessionLocked() });
     return;
   }
-  els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, bulkFieldMeta.value, { disabled: bulkActionsLocked() });
+  els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, bulkFieldMeta.value, { disabled: bulkActionsSessionLocked() });
 }
 
 function renderBulkActionSelectOptions() {
@@ -4137,7 +4150,8 @@ function renderBulkFieldSelectOptions() {
 function renderBulkActionFieldRow(row) {
   const accountId = String(row.accountId);
   const checked = bulkSelectedAccountIds.has(accountId);
-  const locked = bulkActionsLocked();
+  // Session lock only — never treat in-flight loading (busy) as "bot sessions running".
+  const locked = bulkActionsSessionLocked();
   const inputId = `bulk-field-${accountId}`;
   const statusLabel = row.active ? "active" : "inactive";
   const scope = `bulk-row-${accountId}`;
@@ -4258,6 +4272,9 @@ async function loadBulkActionCatalog() {
     }
     bulkActionCatalog = Array.isArray(body.actions) ? body.actions : [];
     bulkFieldsWritable = body.writable !== false;
+    // #region agent log
+    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'B',location:'settings.js:loadBulkActionCatalog',message:'action-fields catalog loaded',data:{ok:true,writable:body.writable,botActive:body.botActive,bulkFieldsWritable,actionCount:bulkActionCatalog.length,profile:body.profile||''},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     const profile = body.profile ? String(body.profile) : "";
     if (els.bulkActionsMeta) {
       els.bulkActionsMeta.textContent = profile
@@ -4268,10 +4285,10 @@ async function loadBulkActionCatalog() {
     renderBulkFieldSelectOptions();
     renderBulkActionFieldList();
     setBulkPageStatus(
-      bulkActionsLocked()
+      bulkActionsSessionLocked()
         ? "Bulk action settings are read-only while bot sessions are running."
         : "Choose an action and setting, then edit selected accounts.",
-      bulkActionsLocked() ? "warn" : "ok",
+      bulkActionsSessionLocked() ? "warn" : "ok",
     );
   } catch (error) {
     bulkActionCatalog = [];
@@ -4282,6 +4299,9 @@ async function loadBulkActionCatalog() {
   } finally {
     bulkFieldsBusy = false;
     applyBulkActionsLockState();
+    // #region agent log
+    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'post-fix',hypothesisId:'F',location:'settings.js:loadBulkActionCatalog:finally',message:'catalog load finished',data:{bulkFieldsBusy,bulkFieldsWritable,sessionLocked:bulkActionsSessionLocked(),busyLocked:bulkActionsLocked()},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
   }
 }
 
@@ -4307,21 +4327,29 @@ async function loadBulkActionFieldRows() {
       throw new Error(formatApiError(body, "Could not load action field values."));
     }
     bulkFieldsWritable = body.writable !== false;
+    // #region agent log
+    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'B',location:'settings.js:loadBulkActionFieldRows',message:'action-fields rows loaded',data:{writable:body.writable,botActive:body.botActive,bulkFieldsWritable,rowCount:Array.isArray(body.accounts)?body.accounts.length:0,activeCount:Array.isArray(body.accounts)?body.accounts.filter((r)=>r&&r.active).length:0},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     bulkFieldMeta = body.field || null;
     bulkFieldRows = Array.isArray(body.accounts) ? body.accounts : [];
     bulkSelectedAccountIds = new Set(bulkFieldRows.map((row) => String(row.accountId)));
     if (bulkFieldMeta && bulkFieldRows.length && bulkFieldIsSchedule(bulkFieldMeta)) {
       bulkFieldMeta = { ...bulkFieldMeta, value: bulkFieldRows[0].value };
     }
+    // Clear busy before render/status so rows are not permanently disabled as "sessions running".
+    bulkFieldsBusy = false;
     renderBulkActionFieldList();
     const fieldLabel = bulkFieldMeta?.label || bulkSelectedFieldKey;
     const action = bulkActionBySuffix(bulkSelectedScriptSuffix);
     setBulkPageStatus(
-      bulkActionsLocked()
+      bulkActionsSessionLocked()
         ? "Bulk action settings are read-only while bot sessions are running."
         : `${action?.title || bulkSelectedScriptSuffix} · ${fieldLabel} · ${bulkFieldRows.length} account${bulkFieldRows.length === 1 ? "" : "s"}`,
-      bulkActionsLocked() ? "warn" : "ok",
+      bulkActionsSessionLocked() ? "warn" : "ok",
     );
+    // #region agent log
+    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'post-fix',hypothesisId:'F',location:'settings.js:loadBulkActionFieldRows:rendered',message:'rows rendered after busy clear',data:{bulkFieldsBusy,bulkFieldsWritable,sessionLocked:bulkActionsSessionLocked(),rowCount:bulkFieldRows.length,saveWouldLock:bulkActionsLocked()},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
   } catch (error) {
     bulkFieldRows = [];
     bulkFieldMeta = null;
@@ -4372,7 +4400,7 @@ function bulkScheduleRerender(scope, rules) {
   if (!container) return;
   const rulesHost = container.querySelector(".account-schedule-rules");
   if (!rulesHost) return;
-  const disabled = bulkActionsLocked();
+  const disabled = bulkActionsSessionLocked();
   rulesHost.innerHTML = rules.length
     ? rules.map((rule, index) => renderBulkScheduleRuleRow(scope, rule, index, disabled)).join("")
     : `<p class="account-schedule-empty">No rules configured.</p>`;
@@ -5243,6 +5271,9 @@ async function loadSettings() {
     currentSettings = body.settings || {};
     settingsWritable = body.writable !== false;
     profileEditLocked = body.writable === false;
+    // #region agent log
+    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'E',location:'settings.js:loadSettings',message:'settings API loaded',data:{gnbotsOnline:body.gnbotsOnline,writable:body.writable,botActive:body.botActive,botState:body.botState,runningSessions:body.runningSessions,pausedSessions:body.pausedSessions,source:body.source,hasWarning:Boolean(body.warning),tab:activeSettingsTab},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     setGnbotsStatus(body.gnbotsOnline !== false, { writable: settingsWritable });
     applySettingsLockState();
     if (activeSettingsTab === "restore") {
@@ -5252,7 +5283,14 @@ async function loadSettings() {
     renderRawSettings();
 
     if (body.warning) {
-      setPageStatus(body.warning, "warn");
+      if (body.gnbotsOnline === false && body.writable !== false) {
+        setPageStatus(
+          "GnBots is offline — showing saved config. You can edit now; restart GnBots after saving.",
+          "ok",
+        );
+      } else {
+        setPageStatus(body.warning, "warn");
+      }
     } else if (settingsLocked()) {
       setPageStatus("Settings are read-only while bot sessions are running. Stop the bot to edit.", "warn");
     } else if (body.gnbotsOnline !== false) {

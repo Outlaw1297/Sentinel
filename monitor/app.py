@@ -198,6 +198,8 @@ ROOT = get_install_root()
 CONFIG_PATH = get_config_path()
 STATIC_DIR = get_static_dir()
 _DASHBOARD_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_DASHBOARD_BUILD_LOCK = asyncio.Lock()
+_SCREENSHOT_SLOTS = asyncio.Semaphore(2)
 _GNBOTS_API_STATE: dict[str, Any] = {"failures": 0, "last_ok": 0.0, "last_error": None}
 
 GLOBAL_COMMANDS: dict[str, dict[str, Any]] = {
@@ -2204,11 +2206,16 @@ async def gnbots_api_health_loop() -> None:
 
 
 def effective_dashboard_cache_seconds(payload: dict[str, Any]) -> float:
+    """Keep a short cache when GnBots is offline so failed API calls cannot stampede."""
+    if payload.get("botActive") and payload.get("gnbotsOnline"):
+        active = float(config.get("dashboard_cache_active_seconds", 30))
+        return max(10.0, active)
+    base = dashboard_cache_seconds(config)
+    if base <= 0:
+        base = 30.0
     if not payload.get("gnbotsOnline"):
-        return 0.0
-    if payload.get("botActive"):
-        return max(0.0, float(config.get("dashboard_cache_active_seconds", 2)))
-    return dashboard_cache_seconds(config)
+        return max(15.0, min(base, 60.0))
+    return base
 
 
 def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | None, gnbots_error: str | None) -> dict[str, Any]:
@@ -2457,7 +2464,7 @@ def _session_apk_probe_tick(cfg: dict[str, Any]) -> dict[str, Any] | None:
 
 async def session_apk_probe_loop() -> None:
     await asyncio.sleep(12)
-    interval = max(15, int(config.get("session_apk_probe_seconds", 20)))
+    interval = max(60, int(config.get("session_apk_probe_seconds", 120)))
     while True:
         try:
             await asyncio.to_thread(_session_apk_probe_tick, config)
@@ -2567,16 +2574,28 @@ async def index() -> HTMLResponse:
     )
 
 
-@app.get("/api/ping")
-async def ping() -> dict[str, Any]:
+def _ping_extras() -> dict[str, Any]:
     from host_status import is_windows_admin
     from ldplayer_restore import _query_ldremote_service_state
 
     return {
-        "ok": True,
-        "ts": datetime.now(timezone.utc).isoformat(),
         "admin": is_windows_admin(),
         "ldRemoteSvc": _query_ldremote_service_state(),
+    }
+
+
+@app.get("/api/ping")
+async def ping() -> dict[str, Any]:
+    # Watcher health depends on this staying fast. sc.exe must not block the event loop.
+    extras: dict[str, Any] = {"admin": None, "ldRemoteSvc": None}
+    try:
+        extras = await asyncio.wait_for(asyncio.to_thread(_ping_extras), timeout=3.0)
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "ok": True,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        **extras,
     }
 
 
@@ -2757,31 +2776,85 @@ async def health() -> dict[str, Any]:
     }
 
 
-@app.get("/api/dashboard")
-async def dashboard() -> dict[str, Any]:
-    write_profiles_manifest(STATIC_DIR, config)
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    # #region agent log
+    try:
+        line = json.dumps(
+            {
+                "sessionId": "65f18f",
+                "runId": "longrun",
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            },
+            ensure_ascii=True,
+        )
+        path = Path(r"V:\Dropbox\Emulation\gnbot\debug-65f18f.log")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except Exception:
+        pass
+    # #endregion
+
+
+def _dashboard_cache_hit() -> dict[str, Any] | None:
     cached = _DASHBOARD_CACHE.get("data")
     cache_at = float(_DASHBOARD_CACHE.get("at") or 0.0)
-    if isinstance(cached, dict):
-        ttl = effective_dashboard_cache_seconds(cached)
-        if ttl > 0 and time.time() - cache_at < ttl:
+    if not isinstance(cached, dict):
+        return None
+    ttl = effective_dashboard_cache_seconds(cached)
+    if ttl > 0 and time.time() - cache_at < ttl:
+        return cached
+    return None
+
+
+@app.get("/api/dashboard")
+async def dashboard() -> dict[str, Any]:
+    cached = _dashboard_cache_hit()
+    if cached is not None:
+        return cached
+
+    async with _DASHBOARD_BUILD_LOCK:
+        cached = _dashboard_cache_hit()
+        if cached is not None:
+            # #region agent log
+            _agent_debug_log("A", "app.py:dashboard", "coalesced dashboard waiters hit cache", {"waiters": "lock"})
+            # #endregion
             return cached
 
-    gnbots: dict[str, Any] | None = None
-    error: str | None = None
-    try:
-        gnbots = await fetch_gnbots_with_retry(config, attempts=3)
-    except Exception as exc:  # noqa: BLE001
-        error = format_gnbots_error(exc)
+        started = time.perf_counter()
+        gnbots: dict[str, Any] | None = None
+        error: str | None = None
+        try:
+            gnbots = await fetch_gnbots_with_retry(config, attempts=1)
+        except Exception as exc:  # noqa: BLE001
+            error = format_gnbots_error(exc)
 
-    payload = await asyncio.to_thread(build_dashboard_payload, config, gnbots, error)
-    ttl = effective_dashboard_cache_seconds(payload)
-    if ttl > 0:
-        _DASHBOARD_CACHE["at"] = time.time()
-        _DASHBOARD_CACHE["data"] = payload
-    else:
-        invalidate_dashboard_cache()
-    return payload
+        payload = await asyncio.to_thread(build_dashboard_payload, config, gnbots, error)
+        ttl = effective_dashboard_cache_seconds(payload)
+        if ttl > 0:
+            _DASHBOARD_CACHE["at"] = time.time()
+            _DASHBOARD_CACHE["data"] = payload
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        # #region agent log
+        _agent_debug_log(
+            "B",
+            "app.py:dashboard",
+            "dashboard built",
+            {
+                "elapsedMs": elapsed_ms,
+                "gnbotsOnline": bool(payload.get("gnbotsOnline")),
+                "botActive": bool(payload.get("botActive")),
+                "ttl": ttl,
+                "error": error or "",
+            },
+        )
+        # #endregion
+        if elapsed_ms >= 8000:
+            setup_monitor_logging().warning("Slow dashboard build: %sms online=%s", elapsed_ms, payload.get("gnbotsOnline"))
+        return payload
 
 
 @app.post("/api/logs/errors/clear")
@@ -3668,22 +3741,23 @@ async def get_session_screenshot(account_id: str) -> Response:
     base = resolve_gnbots_api_url(config).rstrip("/")
     last_detail = "Screenshot unavailable."
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=gnbots_screenshot_timeout()) as client:
-                response = await client.get(
-                    f"{base}/sessions/{slot}/screenshot",
-                    headers={**build_gnbots_headers(), "Accept": "image/*,*/*"},
-                )
+            async with _SCREENSHOT_SLOTS:
+                async with httpx.AsyncClient(timeout=gnbots_screenshot_timeout()) as client:
+                    response = await client.get(
+                        f"{base}/sessions/{slot}/screenshot",
+                        headers={**build_gnbots_headers(), "Accept": "image/*,*/*"},
+                    )
         except httpx.HTTPError as exc:
             last_detail = f"GnBots screenshot error: {format_gnbots_error(exc)}"
-            if attempt + 1 < 3:
+            if attempt + 1 < 2:
                 await asyncio.sleep(0.8 * (attempt + 1))
             continue
 
         if response.is_error:
             last_detail = (response.text or "")[:500] or f"HTTP {response.status_code}"
-            if attempt + 1 < 3:
+            if attempt + 1 < 2:
                 await asyncio.sleep(0.8 * (attempt + 1))
             continue
 
@@ -3691,7 +3765,7 @@ async def get_session_screenshot(account_id: str) -> Response:
             image_bytes, media_type = decode_gnbots_screenshot(response.content)
         except ValueError as exc:
             last_detail = str(exc)
-            if attempt + 1 < 3:
+            if attempt + 1 < 2:
                 await asyncio.sleep(1.2 * (attempt + 1))
             continue
 
@@ -4232,7 +4306,11 @@ async def get_all_settings() -> dict[str, Any]:
         profile_meta = profile_status(file_settings, None)
         warning = (
             "Remote API did not respond in time; showing GnBots/config.json. "
-            "Stop the bot before editing settings. All changes need a GnBots restart."
+            + (
+                "You can edit settings while GnBots is offline; restart GnBots after saving."
+                if not process_running
+                else "Stop the bot before editing settings. All changes need a GnBots restart."
+            )
         )
         if api_error:
             warning = f"{warning} ({api_error})"

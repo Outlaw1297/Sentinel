@@ -270,7 +270,7 @@ def _query_ldremote_service_state(*, force: bool = False) -> str:
         ["sc", "query", "LDRemoteSvc"],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=3,
         check=False,
         **_hidden_windows_subprocess_kwargs(),
     )
