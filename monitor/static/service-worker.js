@@ -11,7 +11,7 @@ const SHELL_ASSETS = [
   "/favicon.ico",
   "/favicon.png?v=7",
   "/static/styles.css?v=73",
-  "/static/app.js?v=73",
+  "/static/app.js?v=75",
   "/static/settings.js?v=56",
   "/static/restore-shared.js?v=4",
   "/static/notifications.js?v=8",

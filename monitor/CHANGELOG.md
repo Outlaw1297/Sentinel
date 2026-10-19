@@ -4,6 +4,7 @@
 
 ### Stability
 - Keep the dashboard usable across multi-day runs by caching builds when GnBots is offline and skipping overlapping refreshes
+- After Start/Stop, bump the dashboard cache epoch and force fresh burst refreshes so an in-flight rebuild cannot keep showing the pre-change bot state
 - Move the Windows service check off the request thread so the page can still load
 - Limit concurrent screenshot downloads and slow the APK probe so the server does not stall
 - Rotate the runtime log instead of letting it grow without a limit

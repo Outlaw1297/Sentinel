@@ -1494,24 +1494,44 @@ async function loadCommandCatalog() {
   }
 }
 
-let refreshInFlight = false;
+let refreshInFlight = null;
+let refreshQueuedFresh = false;
 
-async function refresh() {
+async function refresh(options = {}) {
+  const fresh = Boolean(options.fresh);
   if (refreshInFlight) {
+    // A Start/Stop burst must not be dropped while an interval refresh is in flight.
+    if (fresh) {
+      refreshQueuedFresh = true;
+    }
+    await refreshInFlight;
+    if (refreshQueuedFresh) {
+      return refresh({ fresh: true });
+    }
     return;
   }
-  refreshInFlight = true;
+
+  let releaseInFlight = () => {};
+  refreshInFlight = new Promise((resolve) => {
+    releaseInFlight = resolve;
+  });
   els.refreshBtn.disabled = true;
   try {
-    const response = await fetch("/api/dashboard", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
+    do {
+      const wantFresh = fresh || refreshQueuedFresh;
+      refreshQueuedFresh = false;
+      const url = wantFresh ? "/api/dashboard?fresh=1" : "/api/dashboard";
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      render(await response.json());
+    } while (refreshQueuedFresh);
   } catch (error) {
     els.profileLabel.textContent = "Profile unavailable";
     renderError(error.message);
   } finally {
-    refreshInFlight = false;
     els.refreshBtn.disabled = false;
+    refreshInFlight = null;
+    releaseInFlight();
   }
 }
 
@@ -1530,11 +1550,14 @@ function scheduleScreenshotRefresh() {
 
 async function burstRefresh(options = {}) {
   const delays = options.delays || [0, 2000, 6000];
+  // After mutating commands, bypass server dashboard cache so we do not re-render
+  // a payload that was rebuilt from pre-change GnBots state.
+  const fresh = options.fresh !== false;
   for (const delay of delays) {
     if (delay > 0) {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    await refresh();
+    await refresh({ fresh });
   }
 }
 

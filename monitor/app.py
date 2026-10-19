@@ -197,7 +197,7 @@ from paths import get_config_path, get_install_root, get_logs_dir, get_static_di
 ROOT = get_install_root()
 CONFIG_PATH = get_config_path()
 STATIC_DIR = get_static_dir()
-_DASHBOARD_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_DASHBOARD_CACHE: dict[str, Any] = {"at": 0.0, "data": None, "epoch": 0}
 _DASHBOARD_BUILD_LOCK = asyncio.Lock()
 _SCREENSHOT_SLOTS = asyncio.Semaphore(2)
 _GNBOTS_API_STATE: dict[str, Any] = {"failures": 0, "last_ok": 0.0, "last_error": None}
@@ -502,8 +502,10 @@ def dashboard_cache_seconds(config: dict[str, Any]) -> float:
 
 
 def invalidate_dashboard_cache() -> None:
+    """Drop cached dashboard/API payloads and bump epoch so in-flight builds cannot repopulate."""
     _DASHBOARD_CACHE["at"] = 0.0
     _DASHBOARD_CACHE["data"] = None
+    _DASHBOARD_CACHE["epoch"] = int(_DASHBOARD_CACHE.get("epoch") or 0) + 1
     invalidate_gnbots_caches()
     try:
         from host_status import invalidate_stack_cache
@@ -511,6 +513,22 @@ def invalidate_dashboard_cache() -> None:
         invalidate_stack_cache()
     except Exception:  # noqa: BLE001
         pass
+
+
+def dashboard_cache_epoch() -> int:
+    return int(_DASHBOARD_CACHE.get("epoch") or 0)
+
+
+def store_dashboard_cache(payload: dict[str, Any], *, epoch: int) -> bool:
+    """Cache a built payload only if no invalidate happened since the build started."""
+    if epoch != dashboard_cache_epoch():
+        return False
+    ttl = effective_dashboard_cache_seconds(payload)
+    if ttl <= 0:
+        return False
+    _DASHBOARD_CACHE["at"] = time.time()
+    _DASHBOARD_CACHE["data"] = payload
+    return True
 
 
 def read_gnbots_config_file(monitor_config: dict[str, Any]) -> dict[str, Any]:
@@ -2789,17 +2807,22 @@ def _dashboard_cache_hit() -> dict[str, Any] | None:
 
 
 @app.get("/api/dashboard")
-async def dashboard() -> dict[str, Any]:
+async def dashboard(fresh: bool = Query(False)) -> dict[str, Any]:
     write_profiles_manifest(STATIC_DIR, config)
-    cached = _dashboard_cache_hit()
-    if cached is not None:
-        return cached
-
-    async with _DASHBOARD_BUILD_LOCK:
+    if fresh:
+        invalidate_dashboard_cache()
+    else:
         cached = _dashboard_cache_hit()
         if cached is not None:
             return cached
 
+    async with _DASHBOARD_BUILD_LOCK:
+        if not fresh:
+            cached = _dashboard_cache_hit()
+            if cached is not None:
+                return cached
+
+        build_epoch = dashboard_cache_epoch()
         started = time.perf_counter()
         gnbots: dict[str, Any] | None = None
         error: str | None = None
@@ -2809,10 +2832,7 @@ async def dashboard() -> dict[str, Any]:
             error = format_gnbots_error(exc)
 
         payload = await asyncio.to_thread(build_dashboard_payload, config, gnbots, error)
-        ttl = effective_dashboard_cache_seconds(payload)
-        if ttl > 0:
-            _DASHBOARD_CACHE["at"] = time.time()
-            _DASHBOARD_CACHE["data"] = payload
+        store_dashboard_cache(payload, epoch=build_epoch)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         if elapsed_ms >= 8000:
             setup_monitor_logging().warning("Slow dashboard build: %sms online=%s", elapsed_ms, payload.get("gnbotsOnline"))
@@ -2945,17 +2965,22 @@ async def run_global_command(command_id: str) -> dict[str, Any]:
     if not meta:
         raise HTTPException(status_code=404, detail=f"Unknown command: {command_id}")
 
+    # Invalidate before and after: an in-flight dashboard rebuild can otherwise
+    # recache the pre-command payload while Start/Stop is still running.
     invalidate_dashboard_cache()
 
     if resolved_id in {"stop", "stopall", "stopemulators"}:
         set_gnbots_user_stop_suppress(120)
 
-    return await call_gnbots(
-        config,
-        method=meta["method"],
-        path=meta["path"],
-        require_license=bool(meta.get("requiresLicense")),
-    )
+    try:
+        return await call_gnbots(
+            config,
+            method=meta["method"],
+            path=meta["path"],
+            require_license=bool(meta.get("requiresLicense")),
+        )
+    finally:
+        invalidate_dashboard_cache()
 
 
 @app.get("/api/sessions/{account_id}")
@@ -2974,13 +2999,16 @@ async def get_session_run_codes(account_id: str, code: str | None = None) -> dic
 @app.post("/api/sessions/{account_id}/exec")
 async def post_session_run_code(account_id: str, body: SessionExecRequest) -> dict[str, Any]:
     invalidate_dashboard_cache()
-    slot = await resolve_session_slot(config, account_id)
-    return await call_gnbots(
-        config,
-        method="GET",
-        path=f"/sessions/{slot}/exec",
-        params={"code": body.run_code},
-    )
+    try:
+        slot = await resolve_session_slot(config, account_id)
+        return await call_gnbots(
+            config,
+            method="GET",
+            path=f"/sessions/{slot}/exec",
+            params={"code": body.run_code},
+        )
+    finally:
+        invalidate_dashboard_cache()
 
 
 @app.post("/api/sessions/{account_id}/run/{run_code}")
@@ -2989,13 +3017,16 @@ async def run_session_code(account_id: str, run_code: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Unknown session run code: {run_code}")
 
     invalidate_dashboard_cache()
-    slot = await resolve_session_slot(config, account_id)
-    return await call_gnbots(
-        config,
-        method="GET",
-        path=f"/sessions/{slot}/exec",
-        params={"code": run_code},
-    )
+    try:
+        slot = await resolve_session_slot(config, account_id)
+        return await call_gnbots(
+            config,
+            method="GET",
+            path=f"/sessions/{slot}/exec",
+            params={"code": run_code},
+        )
+    finally:
+        invalidate_dashboard_cache()
 
 
 @app.get("/api/emulators")
@@ -3777,51 +3808,60 @@ async def launch_gnbots() -> dict[str, Any]:
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     invalidate_dashboard_cache()
-    # Do not force-restart: a second Launch click while detection is catching up
-    # used to kill the process that just started.
-    result = run_gnbots_process_action("Start", force=False)
-    if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("message") or "Failed to launch GnBots")
-    return result
+    try:
+        # Do not force-restart: a second Launch click while detection is catching up
+        # used to kill the process that just started.
+        result = run_gnbots_process_action("Start", force=False)
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("message") or "Failed to launch GnBots")
+        return result
+    finally:
+        invalidate_dashboard_cache()
 
 
 @app.post("/api/host/gnbots/stop")
 async def close_gnbots() -> dict[str, Any]:
     invalidate_dashboard_cache()
-    for path in ("/stopall", "/stop"):
-        try:
-            await call_gnbots(config, method="GET", path=path)
-        except Exception:  # noqa: BLE001
-            pass
-    result = run_gnbots_process_action("Stop")
-    if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("message") or "Failed to close GnBots")
-    if push_enabled(config):
-        await asyncio.to_thread(
-            notify_monitor_event,
-            "GnBots closed",
-            "GnBots.exe was closed from the monitor.",
-            tag="gnbots_closed",
-            config=config,
-        )
-    return result
-
-
-@app.post("/api/host/gnbots/restart")
-async def restart_gnbots() -> dict[str, Any]:
-    invalidate_dashboard_cache()
-    api = await asyncio.to_thread(gnbots_api_status, config)
-    if api.get("healthy"):
+    try:
         for path in ("/stopall", "/stop"):
             try:
                 await call_gnbots(config, method="GET", path=path)
             except Exception:  # noqa: BLE001
                 pass
-
-    result = await asyncio.to_thread(recover_gnbots_api, config, force_restart=True)
-    if not result.get("ok"):
+        result = run_gnbots_process_action("Stop")
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("message") or "Failed to close GnBots")
+        if push_enabled(config):
+            await asyncio.to_thread(
+                notify_monitor_event,
+                "GnBots closed",
+                "GnBots.exe was closed from the monitor.",
+                tag="gnbots_closed",
+                config=config,
+            )
         return result
-    return result
+    finally:
+        invalidate_dashboard_cache()
+
+
+@app.post("/api/host/gnbots/restart")
+async def restart_gnbots() -> dict[str, Any]:
+    invalidate_dashboard_cache()
+    try:
+        api = await asyncio.to_thread(gnbots_api_status, config)
+        if api.get("healthy"):
+            for path in ("/stopall", "/stop"):
+                try:
+                    await call_gnbots(config, method="GET", path=path)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        result = await asyncio.to_thread(recover_gnbots_api, config, force_restart=True)
+        if not result.get("ok"):
+            return result
+        return result
+    finally:
+        invalidate_dashboard_cache()
 
 
 @app.get("/api/profiles")
