@@ -1495,23 +1495,44 @@ async function loadCommandCatalog() {
 }
 
 let refreshInFlight = false;
+let refreshPending = false;
+let refreshPendingFresh = false;
+let refreshTail = Promise.resolve();
 
-async function refresh() {
+async function refresh(options = {}) {
   if (refreshInFlight) {
-    return;
+    refreshPending = true;
+    if (options.fresh) refreshPendingFresh = true;
+    return refreshTail;
   }
+
   refreshInFlight = true;
+  refreshPendingFresh = Boolean(options.fresh);
+  let resolveTail = () => {};
+  refreshTail = new Promise((resolve) => {
+    resolveTail = resolve;
+  });
   els.refreshBtn.disabled = true;
   try {
-    const response = await fetch("/api/dashboard", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
-  } catch (error) {
-    els.profileLabel.textContent = "Profile unavailable";
-    renderError(error.message);
+    do {
+      const fresh = refreshPendingFresh;
+      refreshPending = false;
+      refreshPendingFresh = false;
+      try {
+        const response = await fetch(fresh ? "/api/dashboard?fresh=1" : "/api/dashboard", {
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        render(await response.json());
+      } catch (error) {
+        els.profileLabel.textContent = "Profile unavailable";
+        renderError(error.message);
+      }
+    } while (refreshPending);
   } finally {
     refreshInFlight = false;
     els.refreshBtn.disabled = false;
+    resolveTail();
   }
 }
 
@@ -1534,7 +1555,7 @@ async function burstRefresh(options = {}) {
     if (delay > 0) {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    await refresh();
+    await refresh({ fresh: true });
   }
 }
 
