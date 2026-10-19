@@ -1498,27 +1498,17 @@ let refreshInFlight = false;
 
 async function refresh() {
   if (refreshInFlight) {
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'longrun',hypothesisId:'A',location:'app.js:refresh',message:'skipped overlapping dashboard refresh',data:{intervalMs:currentRefreshIntervalMs()},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return;
   }
   refreshInFlight = true;
-  const started = Date.now();
   els.refreshBtn.disabled = true;
   try {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'longrun',hypothesisId:'B',location:'app.js:refresh',message:'dashboard refresh ok',data:{elapsedMs:Date.now()-started,status:response.status},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
   } catch (error) {
     els.profileLabel.textContent = "Profile unavailable";
     renderError(error.message);
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'longrun',hypothesisId:'B',location:'app.js:refresh',message:'dashboard refresh failed',data:{elapsedMs:Date.now()-started,error:String(error&&error.message||error)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
   } finally {
     refreshInFlight = false;
     els.refreshBtn.disabled = false;

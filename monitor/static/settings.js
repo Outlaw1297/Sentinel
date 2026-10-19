@@ -351,9 +351,6 @@ async function refreshSettingsActivity() {
   try {
     const response = await fetch("/api/bot-activity", { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'A',location:'settings.js:refreshSettingsActivity',message:'bot-activity poll',data:{ok:response.ok,status:response.status,writable:body.writable,botActive:body.botActive,profileEditLocked:body.profileEditLocked,runningSessions:body.runningSessions,pausedSessions:body.pausedSessions,botState:body.botState,bulkFieldsWritableBefore:bulkFieldsWritable,gnbotsOnlineBefore:gnbotsOnline,tab:activeSettingsTab},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (response.ok) {
       applyBotActivityFromServer(body);
     }
@@ -376,9 +373,6 @@ function applyBotActivityFromServer(body) {
   switchNamesWritable = writable;
   bulkFieldsWritable = writable;
   accountActionsWritable = writable;
-  // #region agent log
-  fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'C',location:'settings.js:applyBotActivityFromServer',message:'applied activity lock state',data:{writable,profileEditLocked,botActive,botState,wasBulkWritable,bulkFieldsWritable,gnbotsOnline,tab:activeSettingsTab},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   if (provisionPreview) {
     provisionPreview = { ...provisionPreview, writable, botActive: profileEditLocked };
@@ -3754,9 +3748,6 @@ function updateBulkLockedBanner() {
     banner.textContent = "";
     return;
   }
-  // #region agent log
-  fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'post-fix',hypothesisId:'D',location:'settings.js:updateBulkLockedBanner',message:'showing bulk lock banner',data:{bulkFieldsWritable,bulkFieldsBusy,botActive,botState,gnbotsOnline,profileEditLocked},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   banner.textContent =
     "Bulk action settings are read-only while bot sessions are running. Stop the bot from the dashboard, then edit here.";
   banner.classList.remove("hidden");
@@ -4272,9 +4263,6 @@ async function loadBulkActionCatalog() {
     }
     bulkActionCatalog = Array.isArray(body.actions) ? body.actions : [];
     bulkFieldsWritable = body.writable !== false;
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'B',location:'settings.js:loadBulkActionCatalog',message:'action-fields catalog loaded',data:{ok:true,writable:body.writable,botActive:body.botActive,bulkFieldsWritable,actionCount:bulkActionCatalog.length,profile:body.profile||''},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     const profile = body.profile ? String(body.profile) : "";
     if (els.bulkActionsMeta) {
       els.bulkActionsMeta.textContent = profile
@@ -4299,9 +4287,6 @@ async function loadBulkActionCatalog() {
   } finally {
     bulkFieldsBusy = false;
     applyBulkActionsLockState();
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'post-fix',hypothesisId:'F',location:'settings.js:loadBulkActionCatalog:finally',message:'catalog load finished',data:{bulkFieldsBusy,bulkFieldsWritable,sessionLocked:bulkActionsSessionLocked(),busyLocked:bulkActionsLocked()},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
   }
 }
 
@@ -4327,9 +4312,6 @@ async function loadBulkActionFieldRows() {
       throw new Error(formatApiError(body, "Could not load action field values."));
     }
     bulkFieldsWritable = body.writable !== false;
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'B',location:'settings.js:loadBulkActionFieldRows',message:'action-fields rows loaded',data:{writable:body.writable,botActive:body.botActive,bulkFieldsWritable,rowCount:Array.isArray(body.accounts)?body.accounts.length:0,activeCount:Array.isArray(body.accounts)?body.accounts.filter((r)=>r&&r.active).length:0},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     bulkFieldMeta = body.field || null;
     bulkFieldRows = Array.isArray(body.accounts) ? body.accounts : [];
     bulkSelectedAccountIds = new Set(bulkFieldRows.map((row) => String(row.accountId)));
@@ -4347,9 +4329,6 @@ async function loadBulkActionFieldRows() {
         : `${action?.title || bulkSelectedScriptSuffix} · ${fieldLabel} · ${bulkFieldRows.length} account${bulkFieldRows.length === 1 ? "" : "s"}`,
       bulkActionsSessionLocked() ? "warn" : "ok",
     );
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'post-fix',hypothesisId:'F',location:'settings.js:loadBulkActionFieldRows:rendered',message:'rows rendered after busy clear',data:{bulkFieldsBusy,bulkFieldsWritable,sessionLocked:bulkActionsSessionLocked(),rowCount:bulkFieldRows.length,saveWouldLock:bulkActionsLocked()},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
   } catch (error) {
     bulkFieldRows = [];
     bulkFieldMeta = null;
@@ -5271,9 +5250,6 @@ async function loadSettings() {
     currentSettings = body.settings || {};
     settingsWritable = body.writable !== false;
     profileEditLocked = body.writable === false;
-    // #region agent log
-    fetch('http://127.0.0.1:7465/ingest/32a66b25-eac5-4618-9942-f427dac2ec97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'65f18f'},body:JSON.stringify({sessionId:'65f18f',runId:'gnbots-detect',hypothesisId:'E',location:'settings.js:loadSettings',message:'settings API loaded',data:{gnbotsOnline:body.gnbotsOnline,writable:body.writable,botActive:body.botActive,botState:body.botState,runningSessions:body.runningSessions,pausedSessions:body.pausedSessions,source:body.source,hasWarning:Boolean(body.warning),tab:activeSettingsTab},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     setGnbotsStatus(body.gnbotsOnline !== false, { writable: settingsWritable });
     applySettingsLockState();
     if (activeSettingsTab === "restore") {

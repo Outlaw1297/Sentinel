@@ -2776,28 +2776,6 @@ async def health() -> dict[str, Any]:
     }
 
 
-def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    # #region agent log
-    try:
-        line = json.dumps(
-            {
-                "sessionId": "65f18f",
-                "runId": "longrun",
-                "hypothesisId": hypothesis_id,
-                "location": location,
-                "message": message,
-                "data": data,
-                "timestamp": int(time.time() * 1000),
-            },
-            ensure_ascii=True,
-        )
-        path = Path(r"V:\Dropbox\Emulation\gnbot\debug-65f18f.log")
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except Exception:
-        pass
-    # #endregion
-
 
 def _dashboard_cache_hit() -> dict[str, Any] | None:
     cached = _DASHBOARD_CACHE.get("data")
@@ -2812,6 +2790,7 @@ def _dashboard_cache_hit() -> dict[str, Any] | None:
 
 @app.get("/api/dashboard")
 async def dashboard() -> dict[str, Any]:
+    write_profiles_manifest(STATIC_DIR, config)
     cached = _dashboard_cache_hit()
     if cached is not None:
         return cached
@@ -2819,9 +2798,6 @@ async def dashboard() -> dict[str, Any]:
     async with _DASHBOARD_BUILD_LOCK:
         cached = _dashboard_cache_hit()
         if cached is not None:
-            # #region agent log
-            _agent_debug_log("A", "app.py:dashboard", "coalesced dashboard waiters hit cache", {"waiters": "lock"})
-            # #endregion
             return cached
 
         started = time.perf_counter()
@@ -2838,20 +2814,6 @@ async def dashboard() -> dict[str, Any]:
             _DASHBOARD_CACHE["at"] = time.time()
             _DASHBOARD_CACHE["data"] = payload
         elapsed_ms = int((time.perf_counter() - started) * 1000)
-        # #region agent log
-        _agent_debug_log(
-            "B",
-            "app.py:dashboard",
-            "dashboard built",
-            {
-                "elapsedMs": elapsed_ms,
-                "gnbotsOnline": bool(payload.get("gnbotsOnline")),
-                "botActive": bool(payload.get("botActive")),
-                "ttl": ttl,
-                "error": error or "",
-            },
-        )
-        # #endregion
         if elapsed_ms >= 8000:
             setup_monitor_logging().warning("Slow dashboard build: %sms online=%s", elapsed_ms, payload.get("gnbotsOnline"))
         return payload
