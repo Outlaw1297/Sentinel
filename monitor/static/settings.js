@@ -399,10 +399,10 @@ function applyBotActivityFromServer(body) {
   } else if (activeSettingsTab === "bulk" && wasBulkWritable !== bulkFieldsWritable && bulkFieldRows.length) {
     renderBulkActionFieldList();
     setBulkPageStatus(
-      bulkActionsLocked()
+      bulkActionsSessionLocked()
         ? "Bulk action settings are read-only while bot sessions are running."
         : "Select accounts and save changes.",
-      bulkActionsLocked() ? "warn" : "ok",
+      bulkActionsSessionLocked() ? "warn" : "ok",
     );
   } else if (activeSettingsTab === "accounts" && wasAccountsWritable !== accountActionsWritable) {
     renderAccountActions(currentAccountActions);
@@ -3726,8 +3726,12 @@ async function saveAllSwitchNames() {
   }
 }
 
+function bulkActionsSessionLocked() {
+  return !bulkFieldsWritable;
+}
+
 function bulkActionsLocked() {
-  return !bulkFieldsWritable || bulkFieldsBusy;
+  return bulkActionsSessionLocked() || bulkFieldsBusy;
 }
 
 function setBulkPageStatus(message, tone = "") {
@@ -3739,7 +3743,7 @@ function setBulkPageStatus(message, tone = "") {
 function updateBulkLockedBanner() {
   const banner = els.bulkLockedBanner;
   if (!banner) return;
-  if (bulkFieldsWritable) {
+  if (!bulkActionsSessionLocked()) {
     banner.classList.add("hidden");
     banner.textContent = "";
     return;
@@ -3752,7 +3756,7 @@ function updateBulkLockedBanner() {
 function applyBulkActionsLockState() {
   updateBulkLockedBanner();
   if (els.bulkActionsList) {
-    els.bulkActionsList.classList.toggle("locked", bulkActionsLocked());
+    els.bulkActionsList.classList.toggle("locked", bulkActionsSessionLocked());
   }
   const locked = bulkActionsLocked();
   if (els.bulkActionSelect) els.bulkActionSelect.disabled = locked || bulkFieldsBusy;
@@ -4088,7 +4092,7 @@ function renderBulkApplyControl() {
     els.bulkApplyControl.innerHTML = renderBulkScheduleRulesEditor(
       "bulk-apply",
       seed.length ? seed : [{ kind: "wait_after", duration: 1, durationUnit: "hours" }],
-      bulkActionsLocked(),
+      bulkActionsSessionLocked(),
     );
     return;
   }
@@ -4096,15 +4100,15 @@ function renderBulkApplyControl() {
     els.bulkApplyControl.innerHTML = renderBulkScheduleSingleRuleEditor(
       "bulk-apply",
       bulkScheduleRuleFromValue(bulkFieldMeta.value, bulkFieldMeta),
-      bulkActionsLocked(),
+      bulkActionsSessionLocked(),
     );
     return;
   }
   if (bulkFieldMeta.type === "schedule_reset") {
-    els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, false, { disabled: bulkActionsLocked() });
+    els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, false, { disabled: bulkActionsSessionLocked() });
     return;
   }
-  els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, bulkFieldMeta.value, { disabled: bulkActionsLocked() });
+  els.bulkApplyControl.innerHTML = renderBulkFieldInput(bulkFieldMeta, bulkFieldMeta.value, { disabled: bulkActionsSessionLocked() });
 }
 
 function renderBulkActionSelectOptions() {
@@ -4137,7 +4141,8 @@ function renderBulkFieldSelectOptions() {
 function renderBulkActionFieldRow(row) {
   const accountId = String(row.accountId);
   const checked = bulkSelectedAccountIds.has(accountId);
-  const locked = bulkActionsLocked();
+  // Session lock only — never treat in-flight loading (busy) as "bot sessions running".
+  const locked = bulkActionsSessionLocked();
   const inputId = `bulk-field-${accountId}`;
   const statusLabel = row.active ? "active" : "inactive";
   const scope = `bulk-row-${accountId}`;
@@ -4268,10 +4273,10 @@ async function loadBulkActionCatalog() {
     renderBulkFieldSelectOptions();
     renderBulkActionFieldList();
     setBulkPageStatus(
-      bulkActionsLocked()
+      bulkActionsSessionLocked()
         ? "Bulk action settings are read-only while bot sessions are running."
         : "Choose an action and setting, then edit selected accounts.",
-      bulkActionsLocked() ? "warn" : "ok",
+      bulkActionsSessionLocked() ? "warn" : "ok",
     );
   } catch (error) {
     bulkActionCatalog = [];
@@ -4313,14 +4318,16 @@ async function loadBulkActionFieldRows() {
     if (bulkFieldMeta && bulkFieldRows.length && bulkFieldIsSchedule(bulkFieldMeta)) {
       bulkFieldMeta = { ...bulkFieldMeta, value: bulkFieldRows[0].value };
     }
+    // Clear busy before render/status so rows are not permanently disabled as "sessions running".
+    bulkFieldsBusy = false;
     renderBulkActionFieldList();
     const fieldLabel = bulkFieldMeta?.label || bulkSelectedFieldKey;
     const action = bulkActionBySuffix(bulkSelectedScriptSuffix);
     setBulkPageStatus(
-      bulkActionsLocked()
+      bulkActionsSessionLocked()
         ? "Bulk action settings are read-only while bot sessions are running."
         : `${action?.title || bulkSelectedScriptSuffix} · ${fieldLabel} · ${bulkFieldRows.length} account${bulkFieldRows.length === 1 ? "" : "s"}`,
-      bulkActionsLocked() ? "warn" : "ok",
+      bulkActionsSessionLocked() ? "warn" : "ok",
     );
   } catch (error) {
     bulkFieldRows = [];
@@ -4372,7 +4379,7 @@ function bulkScheduleRerender(scope, rules) {
   if (!container) return;
   const rulesHost = container.querySelector(".account-schedule-rules");
   if (!rulesHost) return;
-  const disabled = bulkActionsLocked();
+  const disabled = bulkActionsSessionLocked();
   rulesHost.innerHTML = rules.length
     ? rules.map((rule, index) => renderBulkScheduleRuleRow(scope, rule, index, disabled)).join("")
     : `<p class="account-schedule-empty">No rules configured.</p>`;
@@ -5252,7 +5259,14 @@ async function loadSettings() {
     renderRawSettings();
 
     if (body.warning) {
-      setPageStatus(body.warning, "warn");
+      if (body.gnbotsOnline === false && body.writable !== false) {
+        setPageStatus(
+          "GnBots is offline — showing saved config. You can edit now; restart GnBots after saving.",
+          "ok",
+        );
+      } else {
+        setPageStatus(body.warning, "warn");
+      }
     } else if (settingsLocked()) {
       setPageStatus("Settings are read-only while bot sessions are running. Stop the bot to edit.", "warn");
     } else if (body.gnbotsOnline !== false) {

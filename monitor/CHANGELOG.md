@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.11 — 2026-10-15
+
+### Stability
+- Keep the dashboard usable across multi-day runs by caching builds when GnBots is offline and skipping overlapping refreshes
+- Move the Windows service check off the request thread so the page can still load
+- Limit concurrent screenshot downloads and slow the APK probe so the server does not stall
+- Rotate the runtime log instead of letting it grow without a limit
+
+### Settings
+- Unlock bulk action fields when no bot session is running, including while GnBots is offline
+
 ## 0.1.10 — 2026-08-26
 
 ### Stuck-screen learning

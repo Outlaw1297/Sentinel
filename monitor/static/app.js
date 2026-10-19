@@ -1494,7 +1494,13 @@ async function loadCommandCatalog() {
   }
 }
 
+let refreshInFlight = false;
+
 async function refresh() {
+  if (refreshInFlight) {
+    return;
+  }
+  refreshInFlight = true;
   els.refreshBtn.disabled = true;
   try {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
@@ -1504,6 +1510,7 @@ async function refresh() {
     els.profileLabel.textContent = "Profile unavailable";
     renderError(error.message);
   } finally {
+    refreshInFlight = false;
     els.refreshBtn.disabled = false;
   }
 }

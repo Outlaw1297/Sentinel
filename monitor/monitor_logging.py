@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -35,7 +36,12 @@ def setup_monitor_logging(*, console: bool = False) -> logging.Logger:
 
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-    file_handler = logging.FileHandler(RUNTIME_LOG, encoding="utf-8")
+    file_handler = RotatingFileHandler(
+        RUNTIME_LOG,
+        maxBytes=2_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
