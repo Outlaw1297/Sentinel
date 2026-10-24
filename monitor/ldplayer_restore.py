@@ -1254,7 +1254,18 @@ def _notify_restore_push(job: dict[str, Any], config: dict[str, Any]) -> None:
     try:
         from push_notifications import notify_restore_job_finished
 
-        notify_restore_job_finished(job, config)
+        notify_restore_job_finished(job, config=config)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _notify_restore_started(job: dict[str, Any], config: dict[str, Any]) -> None:
+    try:
+        from push_notifications import notify_restore_job_started, push_enabled
+
+        if not push_enabled(config):
+            return
+        notify_restore_job_started(job, config=config)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1994,7 +2005,9 @@ def start_restore(
     )
     thread.start()
     _append_restore_log(f"[{job_id}] queued index={index} backup={backup_path.name}")
-    return dict(job)
+    started = dict(job)
+    _notify_restore_started(started, config)
+    return started
 
 
 def start_restore_all(

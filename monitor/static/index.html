@@ -90,6 +90,19 @@
 
     </header>
 
+    <div class="restore-recommend-banner hidden" id="update-available-banner" role="region" aria-label="Updates available">
+      <div class="alert-stripe" aria-hidden="true"></div>
+      <div class="restore-recommend-copy">
+        <strong id="update-available-title" class="banner-title-row"><span>Updates available</span></strong>
+        <p id="update-available-text"></p>
+      </div>
+      <div class="restore-recommend-actions">
+        <a class="btn btn-small" id="update-available-program" href="/settings?tab=monitor">Sentinel updates</a>
+        <a class="btn btn-small btn-restore-link" id="update-available-apk" href="/settings?tab=restore">APK updates</a>
+        <button class="btn btn-small btn-ghost" id="update-available-dismiss" type="button">Dismiss</button>
+      </div>
+    </div>
+
     <div class="restore-recommend-banner hidden" id="restore-recommend-banner" role="region" aria-label="Emulator restore recommended">
       <div class="alert-stripe" aria-hidden="true"></div>
       <div class="restore-recommend-copy">
@@ -120,9 +133,11 @@
 
         <button class="btn btn-host danger" type="button" data-host-action="stop" title="Close GnBots.exe only. The monitor and watcher keep running.">Close GnBots</button>
 
+        <button class="btn btn-host" type="button" id="restart-sentinel-btn" title="Restart the Sentinel monitor stack from your phone or PC">Restart Sentinel</button>
+
       </div>
 
-      <p class="controls-note" id="elevated-tasks-note">On the bot PC, run <code>StartGnBotStack.bat</code> to start the headless monitor and GnBots.</p>
+      <p class="controls-note" id="elevated-tasks-note">On the bot PC, run <code>StartGnBotStack.bat</code> to start the headless monitor and GnBots. Use <strong>Restart Sentinel</strong> from this phone dashboard when the UI is stuck.</p>
       <p class="controls-note shutdown-countdown-note"><span id="shutdown-countdown"></span></p>
 
     </section>

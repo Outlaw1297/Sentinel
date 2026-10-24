@@ -451,6 +451,17 @@ def run_automation_tick(config: dict[str, Any]) -> dict[str, Any]:
         _AUTOMATION_STATE["lastError"] = str(exc)
         _append_automation_log(f"auto APK failed: {exc}")
 
+    try:
+        from update_watch import run_update_watch_tick
+
+        notify_actions = run_update_watch_tick(config)
+        for action in notify_actions:
+            actions.append(action)
+            _append_automation_log(f"update watch: {action.get('type')} {action.get('key')}")
+    except Exception as exc:  # noqa: BLE001
+        _AUTOMATION_STATE["lastError"] = str(exc)
+        _append_automation_log(f"update watch failed: {exc}")
+
     return {
         "ok": True,
         "at": _AUTOMATION_STATE["lastTickAt"],

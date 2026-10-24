@@ -301,6 +301,17 @@ def _clear_instance_busy(index: int, job_id: str) -> None:
             _APK_INSTANCE_BUSY.pop(index, None)
 
 
+def _notify_apk_job_started(job: dict[str, Any], config: dict[str, Any]) -> None:
+    try:
+        from push_notifications import notify_apk_update_started, push_enabled
+
+        if not push_enabled(config):
+            return
+        notify_apk_update_started(job, config=config)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _notify_apk_job_finished(job: dict[str, Any], config: dict[str, Any]) -> None:
     try:
         from push_notifications import notify_apk_update_result, push_enabled
@@ -314,6 +325,7 @@ def _notify_apk_job_finished(job: dict[str, Any], config: dict[str, Any]) -> Non
                 "message": job.get("message") or "",
                 "results": job.get("results") or [],
                 "failures": job.get("failures") or [],
+                "cacheVersion": job.get("cacheVersion"),
             },
             config=config,
         )
@@ -769,7 +781,10 @@ def start_apk_update_job(
     )
     thread.start()
     _append_apk_job_log(f"[{job_id}] queued indexes={targets} source={source}")
-    return dict(job)
+    started = dict(job)
+    if targets:
+        _notify_apk_job_started(started, config)
+    return started
 
 
 def wait_for_apk_update_job(job_id: str, *, timeout_seconds: float = 10.0) -> dict[str, Any] | None:
