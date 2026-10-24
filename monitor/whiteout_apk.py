@@ -450,6 +450,307 @@ def _stage_or_extract_game_zip(zip_path: Path, apk_dir: Path, config: dict[str, 
     _extract_game_zip(zip_path, apk_dir)
 
 
+def _apk_cache_is_third_party_xapk(apk_dir: Path, zip_path: Path | None = None) -> bool:
+    """True when the local cache was staged from a third-party XAPK (not a GnBots game.zip)."""
+    manifest = read_apk_manifest(apk_dir)
+    source = str(manifest.get("source") or "").strip().lower()
+    if source.startswith("third_party"):
+        return True
+    if zip_path is None:
+        zip_path = apk_dir / "game.zip"
+    if not zip_path.is_file():
+        return False
+    try:
+        from apk_third_party import game_zip_looks_like_xapk
+
+        return bool(game_zip_looks_like_xapk(zip_path))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def gnbots_zip_size_signals_update(
+    config: dict[str, Any],
+    *,
+    url: str | None,
+    zip_path: Path,
+    remote_size: int | None,
+    local_size: int | None,
+) -> bool:
+    """Whether a GnBots game.zip Content-Length mismatch should trigger a download.
+
+    APK20 stores an XAPK as ``game.zip``. That file's size almost never matches the
+    GnBots ``game.zip`` URL, so treating size mismatch alone as "newer package"
+    oscillates the cache every ``ensure_latest`` call (instance 1 APK20 → instance 2
+    OK → instance 3 re-downloads older GnBots zip).
+    """
+    if not url or remote_size is None:
+        return False
+    if not zip_path.is_file() or local_size is None:
+        return True
+    if int(remote_size) == int(local_size):
+        return False
+    apk_dir = zip_path.parent
+    if _apk_cache_is_third_party_xapk(apk_dir, zip_path):
+        return False
+    return True
+
+
+def resolve_apk_source_policy(config: dict[str, Any]) -> str:
+    """Return ``auto`` | ``gnbots`` | ``third_party``.
+
+    ``auto`` (default): keep whichever source has the newer versionName.
+    ``gnbots`` / ``third_party``: force that source when available.
+    """
+    raw = str(config.get("apk_source_policy") or "auto").strip().lower()
+    if raw in {"gnbots", "gnbots_url", "zip", "game.zip"}:
+        return "gnbots"
+    if raw in {"third_party", "third-party", "apk20", "3rd", "third"}:
+        return "third_party"
+    return "auto"
+
+
+def _persist_gnbots_version_probe(
+    *,
+    version_name: str | None,
+    remote_size: int | None,
+    remote_url: str | None,
+) -> None:
+    state = load_whiteout_apk_state()
+    cache = dict(state.get("cache")) if isinstance(state.get("cache"), dict) else {}
+    if version_name:
+        cache["gnbotsProbedVersion"] = str(version_name).strip()
+    if remote_size is not None:
+        cache["gnbotsProbedSize"] = int(remote_size)
+    if remote_url:
+        cache["gnbotsProbedUrl"] = str(remote_url)
+    cache["gnbotsProbedAt"] = _utc_now_iso()
+    state["cache"] = cache
+    save_whiteout_apk_state(state)
+
+
+def _cached_gnbots_version_probe(url: str, remote_size: int | None) -> str | None:
+    cache = get_persisted_apk_cache_state()
+    if not url or remote_size is None:
+        return None
+    if str(cache.get("gnbotsProbedUrl") or "") != str(url):
+        return None
+    try:
+        if int(cache.get("gnbotsProbedSize")) != int(remote_size):
+            return None
+    except (TypeError, ValueError):
+        return None
+    version = str(cache.get("gnbotsProbedVersion") or "").strip()
+    return version or None
+
+
+def probe_gnbots_remote_version(
+    config: dict[str, Any],
+    *,
+    url: str,
+    remote_size: int | None,
+    apk_dir: Path | None = None,
+) -> str | None:
+    """Return GnBots game.zip versionName, using a size-keyed probe cache when possible."""
+    cached = _cached_gnbots_version_probe(url, remote_size)
+    if cached:
+        return cached
+    if apk_dir is None:
+        apk_dir = resolve_whiteout_apk_dir(config)
+    apk_dir.mkdir(parents=True, exist_ok=True)
+    probe_path = apk_dir / "game.zip.gnbots-probe"
+    try:
+        _download_game_zip(url, probe_path)
+        version = str(_read_manifest_from_zip(probe_path).get("version_name") or "").strip() or None
+        if version:
+            _persist_gnbots_version_probe(
+                version_name=version,
+                remote_size=remote_size,
+                remote_url=url,
+            )
+        return version
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def select_apk_update_source(
+    config: dict[str, Any],
+    *,
+    allow_probe: bool = True,
+) -> dict[str, Any]:
+    """Choose GnBots vs third-party by version (or forced policy).
+
+    Returns a decision dict used by check/ensure_latest so the newer package wins
+    instead of Content-Length alone.
+    """
+    policy = resolve_apk_source_policy(config)
+    apk_dir = resolve_whiteout_apk_dir(config)
+    zip_path = apk_dir / "game.zip"
+    url = resolve_whiteout_apk_url(config)
+    remote_size = _remote_game_zip_size(url) if url else None
+    local_size = zip_path.stat().st_size if zip_path.is_file() else None
+    local_version = resolve_local_apk_version(config, apk_dir)
+    local_is_xapk = _apk_cache_is_third_party_xapk(apk_dir, zip_path) if zip_path.is_file() else False
+    zip_version = None
+    if zip_path.is_file():
+        zip_version = str(_read_manifest_from_zip(zip_path).get("version_name") or "").strip() or None
+
+    third: dict[str, Any] | None = None
+    third_version: str | None = None
+    try:
+        from apk_third_party import check_third_party_apk_remote, third_party_enabled
+
+        if third_party_enabled(config):
+            third = check_third_party_apk_remote(config)
+            if third.get("ok"):
+                third_version = str(third.get("remoteVersion") or "").strip() or None
+    except Exception as exc:  # noqa: BLE001
+        third = {"ok": False, "error": str(exc)}
+
+    gnbots_version: str | None = None
+    size_differs = bool(
+        url
+        and remote_size is not None
+        and zip_path.is_file()
+        and local_size is not None
+        and int(remote_size) != int(local_size)
+    )
+    missing_zip = bool(url and not zip_path.is_file())
+
+    if url and zip_path.is_file() and not local_is_xapk and not size_differs:
+        # Local classic game.zip matches remote size — its manifest is the GnBots version.
+        gnbots_version = zip_version or local_version
+    elif url and (missing_zip or size_differs):
+        # Remote GnBots package changed (or is missing locally). Learn its version via
+        # size-keyed probe cache, or a one-shot download probe when allowed.
+        gnbots_version = _cached_gnbots_version_probe(url, remote_size)
+        if not gnbots_version and allow_probe:
+            gnbots_version = probe_gnbots_remote_version(
+                config,
+                url=url,
+                remote_size=remote_size,
+                apk_dir=apk_dir,
+            )
+
+    # Forced policy.
+    if policy == "third_party":
+        chosen = "third_party" if third_version else ("local" if local_version else "gnbots")
+        return {
+            "policy": policy,
+            "chosen": chosen,
+            "localVersion": local_version,
+            "thirdVersion": third_version,
+            "gnbotsVersion": gnbots_version,
+            "third": third,
+            "url": url,
+            "remoteSize": remote_size,
+            "localSize": local_size,
+            "localIsXapk": local_is_xapk,
+            "shouldSyncThird": bool(
+                third_version and version_is_older(local_version, third_version)
+            ),
+            "shouldDownloadGnbots": False,
+            "reason": "policy=third_party",
+        }
+    if policy == "gnbots":
+        if url and local_is_xapk and size_differs and not gnbots_version and allow_probe:
+            gnbots_version = probe_gnbots_remote_version(
+                config,
+                url=url,
+                remote_size=remote_size,
+                apk_dir=apk_dir,
+            )
+        needs_gnbots = bool(
+            url
+            and (
+                missing_zip
+                or (size_differs and not local_is_xapk)
+                or (
+                    local_is_xapk
+                    and gnbots_version
+                    and version_is_older(local_version, gnbots_version)
+                )
+            )
+        )
+        return {
+            "policy": policy,
+            "chosen": "gnbots" if url else ("third_party" if third_version else "local"),
+            "localVersion": local_version,
+            "thirdVersion": third_version,
+            "gnbotsVersion": gnbots_version,
+            "third": third,
+            "url": url,
+            "remoteSize": remote_size,
+            "localSize": local_size,
+            "localIsXapk": local_is_xapk,
+            "shouldSyncThird": False,
+            "shouldDownloadGnbots": needs_gnbots,
+            "reason": "policy=gnbots",
+        }
+
+    # auto: newer versionName wins.
+    candidates: list[tuple[str, str]] = []
+    if local_version:
+        candidates.append(("local", local_version))
+    if third_version:
+        candidates.append(("third_party", third_version))
+    if gnbots_version:
+        candidates.append(("gnbots", gnbots_version))
+
+    chosen = "local"
+    chosen_version = local_version
+    if candidates:
+        chosen, chosen_version = max(candidates, key=lambda item: parse_version_name(item[1]))
+
+    should_sync_third = bool(
+        chosen == "third_party"
+        and third_version
+        and version_is_older(local_version, third_version)
+    )
+    should_download_gnbots = bool(
+        chosen == "gnbots"
+        and url
+        and (
+            missing_zip
+            or (size_differs and not local_is_xapk)
+            or (
+                local_is_xapk
+                and gnbots_version
+                and version_is_older(local_version, gnbots_version)
+            )
+        )
+    )
+    # Bootstrap when nothing local and third-party is the only catalog.
+    if not local_version and not zip_path.is_file() and third_version and not url:
+        should_sync_third = True
+        chosen = "third_party"
+
+    reason = (
+        f"auto: chose {chosen} ({chosen_version or 'unknown'}) "
+        f"[local={local_version or '—'}, third={third_version or '—'}, gnbots={gnbots_version or '—'}]"
+    )
+    return {
+        "policy": policy,
+        "chosen": chosen,
+        "chosenVersion": chosen_version,
+        "localVersion": local_version,
+        "thirdVersion": third_version,
+        "gnbotsVersion": gnbots_version,
+        "third": third,
+        "url": url,
+        "remoteSize": remote_size,
+        "localSize": local_size,
+        "localIsXapk": local_is_xapk,
+        "shouldSyncThird": should_sync_third,
+        "shouldDownloadGnbots": should_download_gnbots,
+        "reason": reason,
+    }
+
+
 def refresh_local_apk_cache_from_disk(config: dict[str, Any]) -> dict[str, Any]:
     """Refresh persisted cache version from split APKs; avoid downgrading via stale game.zip."""
     apk_dir = resolve_whiteout_apk_dir(config)
@@ -1318,8 +1619,58 @@ def update_whiteout_apk_on_instance(
 
     try:
         wait_for_android_boot(ldconsole, index)
-        install_output = install_whiteout_apk(ldconsole, index, apk_paths)
-        time.sleep(5.0)
+        latest_text = str(latest_version or "").strip() or None
+        install_attempts: list[str] = []
+        installed_text: str | None = None
+
+        for attempt in range(1, 3):
+            install_output = install_whiteout_apk(
+                ldconsole,
+                index,
+                apk_paths,
+                package_name=package_name,
+            )
+            install_attempts.append(install_output or f"attempt {attempt}")
+            time.sleep(5.0)
+
+            try:
+                installed = read_installed_package_version(
+                    ldconsole,
+                    index,
+                    package_name,
+                    run_ldconsole,
+                    config=config,
+                )
+                installed_version = installed.get("versionName")
+            except Exception as exc:  # noqa: BLE001
+                installed_version = None
+                if resource_error:
+                    resource_error = f"{resource_error}; version read: {exc}"
+                else:
+                    resource_error = f"version read: {exc}"
+
+            installed_text = str(installed_version or "").strip() or None
+            # Confirm the new build before launching the game / resource pack.
+            if not latest_text:
+                break
+            if installed_text and not version_is_older(installed_text, latest_text):
+                break
+            if attempt < 2:
+                # First account in a batch often still has Whiteout running; retry once.
+                continue
+            if not installed_text:
+                raise RuntimeError(
+                    f"APK install on instance {index} finished but the installed version "
+                    f"could not be confirmed (expected {latest_text}). "
+                    f"Retry with Force update selected."
+                )
+            raise RuntimeError(
+                f"APK install on instance {index} left version {installed_text}; "
+                f"APK cache has {latest_text}. "
+                f"The first emulator in a batch can keep the old build when uninstall is blocked — "
+                f"retry Force update selected on this instance "
+                f"(apk_third_party_abi should be arm64-v8a for APK20)."
+            )
 
         if wait_for_resource_pack:
             try:
@@ -1339,39 +1690,7 @@ def update_whiteout_apk_on_instance(
                     "error": resource_error,
                 }
 
-        try:
-            installed = read_installed_package_version(
-                ldconsole,
-                index,
-                package_name,
-                run_ldconsole,
-                config=config,
-            )
-            installed_version = installed.get("versionName")
-        except Exception as exc:  # noqa: BLE001
-            if resource_error:
-                resource_error = f"{resource_error}; version read: {exc}"
-            else:
-                resource_error = f"version read: {exc}"
-
-        # Download/staging alone is not success — refuse to report OK when the
-        # emulator is still on an older build (or still showing the Update dialog).
-        latest_text = str(latest_version or "").strip() or None
-        installed_text = str(installed_version or "").strip() or None
-        if latest_text:
-            if not installed_text:
-                raise RuntimeError(
-                    f"APK install on instance {index} finished but the installed version "
-                    f"could not be confirmed (expected {latest_text}). "
-                    f"Retry with Force update selected."
-                )
-            if version_is_older(installed_text, latest_text):
-                raise RuntimeError(
-                    f"APK install on instance {index} left version {installed_text}; "
-                    f"APK cache has {latest_text}. "
-                    f"Download only updates the cache — retry Force update selected, "
-                    f"and confirm apk_third_party_abi matches the emulator (arm64-v8a on APK20)."
-                )
+        if latest_text and installed_text:
             try:
                 prompt = probe_game_update_prompt(ldconsole, index, run_ldconsole)
             except Exception:  # noqa: BLE001
@@ -1399,6 +1718,8 @@ def update_whiteout_apk_on_instance(
         if resource_pack:
             apk_info = {**apk_info, "resourcePack": resource_pack}
         message = f"Installed Whiteout Survival {installed_text or latest_text or ''} on instance {index}.".strip()
+        if len(install_attempts) > 1:
+            message = f"{message} (reinstalled after first attempt left an older build)"
         if resource_pack and resource_pack.get("completed"):
             message = f"{message} Optional resource pack complete."
         elif resource_pack and not resource_pack.get("completed"):
@@ -1414,8 +1735,9 @@ def update_whiteout_apk_on_instance(
             "apkInfo": apk_info,
             "resourcePack": resource_pack,
             "message": message,
-            "output": install_output,
+            "output": " | ".join(part for part in install_attempts if part),
             "warning": resource_error,
+            "installAttempts": len(install_attempts),
         }
     finally:
         if apk_update_stops_emulator(config):
@@ -1514,6 +1836,7 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
 
     When `apk_third_party_provider` is set (for example `apk20`), Sentinel can detect and
     download newer game APKs even if GnBots has not refreshed its own game.zip yet.
+    Source selection uses ``apk_source_policy`` (default ``auto`` = newer version wins).
     """
     local = refresh_local_apk_cache_from_disk(config)
     apk_dir = resolve_whiteout_apk_dir(config)
@@ -1521,138 +1844,125 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
     url = resolve_whiteout_apk_url(config)
     remote_size = _remote_game_zip_size(url) if url else None
     local_size = zip_path.stat().st_size if zip_path.is_file() else None
-    remote_zip_version = None
+    zip_version = None
     if zip_path.is_file():
-        remote_zip_version = _read_manifest_from_zip(zip_path).get("version_name")
+        zip_version = _read_manifest_from_zip(zip_path).get("version_name")
     local_version = local.get("versionName")
-    remote_newer = remote_size is not None and remote_size != local_size
+    decision = select_apk_update_source(config, allow_probe=bool(sync))
     missing_zip = bool(url) and not zip_path.is_file()
     local_ahead_of_remote = bool(
         local_version
-        and remote_zip_version
-        and version_is_older(str(remote_zip_version), str(local_version))
+        and decision.get("chosenVersion")
+        and version_is_older(str(decision.get("chosenVersion")), str(local_version))
     )
-    update_available = (
-        (remote_newer or missing_zip or (bool(url) and not local.get("ready")))
-        and not local_ahead_of_remote
+    update_available = bool(
+        decision.get("shouldSyncThird")
+        or decision.get("shouldDownloadGnbots")
+        or missing_zip
+        or (bool(url) and not local.get("ready"))
     )
-    if remote_zip_version and local_version and version_is_older(local_version, str(remote_zip_version)):
+    if (
+        decision.get("chosenVersion")
+        and local_version
+        and version_is_older(str(local_version), str(decision.get("chosenVersion")))
+    ):
         update_available = True
 
+    best_remote = decision.get("chosenVersion") or zip_version
     result: dict[str, Any] = {
         "localVersion": local_version,
-        "remoteVersion": remote_zip_version,
+        "remoteVersion": best_remote,
         "packageName": local.get("packageName"),
         "localZipSize": local_size,
         "remoteZipSize": remote_size,
         "remoteUrl": url,
         "apkReady": bool(local.get("ready")),
-        "updateAvailable": update_available,
+        "updateAvailable": update_available and not local_ahead_of_remote,
         "localAheadOfRemote": local_ahead_of_remote,
         "downloaded": False,
         "source": "gnbots_url" if url else "local",
+        "apkSourcePolicy": decision.get("policy"),
+        "sourceDecision": {
+            key: decision.get(key)
+            for key in (
+                "policy",
+                "chosen",
+                "chosenVersion",
+                "localVersion",
+                "thirdVersion",
+                "gnbotsVersion",
+                "reason",
+            )
+        },
     }
 
-    third_party: dict[str, Any] | None = None
-    try:
-        from apk_third_party import check_third_party_apk_remote, third_party_enabled
+    third_party = decision.get("third") if isinstance(decision.get("third"), dict) else None
+    if third_party is not None:
+        result["thirdParty"] = {
+            key: third_party.get(key)
+            for key in (
+                "ok",
+                "enabled",
+                "provider",
+                "packageName",
+                "abi",
+                "localVersion",
+                "remoteVersion",
+                "remoteVersionCode",
+                "updateAvailable",
+                "remoteSize",
+                "sourceUrl",
+                "error",
+                "title",
+            )
+        }
+        if decision.get("chosen") == "third_party" and third_party.get("ok"):
+            result["remoteVersion"] = third_party.get("remoteVersion") or result.get("remoteVersion")
+            result["remoteZipSize"] = third_party.get("remoteSize")
+            result["remoteUrl"] = third_party.get("sourceUrl")
+            result["source"] = f"third_party:{third_party.get('provider')}"
+            result["localAheadOfRemote"] = False
+        elif (
+            third_party.get("ok")
+            and third_party.get("updateAvailable")
+            and version_is_older(str(result.get("remoteVersion") or ""), str(third_party.get("remoteVersion") or ""))
+        ):
+            result["updateAvailable"] = True
+            result["remoteVersion"] = third_party.get("remoteVersion")
+            result["remoteZipSize"] = third_party.get("remoteSize")
+            result["remoteUrl"] = third_party.get("sourceUrl")
+            result["source"] = f"third_party:{third_party.get('provider')}"
+            result["localAheadOfRemote"] = False
+    elif resolve_apk_source_policy(config) != "gnbots":
+        try:
+            from apk_third_party import third_party_enabled
 
-        if third_party_enabled(config):
-            third_party = check_third_party_apk_remote(config)
-            result["thirdParty"] = {
-                key: third_party.get(key)
-                for key in (
-                    "ok",
-                    "enabled",
-                    "provider",
-                    "packageName",
-                    "abi",
-                    "localVersion",
-                    "remoteVersion",
-                    "remoteVersionCode",
-                    "updateAvailable",
-                    "remoteSize",
-                    "sourceUrl",
-                    "error",
-                    "title",
-                )
-            }
-            if third_party.get("ok") and third_party.get("updateAvailable"):
-                result["updateAvailable"] = True
-                # Surface the newer third-party version in the summary when GnBots zip lags.
-                if version_is_older(str(result.get("remoteVersion") or ""), str(third_party.get("remoteVersion") or "")):
-                    result["remoteVersion"] = third_party.get("remoteVersion")
-                    result["remoteZipSize"] = third_party.get("remoteSize")
-                    result["remoteUrl"] = third_party.get("sourceUrl")
-                    result["source"] = f"third_party:{third_party.get('provider')}"
-                    result["localAheadOfRemote"] = False
-    except Exception as exc:  # noqa: BLE001
-        result["thirdParty"] = {"ok": False, "enabled": True, "error": str(exc)}
+            if third_party_enabled(config):
+                result["thirdParty"] = {"ok": False, "enabled": True, "error": "third-party check unavailable"}
+        except Exception:  # noqa: BLE001
+            pass
 
     if sync and result.get("updateAvailable") and not result.get("localAheadOfRemote"):
-        # Never prefer third-party when GnBots game.zip already signals an update
-        # (size mismatch / missing zip). Otherwise a mid-tier APK20 build can
-        # win over a newer GnBots zip and leave bots on the wrong version.
-        gnbots_size_update = bool(
-            url
-            and (
-                (remote_size is not None and remote_size != local_size)
-                or missing_zip
-            )
+        synced = ensure_latest_whiteout_apk(config)
+        result.update(
+            {
+                "localVersion": synced.get("versionName"),
+                "localZipSize": synced.get("localSize"),
+                "remoteZipSize": synced.get("remoteSize"),
+                "apkReady": True,
+                "updateAvailable": False,
+                "downloaded": bool(synced.get("downloaded")),
+                "synced": True,
+                "installRequired": bool(synced.get("downloaded")),
+                "source": synced.get("source") or ("gnbots_url" if url else "local"),
+                "sourceDecision": synced.get("sourceDecision") or result.get("sourceDecision"),
+                "message": (
+                    synced.get("message")
+                    or (decision.get("reason") if isinstance(decision, dict) else None)
+                ),
+            }
         )
-        prefer_third_party = bool(
-            third_party
-            and third_party.get("ok")
-            and third_party.get("updateAvailable")
-            and not gnbots_size_update
-            and (
-                not url
-                or version_is_older(
-                    str(remote_zip_version or local_version or ""),
-                    str(third_party.get("remoteVersion") or ""),
-                )
-            )
-        )
-        synced: dict[str, Any] | None = None
-        if prefer_third_party:
-            try:
-                from apk_third_party import sync_third_party_apk
-
-                synced = sync_third_party_apk(config, force=True)
-                result.update(
-                    {
-                        "localVersion": synced.get("localVersion") or synced.get("remoteVersion"),
-                        "remoteVersion": synced.get("remoteVersion"),
-                        "remoteZipSize": synced.get("remoteSize"),
-                        "remoteUrl": synced.get("sourceUrl"),
-                        "apkReady": True,
-                        "updateAvailable": False,
-                        "downloaded": bool(synced.get("downloaded")),
-                        "synced": True,
-                        "installRequired": bool(synced.get("downloaded") or synced.get("installRequired")),
-                        "source": f"third_party:{synced.get('provider') or 'apk20'}",
-                        "message": synced.get("message"),
-                    }
-                )
-                invalidate_apk_inspect_cache()
-            except Exception as exc:  # noqa: BLE001
-                result["thirdPartySyncError"] = str(exc)
-                synced = None
-        if synced is None:
-            synced = ensure_latest_whiteout_apk(config)
-            result.update(
-                {
-                    "localVersion": synced.get("versionName"),
-                    "localZipSize": synced.get("localSize"),
-                    "remoteZipSize": synced.get("remoteSize"),
-                    "apkReady": True,
-                    "updateAvailable": False,
-                    "downloaded": bool(synced.get("downloaded")),
-                    "synced": True,
-                    "source": synced.get("source") or ("gnbots_url" if url else "local"),
-                }
-            )
-            invalidate_apk_inspect_cache()
+        invalidate_apk_inspect_cache()
     persist_apk_cache_state(
         version_name=str(result.get("localVersion") or "") or None,
         local_zip_size=result.get("localZipSize"),
@@ -1922,73 +2232,69 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
     apk_dir = resolve_whiteout_apk_dir(config)
     apk_dir.mkdir(parents=True, exist_ok=True)
     zip_path = apk_dir / "game.zip"
-    url = resolve_whiteout_apk_url(config)
+    decision = select_apk_update_source(config, allow_probe=True)
+    url = str(decision.get("url") or "") or None
+    remote_size = decision.get("remoteSize")
+    local_size = decision.get("localSize")
 
-    remote_size = _remote_game_zip_size(url) if url else None
-    local_size = zip_path.stat().st_size if zip_path.is_file() else None
-    gnbots_size_update = bool(
-        url
-        and (
-            (remote_size is not None and remote_size != local_size)
-            or (not zip_path.is_file() and remote_size is not None)
-        )
-    )
+    if decision.get("shouldSyncThird"):
+        try:
+            from apk_third_party import sync_third_party_apk
 
-    # Prefer third-party only when it is strictly newer than local/cache and GnBots
-    # is not already signaling a newer game.zip. Missing splits alone must not force
-    # a third-party sync (that downgraded caches that still had a good game.zip).
-    try:
-        from apk_third_party import check_third_party_apk_remote, sync_third_party_apk, third_party_enabled
-
-        if third_party_enabled(config):
-            third = check_third_party_apk_remote(config)
-            local_version = resolve_local_apk_version(config, apk_dir)
-            third_version = str(third.get("remoteVersion") or "")
-            zip_version = None
-            if zip_path.is_file():
-                zip_version = _read_manifest_from_zip(zip_path).get("version_name")
-            best_local = zip_version or local_version
-            third_newer = bool(
-                third.get("ok")
-                and third_version
-                and version_is_older(str(best_local or ""), third_version)
-            )
-            files_ready = all((apk_dir / name).is_file() for name in APK_INSTALL_ORDER)
-            bootstrap_third = bool(
-                third.get("ok")
-                and third_version
-                and not url
-                and not zip_path.is_file()
-                and not files_ready
-            )
-            if (third_newer and not gnbots_size_update) or bootstrap_third:
-                synced = sync_third_party_apk(config, force=True)
-                install_files = [apk_dir / name for name in APK_INSTALL_ORDER]
-                missing = [path.name for path in install_files if not path.is_file()]
-                if missing:
-                    raise FileNotFoundError(f"Missing APK files in {apk_dir}: {', '.join(missing)}")
-                manifest = read_apk_manifest(apk_dir)
-                return {
-                    "dir": str(apk_dir),
-                    "downloaded": bool(synced.get("downloaded")),
-                    "remoteSize": synced.get("remoteSize"),
-                    "localSize": zip_path.stat().st_size if zip_path.is_file() else None,
-                    "versionName": resolve_local_apk_version(config, apk_dir) or manifest.get("version_name"),
-                    "packageName": manifest.get("package_name") or synced.get("packageName"),
-                    "files": [str(path) for path in install_files],
-                    "source": f"third_party:{synced.get('provider') or 'apk20'}",
-                }
-    except Exception:  # noqa: BLE001
-        # Fall through to GnBots URL / local cache when the catalog is unreachable.
-        pass
+            synced = sync_third_party_apk(config, force=True)
+            install_files = [apk_dir / name for name in APK_INSTALL_ORDER]
+            missing = [path.name for path in install_files if not path.is_file()]
+            if missing:
+                raise FileNotFoundError(f"Missing APK files in {apk_dir}: {', '.join(missing)}")
+            manifest = read_apk_manifest(apk_dir)
+            return {
+                "dir": str(apk_dir),
+                "downloaded": bool(synced.get("downloaded")),
+                "remoteSize": synced.get("remoteSize"),
+                "localSize": zip_path.stat().st_size if zip_path.is_file() else None,
+                "versionName": resolve_local_apk_version(config, apk_dir) or manifest.get("version_name"),
+                "packageName": manifest.get("package_name") or synced.get("packageName"),
+                "files": [str(path) for path in install_files],
+                "source": f"third_party:{synced.get('provider') or 'apk20'}",
+                "sourceDecision": decision,
+            }
+        except Exception:  # noqa: BLE001
+            # Fall through to GnBots / local cache when the catalog sync fails.
+            pass
 
     downloaded = False
-
-    if url and remote_size is not None and remote_size != local_size:
+    if decision.get("shouldDownloadGnbots") and url:
+        if remote_size is None and not zip_path.is_file():
+            raise FileNotFoundError(
+                f"game.zip missing in {apk_dir} and server size check failed for {url}"
+            )
         _download_game_zip(url, zip_path)
         downloaded = True
         local_size = zip_path.stat().st_size
+        gnbots_ver = str(_read_manifest_from_zip(zip_path).get("version_name") or "").strip() or None
+        if gnbots_ver:
+            _persist_gnbots_version_probe(
+                version_name=gnbots_ver,
+                remote_size=remote_size if isinstance(remote_size, int) else local_size,
+                remote_url=url,
+            )
+        # Clear third-party provenance so the next size check treats this as GnBots.
+        manifest_path = apk_dir / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = read_apk_manifest(apk_dir)
+                if str(manifest.get("source") or "").startswith("third_party"):
+                    manifest["source"] = "gnbots_url"
+                    if gnbots_ver:
+                        manifest["version_name"] = gnbots_ver
+                    manifest_path.write_text(
+                        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
     elif url and not zip_path.is_file():
+        # No decision to download but cache empty — last-resort bootstrap from URL.
         if remote_size is None:
             raise FileNotFoundError(f"game.zip missing in {apk_dir} and server size check failed for {url}")
         _download_game_zip(url, zip_path)
@@ -2006,21 +2312,40 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing APK files in {apk_dir}: {', '.join(missing)}")
 
     manifest = read_apk_manifest(apk_dir)
+    source_tag = str(manifest.get("source") or "").strip()
     result = {
         "dir": str(apk_dir),
         "downloaded": downloaded,
         "remoteSize": remote_size,
-        "localSize": local_size,
+        "localSize": local_size if local_size is not None else (
+            zip_path.stat().st_size if zip_path.is_file() else None
+        ),
         "versionName": resolve_local_apk_version(config, apk_dir) or manifest.get("version_name"),
         "packageName": manifest.get("package_name"),
         "files": [str(apk_dir / name) for name in APK_INSTALL_ORDER],
-        "source": "gnbots_url" if url else "local",
+        "source": (
+            "third_party:apk20"
+            if source_tag.startswith("third_party") or _apk_cache_is_third_party_xapk(apk_dir, zip_path)
+            else ("gnbots_url" if url else "local")
+        ),
+        "sourceDecision": {
+            key: decision.get(key)
+            for key in (
+                "policy",
+                "chosen",
+                "chosenVersion",
+                "localVersion",
+                "thirdVersion",
+                "gnbotsVersion",
+                "reason",
+            )
+        },
     }
     sync_apk_manifest_from_main_apk(config)
     persist_apk_cache_state(
         version_name=str(result.get("versionName") or "") or None,
-        local_zip_size=local_size,
-        remote_zip_size=remote_size,
+        local_zip_size=result.get("localSize"),
+        remote_zip_size=remote_size if isinstance(remote_size, int) else None,
         remote_url=url,
         apk_ready=True,
     )
@@ -4690,6 +5015,23 @@ def _stage_apks_for_install(apk_paths: list[Path]) -> tuple[list[Path], Path | N
     return staged, stage_root
 
 
+def _force_stop_package(
+    ldconsole: Path,
+    index: int,
+    run_ldconsole,
+    package_name: str,
+) -> None:
+    run_ldconsole(
+        ldconsole,
+        "adb",
+        "--index",
+        str(index),
+        "--command",
+        f"shell am force-stop {package_name}",
+        timeout=60,
+    )
+
+
 def _uninstall_keep_data_for_reinstall(
     ldconsole: Path,
     index: int,
@@ -4698,6 +5040,9 @@ def _uninstall_keep_data_for_reinstall(
     package_name: str = DEFAULT_PACKAGE_NAME,
 ) -> dict[str, Any]:
     """Clear the installed package (keep app data) so split APK upgrades do not hang."""
+    # Running Whiteout often blocks uninstall on the first instance in a batch.
+    _force_stop_package(ldconsole, index, run_ldconsole, package_name)
+    time.sleep(1.0)
     result = run_ldconsole(
         ldconsole,
         "adb",
@@ -4709,17 +5054,51 @@ def _uninstall_keep_data_for_reinstall(
     )
     output = (result.stdout or result.stderr or "").strip()
     ok = result.returncode == 0 and "success" in output.lower()
+    if not ok:
+        # Second chance after another force-stop (common when the first account was in-game).
+        _force_stop_package(ldconsole, index, run_ldconsole, package_name)
+        time.sleep(2.0)
+        result = run_ldconsole(
+            ldconsole,
+            "adb",
+            "--index",
+            str(index),
+            "--command",
+            f"shell pm uninstall -k {package_name}",
+            timeout=120,
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        ok = result.returncode == 0 and "success" in output.lower()
+    # "Unknown package" means nothing to remove — treat as ready for fresh install.
+    if not ok and "unknown package" in output.lower():
+        ok = True
     return {"ok": ok, "output": output, "returncode": result.returncode}
 
 
-def install_whiteout_apk(ldconsole: Path, index: int, apk_paths: list[Path]) -> str:
+def install_whiteout_apk(
+    ldconsole: Path,
+    index: int,
+    apk_paths: list[Path],
+    *,
+    package_name: str = DEFAULT_PACKAGE_NAME,
+) -> str:
     from ldplayer_restore import run_ldconsole
 
     staged_paths, stage_root = _stage_apks_for_install(apk_paths)
     try:
         # Split APK -r upgrades often hang forever on LDPlayer; uninstall -k then fresh install.
         if len(staged_paths) > 1:
-            _uninstall_keep_data_for_reinstall(ldconsole, index, run_ldconsole)
+            uninstall = _uninstall_keep_data_for_reinstall(
+                ldconsole,
+                index,
+                run_ldconsole,
+                package_name=package_name,
+            )
+            if not uninstall.get("ok"):
+                raise RuntimeError(
+                    f"Could not uninstall {package_name} before split install on instance {index}: "
+                    f"{uninstall.get('output') or 'pm uninstall failed'}"
+                )
 
         if len(staged_paths) == 1:
             result = run_ldconsole(

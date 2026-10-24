@@ -78,9 +78,16 @@ class ApkUpdateJobsTests(unittest.TestCase):
         config = {}
 
         def flaky(_config, index, **_kwargs):
-            if index == 2:
-                raise RuntimeError("adb offline")
-            return {"index": index, "apk": {"index": index}, "message": "ok"}
+            if index == 1:
+                raise RuntimeError("left version 1.33.9.37")
+            return {
+                "index": index,
+                "installedVersion": "1.34.16",
+                "latestVersion": "1.34.16",
+                "updateAvailable": False,
+                "apk": {"index": index, "updateAvailable": False},
+                "message": "ok",
+            }
 
         with patch("apk_update_jobs._resolve_target_indexes", return_value=([1, 2], {"scope": "indexes"})):
             with patch("whiteout_apk.update_whiteout_apk_on_instance", side_effect=flaky):
@@ -92,7 +99,35 @@ class ApkUpdateJobsTests(unittest.TestCase):
                         self.assertEqual(finished["status"], "completed")
                         self.assertEqual(finished["updated"], 1)
                         self.assertEqual(finished["failed"], 1)
-                        self.assertEqual(finished["failures"][0]["index"], 2)
+                        self.assertEqual(finished["failures"][0]["index"], 1)
+                        self.assertIn("#1:", finished["message"])
+                        self.assertIn("#2", finished["message"])
+                        self.assertIn("1.33.9.37", finished["message"])
+
+    def test_soft_success_still_needing_update_counts_as_failure(self) -> None:
+        config = {}
+
+        def soft(_config, index, **_kwargs):
+            return {
+                "index": index,
+                "installedVersion": "1.33.9.37",
+                "latestVersion": "1.34.16",
+                "updateAvailable": True,
+                "apk": {"index": index, "updateAvailable": True, "installedVersion": "1.33.9.37"},
+                "message": "Installed Whiteout Survival 1.33.9.37",
+            }
+
+        with patch("apk_update_jobs._resolve_target_indexes", return_value=([3], {"scope": "indexes"})):
+            with patch("whiteout_apk.update_whiteout_apk_on_instance", side_effect=soft):
+                with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={"versionName": "1.34.16"}):
+                    with patch("whiteout_apk.save_persisted_apk_update_instance_indexes", return_value=[3]):
+                        job = start_apk_update_job(config, indexes=[3], only_outdated=False, force=True)
+                        finished = wait_for_apk_update_job(job["id"], timeout_seconds=5)
+                        assert finished is not None
+                        self.assertEqual(finished["status"], "failed")
+                        self.assertEqual(finished["updated"], 0)
+                        self.assertEqual(finished["failed"], 1)
+                        self.assertIn("still needs an APK update", finished["failures"][0]["error"])
 
 
 if __name__ == "__main__":

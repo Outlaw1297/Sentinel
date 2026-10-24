@@ -261,7 +261,13 @@ def _provision_worker(
         )
         _append_provision_log(f"[{job_id}] installing apk on index={index}")
         wait_for_android_boot(ldconsole, index)
-        install_output = install_whiteout_apk(ldconsole, index, apk_paths)
+        package_name = str(apk_info.get("packageName") or "com.gof.global")
+        install_output = install_whiteout_apk(
+            ldconsole,
+            index,
+            apk_paths,
+            package_name=package_name,
+        )
         ensure_ldplayer_instance_stopped(ldconsole, index, run_ldconsole)
         installed_version = str(apk_info.get("versionName") or "").strip() or None
         if installed_version:

@@ -1,12 +1,18 @@
 # Changelog
 
-## 0.2.1 — 2026-10-24
+## 0.2.2 — 2026-10-24
 
 ### APK updates
-- Download/sync only fills the APK cache; Restore now states that clearly and auto-queues install on selected emulators after a successful download
-- APK install jobs fail if the emulator remains on an older version or still shows the in-game Update dialog
+- Merge of v0.1.13 APK reliability fixes onto the Frostguard / dual-provider line
+- Download/sync only fills the APK cache; Restore auto-queues install on selected emulators after a successful download
+- Install jobs fail if the emulator remains on an older version or still shows the in-game Update dialog
+- Force-stop before uninstall; verify version before launching the game; retry install once if the first attempt left the old build
+- Stop mid-batch cache oscillation (APK20 XAPK `game.zip` size ≠ GnBots Content-Length)
+- `apk_source_policy` (`auto` / `gnbots` / `third_party`): default `auto` keeps whichever source has the newer Whiteout `versionName`
+- Partial batch jobs list which instance indexes failed and why
 - APK20 ABI mismatches list available architectures (Whiteout catalog is currently arm64-v8a only)
-- Staging an XAPK clears stale `main`/`arch`/`pack` splits before writing the new cache
+
+## 0.2.1 — 2026-10-24
 
 ### Frostguard parity progress
 - Global Start/Stop/Stop All/Stop Emulators dispatch through Frostguard bridge + emulator quit when `bot_provider` is frostguard (GnBots Remote API path unchanged)
@@ -30,6 +36,11 @@
 - Settings → Emulator provider with path overrides; `auto` follows GnBots emulator hints
 - Restore/`.ldbk` remains LDPlayer-only; other emulators support list/launch/quit/ADB/screencap
 - Docs: `docs/FROSTGUARD.md`, `docs/EMULATORS.md`
+
+## 0.1.13 — 2026-10-24
+
+### APK updates
+- Same APK source/install reliability fixes as 0.2.2, released on the 0.1.x line for operators not yet on 0.2.x
 
 ## 0.1.12 — 2026-10-23
 

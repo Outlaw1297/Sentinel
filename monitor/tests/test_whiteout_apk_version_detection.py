@@ -264,22 +264,22 @@ Package [com.gof.global.arch] (ghi):
                     with patch("ldplayer_restore.stop_ldplayer_instance_best_effort"):
                         with patch("whiteout_apk.wait_for_android_boot"):
                             with patch("whiteout_apk.ensure_latest_whiteout_apk", return_value=apk_info):
-                                with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
+                                with patch(
+                                    "whiteout_apk.install_whiteout_apk",
+                                    return_value="installed",
+                                ) as install_mock:
                                     with patch(
-                                        "whiteout_apk.run_whiteout_post_install_workflow",
-                                        return_value={"completed": True, "downloadPercent": 100},
+                                        "whiteout_apk.read_installed_package_version",
+                                        return_value={
+                                            "versionName": None,
+                                            "checkState": "offline",
+                                            "installed": True,
+                                        },
                                     ):
-                                        with patch(
-                                            "whiteout_apk.read_installed_package_version",
-                                            return_value={
-                                                "versionName": None,
-                                                "checkState": "offline",
-                                                "installed": True,
-                                            },
-                                        ):
-                                            with patch("monitor_config.CONFIG_PATH", self.config_path):
-                                                with self.assertRaisesRegex(RuntimeError, "could not be confirmed"):
-                                                    update_whiteout_apk_on_instance(self.config, 7)
+                                        with patch("monitor_config.CONFIG_PATH", self.config_path):
+                                            with self.assertRaisesRegex(RuntimeError, "could not be confirmed"):
+                                                update_whiteout_apk_on_instance(self.config, 7)
+        self.assertEqual(install_mock.call_count, 2)
 
     def test_update_fails_when_emulator_still_on_old_version(self) -> None:
         fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"
@@ -297,18 +297,63 @@ Package [com.gof.global.arch] (ghi):
                     with patch("ldplayer_restore.stop_ldplayer_instance_best_effort"):
                         with patch("whiteout_apk.wait_for_android_boot"):
                             with patch("whiteout_apk.ensure_latest_whiteout_apk", return_value=apk_info):
-                                with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
+                                with patch(
+                                    "whiteout_apk.install_whiteout_apk",
+                                    return_value="installed",
+                                ) as install_mock:
                                     with patch(
-                                        "whiteout_apk.run_whiteout_post_install_workflow",
-                                        return_value={"completed": True, "downloadPercent": 100},
+                                        "whiteout_apk.read_installed_package_version",
+                                        return_value={"versionName": "1.33.9.37"},
+                                    ):
+                                        with patch("monitor_config.CONFIG_PATH", self.config_path):
+                                            with self.assertRaisesRegex(RuntimeError, "left version 1.33.9.37"):
+                                                update_whiteout_apk_on_instance(self.config, 2)
+        self.assertEqual(install_mock.call_count, 2)
+
+    def test_update_retries_when_first_attempt_leaves_old_version(self) -> None:
+        fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"
+        fake_ldconsole.write_bytes(b"")
+        apk_info = {
+            "dir": str(self.apk_dir),
+            "downloaded": True,
+            "versionName": "1.34.16",
+            "packageName": "com.gof.global",
+            "files": [str(self.apk_dir / name) for name in ("main.apk", "arch.apk", "pack.apk")],
+        }
+        versions = iter([{"versionName": "1.33.9.37"}, {"versionName": "1.34.16"}])
+        with patch("ldplayer_restore.resolve_ldconsole", return_value=fake_ldconsole):
+            with patch("ldplayer_restore.run_ldconsole"):
+                with patch("ldplayer_restore.list_running_ld_indexes", return_value=set()):
+                    with patch("ldplayer_restore.stop_ldplayer_instance_best_effort"):
+                        with patch("whiteout_apk.wait_for_android_boot"):
+                            with patch("whiteout_apk.ensure_latest_whiteout_apk", return_value=apk_info):
+                                with patch(
+                                    "whiteout_apk.install_whiteout_apk",
+                                    return_value="installed",
+                                ) as install_mock:
+                                    with patch(
+                                        "whiteout_apk.read_installed_package_version",
+                                        side_effect=lambda *_args, **_kwargs: next(versions),
                                     ):
                                         with patch(
-                                            "whiteout_apk.read_installed_package_version",
-                                            return_value={"versionName": "1.33.9.37"},
+                                            "whiteout_apk.probe_game_update_prompt",
+                                            return_value={"gameUpdateRequired": False},
                                         ):
-                                            with patch("monitor_config.CONFIG_PATH", self.config_path):
-                                                with self.assertRaisesRegex(RuntimeError, "left version 1.33.9.37"):
-                                                    update_whiteout_apk_on_instance(self.config, 2)
+                                            with patch(
+                                                "whiteout_apk.inspect_whiteout_apk_for_index",
+                                                return_value={"updateAvailable": False},
+                                            ):
+                                                with patch(
+                                                    "whiteout_apk.run_whiteout_post_install_workflow",
+                                                    return_value={"completed": True, "downloadPercent": 100},
+                                                ) as workflow_mock:
+                                                    with patch("monitor_config.CONFIG_PATH", self.config_path):
+                                                        result = update_whiteout_apk_on_instance(self.config, 0)
+        self.assertEqual(install_mock.call_count, 2)
+        workflow_mock.assert_called_once()
+        self.assertEqual(result["installedVersion"], "1.34.16")
+        self.assertEqual(result["installAttempts"], 2)
+        self.assertIn("reinstalled after first attempt", result["message"])
 
     def test_offline_inspect_shows_persisted_version_after_update(self) -> None:
         fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"
