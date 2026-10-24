@@ -57,6 +57,82 @@ def test_resolve_ldplayer_add_result_returns_none_when_list_lags_exit_code():
     assert resolved is None
 
 
+def test_resolve_ldplayer_add_result_rejects_preexisting_name_match():
+    """Failed/duplicate add must not treat an already-listed name as newly created."""
+    before = {0, 1, 5}
+    after = [
+        {"index": 0, "name": "Rick"},
+        {"index": 1, "name": "Archer"},
+        {"index": 5, "name": "DupName"},
+    ]
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="DupName",
+        returncode=1,
+        output="add failed",
+    )
+    assert resolved is None
+
+
+def test_resolve_ldplayer_add_result_prefers_exit_code_over_other_new_indexes():
+    """Concurrent adds: do not bind to created[-1] when exit code names the new index."""
+    before = set(range(10))
+    after = [{"index": index, "name": f"LDPlayer-{index}"} for index in range(10)]
+    after.extend(
+        [
+            {"index": 10, "name": "JobA"},
+            {"index": 11, "name": "JobB"},
+        ]
+    )
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="JobA",
+        returncode=10,
+        output="",
+    )
+    assert resolved == (10, "Created LDPlayer instance 10")
+
+
+def test_resolve_ldplayer_add_result_refuses_ambiguous_new_indexes_without_signals():
+    """Multiple new indexes + no exit-code/name hit → keep polling / fail, do not guess."""
+    before = set(range(10))
+    after = [{"index": index, "name": f"LDPlayer-{index}"} for index in range(10)]
+    after.extend(
+        [
+            {"index": 10, "name": "OtherA"},
+            {"index": 11, "name": "OtherB"},
+        ]
+    )
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="StillLagging",
+        returncode=0,
+        output="",
+    )
+    assert resolved is None
+
+
+def test_resolve_ldplayer_add_result_accepts_sole_new_index_without_exit_code():
+    """Some LD builds return success=0; a single new index is still trustworthy."""
+    before = {0, 1}
+    after = [
+        {"index": 0, "name": "Rick"},
+        {"index": 1, "name": "Archer"},
+        {"index": 7, "name": "LDPlayer-7"},
+    ]
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="Fresh",
+        returncode=0,
+        output="",
+    )
+    assert resolved == (7, "Created LDPlayer instance 7")
+
+
 def test_create_ldplayer_instance_polls_until_instance_visible(monkeypatch):
     before_rows = [{"index": index, "name": f"LDPlayer-{index}"} for index in range(19)]
     after_rows = before_rows + [{"index": 19, "name": "VerifyMatrixE2E"}]
