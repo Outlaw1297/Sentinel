@@ -38,15 +38,20 @@ If GnBots is running and the cooldown has elapsed, Sentinel issues a **Stop** so
 
 When enabled (`auto_update_apks`) and **GnBots is stopped**, Sentinel periodically:
 
-1. Checks / syncs the remote Whiteout `game.zip`
+1. Checks / syncs APK sources:
+   - Optional GnBots-style `whiteout_apk_url` (`game.zip`)
+   - Optional **third-party catalog** (`apk_third_party_provider`, for example `apk20`) so updates are not blocked when GnBots has not refreshed its package yet
 2. Updates the instances selected under **Emulator Restore → Instances to update**
 
-Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk` returns a job immediately; poll `/api/emulators/apk/jobs/{id}`).
+Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk` returns a job immediately; poll `/api/emulators/apk/jobs/{id}`). Use **Check for newer APK** / **Download latest APK** on the Restore tab to sync either source.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `auto_update_apks` | `false` | Master toggle |
 | `auto_update_apks_check_minutes` | `30` | How often to check |
+| `apk_third_party_provider` | `apk20` | Defaults on; set `off` to use only the GnBots URL/local cache |
+| `apk_third_party_package` | auto (`com.gof.global`) | Auto-filled from the Whiteout APK cache when blank |
+| `apk_third_party_abi` | auto from LDPlayer | Auto-filled from GnBots `LDPath64`/`LDPath32` (or install path); override only if needed |
 
 ### 3. Stuck-screen learning (same-screen timeouts)
 

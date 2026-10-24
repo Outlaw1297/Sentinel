@@ -283,6 +283,7 @@ let restoreBackupsDir = "";
 let restoreBusy = false;
 let restoreProgressByIndex = {};
 let activeRestorePollToken = 0;
+let restorePollLoopActive = false;
 let availableBackups = [];
 let backupAssignmentBusyIndex = null;
 let provisionPreview = null;
@@ -970,31 +971,50 @@ function updateRestoreJobProgress(index, job) {
 
 async function resumeActiveRestorePolling(rows) {
   if (!window.GnBotsRestore) return;
-
-  const busyRow = (rows || []).find((row) => row.restoreBusy && row.restoreJobId);
-  const active = busyRow
-    ? { id: busyRow.restoreJobId, instanceIndex: busyRow.index, instanceName: busyRow.ldName }
-    : await window.GnBotsRestore.findActiveRestoreJob();
-  if (!active?.id) return;
+  // One loop polls every busy restore job in order so batch restore-all keeps advancing.
+  if (restorePollLoopActive) return;
 
   const pollToken = ++activeRestorePollToken;
+  restorePollLoopActive = true;
   restoreBusy = true;
   applyRestoreLockState();
   renderRestoreInstanceList(restoreRows);
 
-  const index = Number(active.instanceIndex);
-  const label = active.instanceName || `instance ${index}`;
-  updateRestoreJobProgress(index, {
-    status: "queued",
-    message: `Resuming restore for ${label}…`,
-    progress: window.GnBotsRestore.progressForRestoreStatus("queued"),
-  });
+  const resolveBusyTargets = async (seedRows) => {
+    const fromRows = (seedRows || [])
+      .filter((row) => row.restoreBusy && row.restoreJobId)
+      .map((row) => ({
+        id: row.restoreJobId,
+        instanceIndex: row.index,
+        instanceName: row.ldName,
+      }));
+    if (fromRows.length) return fromRows;
+    if (typeof window.GnBotsRestore.findActiveRestoreJobs === "function") {
+      return window.GnBotsRestore.findActiveRestoreJobs();
+    }
+    const single = await window.GnBotsRestore.findActiveRestoreJob();
+    return single?.id ? [single] : [];
+  };
 
   try {
-    await window.GnBotsRestore.resumeRestoreJobPolling({
-      jobId: active.id,
-      onStatus: (job) => updateRestoreJobProgress(index, job),
-      onComplete: async (job) => {
+    let seedRows = rows || restoreRows;
+    while (pollToken === activeRestorePollToken) {
+      const targets = await resolveBusyTargets(seedRows);
+      if (!targets.length) break;
+
+      const active = targets[0];
+      const index = Number(active.instanceIndex);
+      const label = active.instanceName || `instance ${index}`;
+      updateRestoreJobProgress(index, {
+        status: "queued",
+        message: `Watching restore for ${label}${targets.length > 1 ? ` (${targets.length} queued)` : ""}…`,
+        progress: window.GnBotsRestore.progressForRestoreStatus("queued"),
+      });
+
+      try {
+        const job = await window.GnBotsRestore.pollRestoreJob(active.id, {
+          onStatus: (jobStatus) => updateRestoreJobProgress(index, jobStatus),
+        });
         if (pollToken !== activeRestorePollToken) return;
         const warnings = job.warnings || [];
         if (warnings.length) {
@@ -1007,18 +1027,17 @@ async function resumeActiveRestorePolling(rows) {
           setRestorePageStatus(`Restore completed for ${label}.`, "ok", 100);
         }
         delete restoreProgressByIndex[index];
-        await refreshRestoreTabAfterJob();
-      },
-      onError: async (error) => {
+      } catch (error) {
         if (pollToken !== activeRestorePollToken) return;
         setRestorePageStatus(error.message || "Restore failed.", "error");
         delete restoreProgressByIndex[index];
-        await refreshRestoreTabAfterJob();
-      },
-    });
-  } catch {
-    // onError already refreshed the tab
+      }
+
+      await refreshRestoreTabAfterJob();
+      seedRows = restoreRows;
+    }
   } finally {
+    restorePollLoopActive = false;
     if (pollToken === activeRestorePollToken) {
       restoreBusy = false;
       applyRestoreLockState();
@@ -1325,15 +1344,28 @@ function renderRestoreSummary(rows) {
   const gameUpdateStuck = Object.values(emulatorApkByIndex).filter((apk) => apk?.gameUpdateRequired).length;
   const cachedVersion =
     remoteApkStatus?.localVersion || rows.find((row) => row.apkVersion)?.apkVersion;
+  const thirdParty = remoteApkStatus?.thirdParty;
+  const thirdPartyLabel =
+    thirdParty?.enabled && thirdParty?.remoteVersion
+      ? `${thirdParty.provider || "3rd party"} ${thirdParty.remoteVersion}${
+          thirdParty.updateAvailable ? " (newer)" : ""
+        }`
+      : thirdParty?.enabled
+        ? thirdParty.error
+          ? `3rd party error`
+          : "3rd party on"
+        : "";
   const remoteApkLabel = remoteApkStatus
     ? remoteApkStatus.localAheadOfRemote
       ? `Local newer (${remoteApkStatus.remoteVersion || "old zip"})`
       : remoteApkStatus.updateAvailable
-        ? "Newer zip available"
+        ? remoteApkStatus.source?.startsWith("third_party")
+          ? `Newer 3rd-party APK (${remoteApkStatus.remoteVersion || "unknown"})`
+          : "Newer zip available"
         : remoteApkStatus.apkReady
           ? remoteApkStatus.remoteVersion && remoteApkStatus.localVersion
-            ? `Zip ${remoteApkStatus.remoteVersion}`
-            : "Cache ready"
+            ? `Cache ${remoteApkStatus.localVersion}${thirdPartyLabel ? ` · ${thirdPartyLabel}` : ""}`
+            : thirdPartyLabel || "Cache ready"
           : "Cache incomplete"
     : "—";
   const troubledWithBackup = rows.filter((row) => row.troubled && row.backupAvailable);
@@ -2149,7 +2181,7 @@ async function restoreAllTroubled() {
         `Queue restore for ${indexes.length} troubled instance${indexes.length === 1 ? "" : "s"}?`,
         `Instances: ${indexes.map((index) => `#${index}`).join(", ")}`,
         "",
-        "Restores run one at a time per instance. Leave emulators alone during resource-pack download.",
+        "Restores run one instance at a time (serialized). Leave emulators alone during resource-pack download.",
       ].join("\n"),
     )
   ) {
@@ -6146,7 +6178,7 @@ function renderAutomationToggles(status, config) {
     },
     {
       key: "auto_update_apks",
-      label: "Auto-update APKs when newer (bot must be stopped)",
+      label: "Auto-update APKs when newer (GnBots URL and/or third-party; bot must be stopped)",
       checked: Boolean(cfg.auto_update_apks),
     },
   ];

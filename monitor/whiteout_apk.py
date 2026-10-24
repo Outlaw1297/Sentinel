@@ -429,6 +429,27 @@ def merge_persisted_apk_cache(result: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _stage_or_extract_game_zip(zip_path: Path, apk_dir: Path, config: dict[str, Any]) -> None:
+    """Extract GnBots game.zip splits, or re-stage an XAPK stored as game.zip."""
+    try:
+        from apk_third_party import game_zip_looks_like_xapk, resolve_third_party_abi, stage_xapk_into_apk_dir
+
+        if game_zip_looks_like_xapk(zip_path):
+            # Third-party sync stores the XAPK as game.zip. Re-stage into main/arch/pack
+            # instead of dumping original split names (which leaves arch.apk missing and
+            # overwrites the Sentinel cache manifest).
+            stage_xapk_into_apk_dir(
+                zip_path,
+                apk_dir,
+                abi=resolve_third_party_abi(config),
+                write_game_zip=False,
+            )
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    _extract_game_zip(zip_path, apk_dir)
+
+
 def refresh_local_apk_cache_from_disk(config: dict[str, Any]) -> dict[str, Any]:
     """Refresh persisted cache version from split APKs; avoid downgrading via stale game.zip."""
     apk_dir = resolve_whiteout_apk_dir(config)
@@ -453,7 +474,7 @@ def refresh_local_apk_cache_from_disk(config: dict[str, Any]) -> dict[str, Any]:
 
     version_before = str(get_persisted_apk_cache_state().get("versionName") or "").strip()
     if needs_extract and not split_ahead_of_zip:
-        _extract_game_zip(zip_path, apk_dir)
+        _stage_or_extract_game_zip(zip_path, apk_dir, config)
         invalidate_apk_inspect_cache()
 
     sync_apk_manifest_from_main_apk(config)
@@ -564,6 +585,31 @@ def restore_starts_resource_download(config: dict[str, Any]) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off"}
     return bool(value)
+
+
+DEFAULT_RESOURCE_PACK_TIMEOUT_SECONDS = 1800
+DEFAULT_APK_BATCH_RESOURCE_TIMEOUT_SECONDS = 300
+RESOURCE_PACK_STALL_SECONDS = 180
+
+
+def resolve_resource_pack_timeout(
+    config: dict[str, Any] | None,
+    *,
+    override_seconds: int | None = None,
+    batch: bool = False,
+) -> int:
+    """Resolve resource-pack wait budget. Explicit override wins over config."""
+    if override_seconds is not None:
+        # Allow sub-30 slices when a caller is draining a hard deadline.
+        return max(1, int(override_seconds))
+    if batch:
+        # Batch APK updates must not inherit the long single-restore timeout.
+        if config is not None and config.get("apk_update_resource_download_timeout") is not None:
+            return max(30, int(config["apk_update_resource_download_timeout"]))
+        return DEFAULT_APK_BATCH_RESOURCE_TIMEOUT_SECONDS
+    if config is not None and config.get("restore_whiteout_resource_download_timeout") is not None:
+        return max(30, int(config["restore_whiteout_resource_download_timeout"]))
+    return DEFAULT_RESOURCE_PACK_TIMEOUT_SECONDS
 
 
 def apk_update_stops_emulator(config: dict[str, Any]) -> bool:
@@ -1233,6 +1279,8 @@ def update_whiteout_apk_on_instance(
     *,
     sync_latest: bool = True,
     wait_for_resource_pack: bool | None = None,
+    resource_timeout_seconds: int | None = None,
+    batch: bool = False,
 ) -> dict[str, Any]:
     from ldplayer_restore import (
         list_running_ld_indexes,
@@ -1262,6 +1310,11 @@ def update_whiteout_apk_on_instance(
     resource_error: str | None = None
     installed_version: str | None = None
     latest_version = apk_info.get("versionName")
+    pack_timeout = resolve_resource_pack_timeout(
+        config,
+        override_seconds=resource_timeout_seconds,
+        batch=batch,
+    )
 
     try:
         wait_for_android_boot(ldconsole, index)
@@ -1276,6 +1329,7 @@ def update_whiteout_apk_on_instance(
                     package_name,
                     run_ldconsole,
                     config=config,
+                    timeout_seconds=pack_timeout,
                 )
             except Exception as exc:  # noqa: BLE001
                 resource_error = str(exc)
@@ -1431,26 +1485,30 @@ def apk_status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> dict[str, Any]:
-    """Compare local game.zip cache with remote source; optionally download when newer."""
+    """Compare local APK cache with GnBots game.zip and/or a third-party catalog.
+
+    When `apk_third_party_provider` is set (for example `apk20`), Sentinel can detect and
+    download newer game APKs even if GnBots has not refreshed its own game.zip yet.
+    """
     local = refresh_local_apk_cache_from_disk(config)
     apk_dir = resolve_whiteout_apk_dir(config)
     zip_path = apk_dir / "game.zip"
     url = resolve_whiteout_apk_url(config)
-    remote_size = _remote_game_zip_size(url)
+    remote_size = _remote_game_zip_size(url) if url else None
     local_size = zip_path.stat().st_size if zip_path.is_file() else None
     remote_zip_version = None
     if zip_path.is_file():
         remote_zip_version = _read_manifest_from_zip(zip_path).get("version_name")
     local_version = local.get("versionName")
     remote_newer = remote_size is not None and remote_size != local_size
-    missing_zip = not zip_path.is_file()
+    missing_zip = bool(url) and not zip_path.is_file()
     local_ahead_of_remote = bool(
         local_version
         and remote_zip_version
         and version_is_older(str(remote_zip_version), str(local_version))
     )
     update_available = (
-        (remote_newer or missing_zip or not local.get("ready"))
+        (remote_newer or missing_zip or (bool(url) and not local.get("ready")))
         and not local_ahead_of_remote
     )
     if remote_zip_version and local_version and version_is_older(local_version, str(remote_zip_version)):
@@ -1467,27 +1525,113 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
         "updateAvailable": update_available,
         "localAheadOfRemote": local_ahead_of_remote,
         "downloaded": False,
+        "source": "gnbots_url" if url else "local",
     }
 
-    if sync and update_available and not local_ahead_of_remote:
-        synced = ensure_latest_whiteout_apk(config)
-        result.update(
-            {
-                "localVersion": synced.get("versionName"),
-                "localZipSize": synced.get("localSize"),
-                "remoteZipSize": synced.get("remoteSize"),
-                "apkReady": True,
-                "updateAvailable": False,
-                "downloaded": bool(synced.get("downloaded")),
-                "synced": True,
+    third_party: dict[str, Any] | None = None
+    try:
+        from apk_third_party import check_third_party_apk_remote, third_party_enabled
+
+        if third_party_enabled(config):
+            third_party = check_third_party_apk_remote(config)
+            result["thirdParty"] = {
+                key: third_party.get(key)
+                for key in (
+                    "ok",
+                    "enabled",
+                    "provider",
+                    "packageName",
+                    "abi",
+                    "localVersion",
+                    "remoteVersion",
+                    "remoteVersionCode",
+                    "updateAvailable",
+                    "remoteSize",
+                    "sourceUrl",
+                    "error",
+                    "title",
+                )
             }
+            if third_party.get("ok") and third_party.get("updateAvailable"):
+                result["updateAvailable"] = True
+                # Surface the newer third-party version in the summary when GnBots zip lags.
+                if version_is_older(str(result.get("remoteVersion") or ""), str(third_party.get("remoteVersion") or "")):
+                    result["remoteVersion"] = third_party.get("remoteVersion")
+                    result["remoteZipSize"] = third_party.get("remoteSize")
+                    result["remoteUrl"] = third_party.get("sourceUrl")
+                    result["source"] = f"third_party:{third_party.get('provider')}"
+                    result["localAheadOfRemote"] = False
+    except Exception as exc:  # noqa: BLE001
+        result["thirdParty"] = {"ok": False, "enabled": True, "error": str(exc)}
+
+    if sync and result.get("updateAvailable") and not result.get("localAheadOfRemote"):
+        # Never prefer third-party when GnBots game.zip already signals an update
+        # (size mismatch / missing zip). Otherwise a mid-tier APK20 build can
+        # win over a newer GnBots zip and leave bots on the wrong version.
+        gnbots_size_update = bool(
+            url
+            and (
+                (remote_size is not None and remote_size != local_size)
+                or missing_zip
+            )
         )
-        invalidate_apk_inspect_cache()
+        prefer_third_party = bool(
+            third_party
+            and third_party.get("ok")
+            and third_party.get("updateAvailable")
+            and not gnbots_size_update
+            and (
+                not url
+                or version_is_older(
+                    str(remote_zip_version or local_version or ""),
+                    str(third_party.get("remoteVersion") or ""),
+                )
+            )
+        )
+        synced: dict[str, Any] | None = None
+        if prefer_third_party:
+            try:
+                from apk_third_party import sync_third_party_apk
+
+                synced = sync_third_party_apk(config, force=True)
+                result.update(
+                    {
+                        "localVersion": synced.get("localVersion") or synced.get("remoteVersion"),
+                        "remoteVersion": synced.get("remoteVersion"),
+                        "remoteZipSize": synced.get("remoteSize"),
+                        "remoteUrl": synced.get("sourceUrl"),
+                        "apkReady": True,
+                        "updateAvailable": False,
+                        "downloaded": bool(synced.get("downloaded")),
+                        "synced": True,
+                        "source": f"third_party:{synced.get('provider') or 'apk20'}",
+                        "message": synced.get("message"),
+                    }
+                )
+                invalidate_apk_inspect_cache()
+            except Exception as exc:  # noqa: BLE001
+                result["thirdPartySyncError"] = str(exc)
+                synced = None
+        if synced is None:
+            synced = ensure_latest_whiteout_apk(config)
+            result.update(
+                {
+                    "localVersion": synced.get("versionName"),
+                    "localZipSize": synced.get("localSize"),
+                    "remoteZipSize": synced.get("remoteSize"),
+                    "apkReady": True,
+                    "updateAvailable": False,
+                    "downloaded": bool(synced.get("downloaded")),
+                    "synced": True,
+                    "source": synced.get("source") or ("gnbots_url" if url else "local"),
+                }
+            )
+            invalidate_apk_inspect_cache()
     persist_apk_cache_state(
         version_name=str(result.get("localVersion") or "") or None,
         local_zip_size=result.get("localZipSize"),
         remote_zip_size=result.get("remoteZipSize"),
-        remote_url=url,
+        remote_url=str(result.get("remoteUrl") or url or ""),
         apk_ready=bool(result.get("apkReady")),
     )
     return merge_persisted_apk_cache(result)
@@ -1754,15 +1898,71 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
     zip_path = apk_dir / "game.zip"
     url = resolve_whiteout_apk_url(config)
 
-    remote_size = _remote_game_zip_size(url)
+    remote_size = _remote_game_zip_size(url) if url else None
     local_size = zip_path.stat().st_size if zip_path.is_file() else None
+    gnbots_size_update = bool(
+        url
+        and (
+            (remote_size is not None and remote_size != local_size)
+            or (not zip_path.is_file() and remote_size is not None)
+        )
+    )
+
+    # Prefer third-party only when it is strictly newer than local/cache and GnBots
+    # is not already signaling a newer game.zip. Missing splits alone must not force
+    # a third-party sync (that downgraded caches that still had a good game.zip).
+    try:
+        from apk_third_party import check_third_party_apk_remote, sync_third_party_apk, third_party_enabled
+
+        if third_party_enabled(config):
+            third = check_third_party_apk_remote(config)
+            local_version = resolve_local_apk_version(config, apk_dir)
+            third_version = str(third.get("remoteVersion") or "")
+            zip_version = None
+            if zip_path.is_file():
+                zip_version = _read_manifest_from_zip(zip_path).get("version_name")
+            best_local = zip_version or local_version
+            third_newer = bool(
+                third.get("ok")
+                and third_version
+                and version_is_older(str(best_local or ""), third_version)
+            )
+            files_ready = all((apk_dir / name).is_file() for name in APK_INSTALL_ORDER)
+            bootstrap_third = bool(
+                third.get("ok")
+                and third_version
+                and not url
+                and not zip_path.is_file()
+                and not files_ready
+            )
+            if (third_newer and not gnbots_size_update) or bootstrap_third:
+                synced = sync_third_party_apk(config, force=True)
+                install_files = [apk_dir / name for name in APK_INSTALL_ORDER]
+                missing = [path.name for path in install_files if not path.is_file()]
+                if missing:
+                    raise FileNotFoundError(f"Missing APK files in {apk_dir}: {', '.join(missing)}")
+                manifest = read_apk_manifest(apk_dir)
+                return {
+                    "dir": str(apk_dir),
+                    "downloaded": bool(synced.get("downloaded")),
+                    "remoteSize": synced.get("remoteSize"),
+                    "localSize": zip_path.stat().st_size if zip_path.is_file() else None,
+                    "versionName": resolve_local_apk_version(config, apk_dir) or manifest.get("version_name"),
+                    "packageName": manifest.get("package_name") or synced.get("packageName"),
+                    "files": [str(path) for path in install_files],
+                    "source": f"third_party:{synced.get('provider') or 'apk20'}",
+                }
+    except Exception:  # noqa: BLE001
+        # Fall through to GnBots URL / local cache when the catalog is unreachable.
+        pass
+
     downloaded = False
 
-    if remote_size is not None and remote_size != local_size:
+    if url and remote_size is not None and remote_size != local_size:
         _download_game_zip(url, zip_path)
         downloaded = True
         local_size = zip_path.stat().st_size
-    elif not zip_path.is_file():
+    elif url and not zip_path.is_file():
         if remote_size is None:
             raise FileNotFoundError(f"game.zip missing in {apk_dir} and server size check failed for {url}")
         _download_game_zip(url, zip_path)
@@ -1772,7 +1972,8 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
     install_files = [apk_dir / name for name in APK_INSTALL_ORDER]
     needs_extract = downloaded or not all(path.is_file() for path in install_files)
     if needs_extract and zip_path.is_file():
-        _extract_game_zip(zip_path, apk_dir)
+        # Third-party sync stores an XAPK as game.zip; detect and stage splits accordingly.
+        _stage_or_extract_game_zip(zip_path, apk_dir, config)
 
     missing = [name for name in APK_INSTALL_ORDER if not (apk_dir / name).is_file()]
     if missing:
@@ -1787,6 +1988,7 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
         "versionName": resolve_local_apk_version(config, apk_dir) or manifest.get("version_name"),
         "packageName": manifest.get("package_name"),
         "files": [str(apk_dir / name) for name in APK_INSTALL_ORDER],
+        "source": "gnbots_url" if url else "local",
     }
     sync_apk_manifest_from_main_apk(config)
     persist_apk_cache_state(
@@ -3828,14 +4030,15 @@ def wait_for_whiteout_resource_download(
     index: int,
     run_ldconsole,
     *,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int | None = None,
     on_progress: Any | None = None,
     min_complete_seconds: float = 30.0,
     config: dict[str, Any] | None = None,
+    stall_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Wait until the Whiteout resource pack download reaches 100%."""
-    if config and config.get("restore_whiteout_resource_download_timeout") is not None:
-        timeout_seconds = int(config["restore_whiteout_resource_download_timeout"])
+    timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
+    stall_limit = RESOURCE_PACK_STALL_SECONDS if stall_seconds is None else max(30, int(stall_seconds))
     width, height = _read_display_size(ldconsole, index, run_ldconsole)
     deadline = time.monotonic() + timeout_seconds
     started = time.monotonic()
@@ -3848,6 +4051,7 @@ def wait_for_whiteout_resource_download(
     saw_optional_download = False
     stable_complete_reads = 0
     last_enter_now_tap = 0.0
+    last_progress_at = started
 
     saw_xml_progress = False
     saw_screenshot_progress = False
@@ -3916,11 +4120,33 @@ def wait_for_whiteout_resource_download(
         elif pack_pct >= 98 and enter_now and _pack_percent_trustworthy(state):
             last_percent = max(last_percent, pack_pct)
 
-        peak_percent = max(peak_percent, last_percent)
+        if last_percent > peak_percent:
+            peak_percent = last_percent
+            last_progress_at = time.monotonic()
+        else:
+            peak_percent = max(peak_percent, last_percent)
         if state.get("active"):
             saw_active = True
             saw_optional_download = True
         samples += 1
+
+        if (
+            (saw_active or saw_xml_progress or saw_screenshot_progress)
+            and peak_percent < 100
+            and (time.monotonic() - last_progress_at) >= stall_limit
+        ):
+            if on_progress:
+                on_progress(
+                    f"Optional resource pack stalled at {peak_percent}% — continuing.",
+                    90,
+                )
+            return {
+                "completed": False,
+                "downloadPercent": last_percent,
+                "elapsedSeconds": round(time.monotonic() - started, 1),
+                "samples": samples,
+                "reason": "stalled",
+            }
 
         if (
             enter_now
@@ -4079,6 +4305,11 @@ def _resource_pack_should_wait(
         "pack_not_required",
         "game_ready",
         "already_in_game",
+        "timeout",
+        "stalled",
+        "download_now_still_visible",
+        "dialog_closed",
+        "workflow_error",
     }:
         return False
     if not required.get("optionalPromptReady"):
@@ -4098,10 +4329,14 @@ def start_whiteout_resource_download(
     run_ldconsole,
     *,
     launch_wait_seconds: float = 35.0,
-    download_timeout_seconds: int = 1800,
+    download_timeout_seconds: int | None = None,
     on_progress: Any | None = None,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    download_timeout_seconds = resolve_resource_pack_timeout(
+        config,
+        override_seconds=download_timeout_seconds,
+    )
     if on_progress:
         on_progress("Launching Whiteout Survival…", 83)
     launch_output = launch_whiteout_app(ldconsole, index, package_name, run_ldconsole)
@@ -4262,31 +4497,38 @@ def await_whiteout_resource_pack_completion(
     *,
     config: dict[str, Any] | None = None,
     on_progress: Any | None = None,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int | None = None,
     log_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Keep waiting for optional pack + furnace/city HUD, matching restore jobs."""
+    timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
     if resource_info.get("completed"):
         return resource_info
 
-    if config and config.get("restore_whiteout_resource_download_timeout") is not None:
-        timeout_seconds = int(config["restore_whiteout_resource_download_timeout"])
-
     pack_deadline = time.monotonic() + timeout_seconds
     while not resource_info.get("completed") and time.monotonic() < pack_deadline:
-        remaining = max(60, int(pack_deadline - time.monotonic()))
+        # Never extend past the hard deadline (previously max(60, remaining) overran it).
+        remaining = int(pack_deadline - time.monotonic())
+        if remaining <= 0:
+            break
+        slice_seconds = max(1, min(60, remaining))
         resumed = wait_for_optional_pack_if_running(
             ldconsole,
             index,
             run_ldconsole,
-            timeout_seconds=remaining,
+            timeout_seconds=slice_seconds,
             on_progress=on_progress,
         )
         if resumed:
             resource_info = {**resource_info, **resumed}
             if resource_info.get("completed"):
                 break
+            if resource_info.get("reason") in {"timeout", "stalled"}:
+                break
         if not _resource_pack_should_wait(resource_info, ldconsole, index, run_ldconsole):
+            break
+        remaining = int(pack_deadline - time.monotonic())
+        if remaining <= 0:
             break
         width, height = _read_display_size(ldconsole, index, run_ldconsole)
         probe_state = _probe_download_state(
@@ -4308,6 +4550,9 @@ def await_whiteout_resource_pack_completion(
             resource_info = {**resource_info, **cont, "packNotRequired": True}
             if cont.get("completed"):
                 break
+        remaining = int(pack_deadline - time.monotonic())
+        if remaining <= 0:
+            break
         extra = wait_for_whiteout_resource_download(
             ldconsole,
             index,
@@ -4318,6 +4563,8 @@ def await_whiteout_resource_pack_completion(
         )
         resource_info = {**resource_info, **extra}
         if resource_info.get("completed"):
+            break
+        if resource_info.get("reason") in {"timeout", "stalled", "download_now_still_visible", "dialog_closed"}:
             break
         probe = probe_whiteout_optional_pack_finished(ldconsole, index, run_ldconsole)
         probe_pct = int(
@@ -4340,6 +4587,12 @@ def await_whiteout_resource_pack_completion(
             if on_progress:
                 on_progress("Optional resource pack complete.", 98)
             break
+    if not resource_info.get("completed") and not resource_info.get("reason"):
+        resource_info = {
+            **resource_info,
+            "reason": "timeout",
+            "downloadPercent": int(resource_info.get("downloadPercent") or 0),
+        }
     return resource_info
 
 
@@ -4352,8 +4605,10 @@ def run_whiteout_post_install_workflow(
     config: dict[str, Any] | None = None,
     on_progress: Any | None = None,
     log_fn: Any | None = None,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Launch game, tap Download Now, wait for pack + furnace/city screen (restore parity)."""
+    pack_timeout = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
     resource_info = start_whiteout_resource_download(
         ldconsole,
         index,
@@ -4361,6 +4616,7 @@ def run_whiteout_post_install_workflow(
         run_ldconsole,
         on_progress=on_progress,
         config=config,
+        download_timeout_seconds=pack_timeout,
     )
     if (
         resource_info.get("physicalTap")
@@ -4381,6 +4637,7 @@ def run_whiteout_post_install_workflow(
         resource_info,
         config=config,
         on_progress=on_progress,
+        timeout_seconds=pack_timeout,
         log_fn=log_fn,
     )
 

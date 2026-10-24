@@ -252,8 +252,14 @@ def _maybe_auto_update_apks(config: dict[str, Any]) -> dict[str, Any] | None:
     if not indexes:
         return None
 
-    # Prefer newly downloaded / remote-newer APKs; otherwise update outdated selected instances.
-    should_update = bool(remote.get("downloaded")) or bool(remote.get("updateAvailable"))
+    third = remote.get("thirdParty") if isinstance(remote.get("thirdParty"), dict) else {}
+    # Prefer newly downloaded / remote-newer APKs (GnBots URL or third-party catalog);
+    # otherwise update outdated selected instances.
+    should_update = (
+        bool(remote.get("downloaded"))
+        or bool(remote.get("updateAvailable"))
+        or bool(third.get("updateAvailable"))
+    )
     if not should_update and not remote.get("localAheadOfRemote"):
         from whiteout_apk import inspect_whiteout_apk_for_index
 

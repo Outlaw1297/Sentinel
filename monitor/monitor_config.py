@@ -137,7 +137,28 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "key": "whiteout_apk_url",
                 "type": "text",
                 "label": "Whiteout Survival APK URL",
-                "hint": "game.zip source used to refresh APKs before restore install.",
+                "hint": "Optional GnBots-style game.zip URL. Leave empty to rely on the third-party catalog below.",
+            },
+            {
+                "key": "apk_third_party_provider",
+                "type": "select",
+                "label": "Third-party APK source",
+                "hint": "Defaults to apk20. Checks/downloads the latest game APK even when GnBots has not refreshed. Set off to use only the GnBots URL/local cache.",
+                "options": ["off", "apk20"],
+            },
+            {
+                "key": "apk_third_party_package",
+                "type": "text",
+                "label": "Third-party package name",
+                "hint": "Auto-filled from the Whiteout APK cache / installed package when blank.",
+                "placeholder": "com.gof.global",
+            },
+            {
+                "key": "apk_third_party_abi",
+                "type": "select",
+                "label": "Third-party APK ABI",
+                "hint": "Auto-filled from GnBots LDPath64/LDPath32 and the LDPlayer install path. Change only to override.",
+                "options": ["arm64-v8a", "armeabi-v7a"],
             },
             {
                 "key": "restore_install_apk",
@@ -299,7 +320,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "key": "auto_update_apks",
                 "type": "boolean",
                 "label": "Auto-update APKs when newer",
-                "hint": "When GnBots is stopped, download/update selected instance APKs.",
+                "hint": "When GnBots is stopped, sync from the GnBots URL and/or third-party catalog, then update selected instance APKs.",
             },
             {
                 "key": "auto_update_apks_check_minutes",
@@ -776,6 +797,17 @@ def update_monitor_config_value(key: str, raw_value: str) -> tuple[Any, str]:
         _update_ld_health_setting(key, coerced, data)
     else:
         data[key] = coerced
+        if key == "apk_third_party_abi":
+            # Manual ABI override stops auto-refresh from LDPlayer path changes.
+            data["apk_third_party_abi_auto"] = False
+        elif key == "apk_third_party_provider" and coerced == "apk20":
+            # Turning the catalog back on re-syncs blank package/ABI from LDPlayer.
+            try:
+                from apk_third_party import ensure_apk_third_party_defaults
+
+                ensure_apk_third_party_defaults(data, persist=False, refresh_from_ldplayer=True)
+            except Exception:  # noqa: BLE001
+                pass
     save_raw_monitor_config(data)
 
     restart = meta.get("restart") or "immediate"
@@ -795,6 +827,12 @@ def update_monitor_config_value(key: str, raw_value: str) -> tuple[Any, str]:
 
 def monitor_config_for_ui() -> dict[str, Any]:
     raw = normalize_monitor_config_paths(read_raw_monitor_config())
+    try:
+        from apk_third_party import ensure_apk_third_party_defaults
+
+        ensure_apk_third_party_defaults(raw, persist=True, refresh_from_ldplayer=True)
+    except Exception:  # noqa: BLE001
+        pass
     ld_health = sync_ldplayer_health_settings(raw)
     display: dict[str, Any] = {}
     for key, meta in _FIELD_INDEX.items():

@@ -277,9 +277,21 @@ def _apk_update_worker(
             )
             _append_apk_job_log(f"[{job_id}] updating index={index} ({position + 1}/{total})")
             try:
-                result = update_whiteout_apk_on_instance(config, index)
+                # Batch installs use a shorter resource-pack budget so a hung optional
+                # download on one instance cannot block the rest of the queue.
+                result = update_whiteout_apk_on_instance(config, index, batch=True)
                 results.append(result)
-                _append_apk_job_log(f"[{job_id}] ok index={index}")
+                pack = result.get("resourcePack") or {}
+                if pack and not pack.get("completed") and pack.get("reason") in {
+                    "timeout",
+                    "stalled",
+                    "workflow_error",
+                }:
+                    _append_apk_job_log(
+                        f"[{job_id}] ok index={index} (resource pack {pack.get('reason')}; continuing batch)"
+                    )
+                else:
+                    _append_apk_job_log(f"[{job_id}] ok index={index}")
             except Exception as exc:  # noqa: BLE001
                 failures.append({"index": index, "error": str(exc)})
                 _append_apk_job_log(f"[{job_id}] failed index={index}: {exc}")
