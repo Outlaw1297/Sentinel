@@ -53,6 +53,25 @@ Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk
 | `apk_third_party_package` | auto (`com.gof.global`) | Auto-filled from the Whiteout APK cache when blank |
 | `apk_third_party_abi` | auto from LDPlayer | Auto-filled from GnBots `LDPath64`/`LDPath32` (or install path); override only if needed |
 
+#### How “newer of” works
+
+`check_whiteout_apk_remote` / sync (`whiteout_apk.py`) compare local staged APKs against:
+
+1. GnBots `game.zip` (size / embedded version when `whiteout_apk_url` is set)
+2. Third-party catalog when `apk_third_party_provider=apk20` (`apk_third_party.py`)
+
+`updateAvailable` is true if **either** source is newer than local. On sync/download, Sentinel prefers the third-party XAPK when that remote version is newer than the GnBots zip (or when no GnBots URL is configured). The XAPK is staged into the existing Whiteout cache as `main.apk` / `arch.apk` / `pack.apk` so install jobs do not change.
+
+| Constraint | Detail |
+|------------|--------|
+| Bot lock | Auto and manual bulk updates still refuse while GnBots is running |
+| Provider | Only `apk20` is implemented; other values return an unsupported-provider error |
+| ABI | Must match the LDPlayer instances (`arm64-v8a` vs `armeabi-v7a`) |
+| Network | Catalog check and XAPK download need outbound HTTPS to the APK20 API |
+| Settings UI | Keys live under **Emulator Restore** (same group as `whiteout_apk_url`) |
+
+Codepaths: `apk_third_party.check_*` / `sync_third_party_apk` → `whiteout_apk.check_whiteout_apk_remote` → Restore UI + `automation` auto-APK tick. Tests: `tests/test_apk_third_party.py`.
+
 ### 3. Stuck-screen learning (same-screen timeouts)
 
 GnBots already detects “same screen” timeouts (for example stuck on an **event** page). Sentinel turns those logs into reviewable rules and (optionally) remediations.
@@ -207,6 +226,10 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 | Same event never re-fixed | Event id already in `autoFixedEventIds` | Expected once-per-event; wait for a new timeout log |
 | Fixes feel spammy | Cooldown too low | Raise `cooldownSeconds` (30–3600) on the rule |
 | Linux / Cloud Agent | Remediations that need LDPlayer fail gracefully | Dashboard + learning still work; expect warn fallback / offline GnBots |
+| Check for newer APK never sees a third-party bump | Provider still `off`, or catalog error | Set `apk_third_party_provider=apk20`; inspect Restore check response `thirdParty.error` |
+| Download stages wrong ABI / install fails on LDPlayer | `apk_third_party_abi` mismatch | Use `arm64-v8a` (default) or `armeabi-v7a` for 32-bit instances |
+| Auto-APK never runs | Bot still running, or toggle off | Stop GnBots; enable `auto_update_apks`; watch `logs/automation.log` / `logs/apk-update-jobs.log` |
+| Third-party sync fails but GnBots zip works | Catalog/download outage or unsupported provider | Confirm provider is exactly `apk20`; retry **Download latest APK**; GnBots URL remains a fallback when it is newer/local-ready |
 
 ## Safety notes
 

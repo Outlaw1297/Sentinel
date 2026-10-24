@@ -25,6 +25,7 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 - Host resource pills, stack status, issue-focused and recent logs
 - Restore-recommended banner when backups or health checks say work is needed
 - Browser web-push notifications (bell) for long-running job completion
+- Server-side dashboard cache with an **epoch** so Start/Stop cannot leave a stale payload cached; post-action bursts use `/api/dashboard?fresh=1` (see [`docs/DASHBOARD.md`](docs/DASHBOARD.md))
 
 ### Emulator restore & health (`/settings?tab=restore`)
 - Point at an LDPlayer `.ldbk` backup folder and see per-instance health / trouble reasons
@@ -153,9 +154,12 @@ Expect GnBots offline and screenshot **503**s — that is normal without Windows
 ### Update Whiteout APKs in bulk
 
 1. Stop GnBots
-2. On **Emulator Restore**, select instances (or use your saved “instances to update”)
-3. Click **Update APK** — a background job starts immediately
-4. Watch progress on the same tab; refresh is safe; the UI reconnects to the job
+2. Optionally enable a third-party catalog under **Emulator Restore** (`apk_third_party_provider=apk20`) so **Check / Download latest APK** is not blocked on a stale GnBots `game.zip`
+3. On **Emulator Restore**, select instances (or use your saved “instances to update”)
+4. Click **Update APK** — a background job starts immediately
+5. Watch progress on the same tab; refresh is safe; the UI reconnects to the job
+
+Match `apk_third_party_abi` to your LDPlayer images (`arm64-v8a` vs `armeabi-v7a`). Details: [`docs/AUTOMATION.md`](docs/AUTOMATION.md#2-auto-apk-updates).
 
 ### Turn on automation
 
@@ -191,7 +195,7 @@ First run copies `config.example.json` → `config.json`. Important groups:
 |-------|-----------------|---------|
 | Paths / API | `gnbots_api_url`, `gnbots_root`, `gnbots_exe`, `ldplayer_backups_dir`, `ldplayer_path` | Find GnBots + LDPlayer |
 | Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
-| Dashboard | `dashboard_host`, `dashboard_port`, refresh/cache intervals, screenshot interval | UI polling behavior |
+| Dashboard | `dashboard_host`, `dashboard_port`, `refresh_interval_*`, `dashboard_cache_seconds`, `dashboard_cache_active_seconds`, screenshot interval | UI polling + server cache (see [`docs/DASHBOARD.md`](docs/DASHBOARD.md)) |
 | Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
 | Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
 | Push / tray | `push_*`, `tray_*` | Web push + Windows tray |
@@ -222,6 +226,8 @@ Tests (run with `monitor/` as the working directory):
 Known pre-existing failure on some environments: `tests/test_paths.py::test_get_static_dir_prefers_bundle`.
 
 Stuck-screen learning unit coverage: `tests/test_stuck_screen_learning.py` (plus related cases in `test_issue_history.py` / `test_automation.py`). Operator runbook: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
+
+Dashboard cache epoch / `?fresh=1`: `tests/test_dashboard_cache.py`. Third-party APK catalog: `tests/test_apk_third_party.py`.
 
 ### PWA notification icons
 
@@ -259,7 +265,10 @@ Artifacts: portable **Sentinel.zip** / `gnbot-monitor.exe`, **Sentinel-Setup.exe
 
 ## Version & changelog
 
-Current app version: **0.1.10** — see [`CHANGELOG.md`](CHANGELOG.md).
+Current app version: **0.1.11** — see [`CHANGELOG.md`](CHANGELOG.md).
 
-Highlights in 0.1.10: stuck-screen learning (event page → Back / restart / warn).  
+Highlights in 0.1.11: dashboard cache epoch + `?fresh=1` after Start/Stop; optional APK20 third-party catalog.  
+0.1.10: stuck-screen learning (event page → Back / restart / warn).  
 0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
+
+Developer notes for cache races: [`docs/DASHBOARD.md`](docs/DASHBOARD.md). Stuck-screen / auto-APK runbook: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
