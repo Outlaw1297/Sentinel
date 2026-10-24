@@ -477,27 +477,28 @@ def set_profile_enabled(workspace: Path, profile_id: str, enabled: bool) -> dict
         else:
             value = "true" if enabled else "false"
 
-        where_parts: list[str] = []
-        params: list[Any] = [value]
+        # Prefer id match, then name — never OR them together (id "1" must not
+        # also flip a different profile whose name is "1").
+        cur = None
         if id_col:
-            where_parts.append(f'CAST("{id_col}" AS TEXT) = ?')
-            params.append(want)
-        if name_col:
-            where_parts.append(f'CAST("{name_col}" AS TEXT) = ?')
-            params.append(want)
-        where_sql = " OR ".join(where_parts)
-        cur = conn.execute(
-            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE {where_sql}',
-            params,
-        )
+            cur = conn.execute(
+                f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE CAST("{id_col}" AS TEXT) = ?',
+                (value, want),
+            )
+        if (cur is None or cur.rowcount <= 0) and name_col:
+            cur = conn.execute(
+                f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE CAST("{name_col}" AS TEXT) = ?',
+                (value, want),
+            )
         conn.commit()
-        if cur.rowcount <= 0:
+        updated = int(cur.rowcount) if cur is not None else 0
+        if updated <= 0:
             return {"ok": False, "message": f"Profile not found: {want}", "updated": 0}
         return {
             "ok": True,
             "profileId": want,
             "enabled": bool(enabled),
-            "updated": int(cur.rowcount),
+            "updated": updated,
         }
     except sqlite3.Error as exc:
         return {"ok": False, "message": str(exc)}
@@ -677,22 +678,23 @@ def set_task_enabled(workspace: Path, task_id: str, enabled: bool) -> dict[str, 
         value: Any = 1 if enabled else 0
         if "INT" not in col_type and "BOOL" not in col_type and col_type:
             value = "true" if enabled else "false"
-        where_parts: list[str] = []
-        params: list[Any] = [value]
+        # Prefer id match, then name — never OR them (avoids multi-row flips).
+        cur = None
         if id_col:
-            where_parts.append(f'CAST("{id_col}" AS TEXT) = ?')
-            params.append(want)
-        if name_col:
-            where_parts.append(f'CAST("{name_col}" AS TEXT) = ?')
-            params.append(want)
-        cur = conn.execute(
-            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE {" OR ".join(where_parts)}',
-            params,
-        )
+            cur = conn.execute(
+                f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE CAST("{id_col}" AS TEXT) = ?',
+                (value, want),
+            )
+        if (cur is None or cur.rowcount <= 0) and name_col:
+            cur = conn.execute(
+                f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE CAST("{name_col}" AS TEXT) = ?',
+                (value, want),
+            )
         conn.commit()
-        if cur.rowcount <= 0:
+        updated = int(cur.rowcount) if cur is not None else 0
+        if updated <= 0:
             return {"ok": False, "message": f"Task not found: {want}", "updated": 0}
-        return {"ok": True, "taskId": want, "enabled": bool(enabled), "updated": int(cur.rowcount)}
+        return {"ok": True, "taskId": want, "enabled": bool(enabled), "updated": updated}
     except sqlite3.Error as exc:
         return {"ok": False, "message": str(exc)}
     finally:
