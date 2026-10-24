@@ -129,7 +129,7 @@ When `bot_provider` resolves to **frostguard**, **Add Account** still creates th
 | Feature | Frostguard behavior |
 |---------|---------------------|
 | Auto-stop on trouble | Bridge `/stopbot`, then `host_stop` if needed (`stop_frostguard_on_trouble`) |
-| Stuck-screen index resolve | Maps account/profile name or id → `emulatorNumber` from workspace profiles |
+| Stuck-screen index resolve | Maps account/profile name or id → `emulatorNumber` from workspace profiles; Back/restart remediations still call `ldconsole` (LDPlayer) today |
 | Manual APK Restore lock | Uses dashboard `botActive` from Frostguard `automation_active` (same Download → Update selected flow) |
 | Scheduled `auto_update_apks` | Still skips while the **GnBots** host process is running; prefer manual Restore updates on Frostguard-only farms until that gate is provider-aware |
 
