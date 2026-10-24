@@ -3,7 +3,8 @@
 ## 0.1.11 — 2026-10-15
 
 ### APK updates
-- Optional third-party APK catalog (`apk_third_party_provider=apk20`) checks and downloads the latest Whiteout XAPK even when GnBots has not updated its `game.zip`
+- Third-party APK catalog defaults to on (`apk_third_party_provider=apk20`) and auto-fills package/ABI from GnBots `LDPath64`/`LDPath32` and the LDPlayer install path
+- Checks/downloads the latest Whiteout XAPK even when GnBots has not updated its `game.zip`
 - Auto-update APKs and Restore “Check/Download latest APK” use the newer of the GnBots URL or third-party source
 
 ### Stability

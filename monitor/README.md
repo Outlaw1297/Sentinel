@@ -34,7 +34,7 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 - Background restore jobs resume after a page refresh
 
 ### Whiteout APK updates
-- Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (`apk_third_party_provider=apk20`) so farms are not stuck waiting for GnBots to refresh the package
+- Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (defaults to `apk20`, ABI/package auto-filled from LDPlayer) so farms are not stuck waiting for GnBots to refresh the package
 - Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk` and install / update selected emulators
 - **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
 - Choose “instances to update” once; reuse for manual bulk update or automation

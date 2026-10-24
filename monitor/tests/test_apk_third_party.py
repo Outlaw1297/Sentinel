@@ -14,10 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apk_third_party import (
     check_third_party_apk_remote,
+    ensure_apk_third_party_defaults,
     map_xapk_split_to_cache_name,
     stage_xapk_into_apk_dir,
     third_party_enabled,
 )
+from ldplayer_restore import detect_ldplayer_abi, infer_abi_from_ldplayer_path, read_ldplayer_install_info
 from whiteout_apk import check_whiteout_apk_remote
 
 
@@ -43,9 +45,66 @@ def _write_tiny_xapk(path: Path, *, version_name: str = "1.34.16", version_code:
 
 
 def test_third_party_enabled_toggle():
-    assert third_party_enabled({}) is False
+    assert third_party_enabled({}) is True  # defaults on
+    assert third_party_enabled({"apk_third_party_provider": ""}) is True
     assert third_party_enabled({"apk_third_party_provider": "none"}) is False
+    assert third_party_enabled({"apk_third_party_provider": "off"}) is False
     assert third_party_enabled({"apk_third_party_provider": "apk20"}) is True
+
+
+def test_infer_abi_from_ldplayer_path():
+    assert infer_abi_from_ldplayer_path(r"C:\LDPlayer\LDPlayer64") == "arm64-v8a"
+    assert infer_abi_from_ldplayer_path(r"C:\LDPlayer\LDPlayer9") == "arm64-v8a"
+    assert infer_abi_from_ldplayer_path(r"C:\LDPlayer\LDPlayer32") == "armeabi-v7a"
+    assert infer_abi_from_ldplayer_path(r"C:\LDPlayer\LDPlayer5") == "armeabi-v7a"
+
+
+def test_read_ldplayer_install_info_prefers_ldpath64(tmp_path: Path):
+    gnbots_root = tmp_path / "GnBots"
+    gnbots_root.mkdir()
+    (gnbots_root / "config.json").write_text(
+        json.dumps(
+            {
+                "LDPath64": r"C:\LDPlayer\LDPlayer9",
+                "LDPath32": r"C:\LDPlayer\LDPlayer5",
+            }
+        ),
+        encoding="utf-8",
+    )
+    info = read_ldplayer_install_info(gnbots_root)
+    assert info["sourceKey"] == "LDPath64"
+    assert info["abi"] == "arm64-v8a"
+    assert detect_ldplayer_abi({"gnbots_root": str(gnbots_root)}) == "arm64-v8a"
+
+
+def test_ensure_apk_third_party_defaults_autofills(tmp_path: Path):
+    gnbots_root = tmp_path / "GnBots"
+    gnbots_root.mkdir()
+    (gnbots_root / "config.json").write_text(
+        json.dumps({"LDPath32": r"D:\Emulators\LDPlayer32"}),
+        encoding="utf-8",
+    )
+    apk_dir = tmp_path / "apk"
+    apk_dir.mkdir()
+    (apk_dir / "manifest.json").write_text(
+        json.dumps({"package_name": "com.gof.global", "version_name": "1.2.3"}),
+        encoding="utf-8",
+    )
+    data = {
+        "gnbots_root": str(gnbots_root),
+        "whiteout_apk_dir": str(apk_dir),
+    }
+    ensure_apk_third_party_defaults(data, persist=False, refresh_from_ldplayer=True)
+    assert data["apk_third_party_provider"] == "apk20"
+    assert data["apk_third_party_package"] == "com.gof.global"
+    assert data["apk_third_party_abi"] == "armeabi-v7a"
+    assert data["apk_third_party_abi_auto"] is True
+
+    # Manual override sticks.
+    data["apk_third_party_abi"] = "arm64-v8a"
+    data["apk_third_party_abi_auto"] = False
+    ensure_apk_third_party_defaults(data, persist=False, refresh_from_ldplayer=True)
+    assert data["apk_third_party_abi"] == "arm64-v8a"
 
 
 def test_map_xapk_split_roles():

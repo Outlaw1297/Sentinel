@@ -34,9 +34,14 @@ _ROLE_TO_CACHE = {
 
 
 def third_party_provider_id(config: dict[str, Any]) -> str:
+    """Return active provider id. Missing/blank defaults to APK20; explicit off disables."""
+    if "apk_third_party_provider" not in config:
+        return DEFAULT_PROVIDER
     raw = str(config.get("apk_third_party_provider") or "").strip().lower()
-    if raw in {"", "none", "off", "disabled", "0", "false"}:
+    if raw in {"none", "off", "disabled", "0", "false"}:
         return ""
+    if raw in {"", DEFAULT_PROVIDER}:
+        return DEFAULT_PROVIDER
     return raw
 
 
@@ -44,28 +49,116 @@ def normalize_third_party_provider(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"", "none", "off", "disabled", "0", "false"}:
         return "off"
-    return raw
+    return raw or DEFAULT_PROVIDER
 
 
 def third_party_enabled(config: dict[str, Any]) -> bool:
     return bool(third_party_provider_id(config))
 
 
+def detect_third_party_package(config: dict[str, Any]) -> str:
+    try:
+        from whiteout_apk import resolve_whiteout_package_name
+
+        package = str(resolve_whiteout_package_name(config) or "").strip()
+        if package:
+            return package
+    except Exception:  # noqa: BLE001
+        pass
+    return DEFAULT_PACKAGE_NAME
+
+
+def detect_third_party_abi(config: dict[str, Any]) -> str:
+    """Prefer live LDPlayer/GnBots install bitness; fall back to local split cache."""
+    try:
+        from ldplayer_restore import detect_ldplayer_abi
+
+        detected = detect_ldplayer_abi(config)
+        if detected:
+            return detected
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from whiteout_apk import resolve_whiteout_apk_dir
+
+        apk_dir = resolve_whiteout_apk_dir(config)
+        if (apk_dir / "arch.apk").is_file():
+            # Heuristic: staged XAPK often keeps original split name only in manifest.files
+            from whiteout_apk import read_apk_manifest
+
+            files = read_apk_manifest(apk_dir).get("files") or {}
+            for original in files.values():
+                name = str(original).lower()
+                if "arm64" in name:
+                    return "arm64-v8a"
+                if "armeabi" in name or "v7a" in name:
+                    return "armeabi-v7a"
+        # Look for leftover XAPK/config split names in the cache folder.
+        for path in apk_dir.glob("*.apk"):
+            name = path.name.lower()
+            if "arm64" in name:
+                return "arm64-v8a"
+            if "armeabi" in name or "v7a" in name:
+                return "armeabi-v7a"
+    except Exception:  # noqa: BLE001
+        pass
+    return DEFAULT_ABI
+
+
 def resolve_third_party_package(config: dict[str, Any]) -> str:
     raw = str(config.get("apk_third_party_package") or "").strip()
     if raw:
         return raw
-    try:
-        from whiteout_apk import resolve_whiteout_package_name
-
-        return resolve_whiteout_package_name(config)
-    except Exception:  # noqa: BLE001
-        return DEFAULT_PACKAGE_NAME
+    return detect_third_party_package(config)
 
 
 def resolve_third_party_abi(config: dict[str, Any]) -> str:
     raw = str(config.get("apk_third_party_abi") or "").strip().lower()
-    return raw or DEFAULT_ABI
+    if raw:
+        return raw
+    return detect_third_party_abi(config)
+
+
+def ensure_apk_third_party_defaults(
+    data: dict[str, Any],
+    *,
+    persist: bool = False,
+    refresh_from_ldplayer: bool = True,
+) -> dict[str, Any]:
+    """Fill third-party APK settings from LDPlayer/GnBots when missing (default provider on)."""
+    changed = False
+    provider_raw = data.get("apk_third_party_provider")
+    if provider_raw is None or str(provider_raw).strip() == "":
+        data["apk_third_party_provider"] = DEFAULT_PROVIDER
+        changed = True
+
+    package_raw = str(data.get("apk_third_party_package") or "").strip()
+    if not package_raw:
+        data["apk_third_party_package"] = detect_third_party_package(data)
+        changed = True
+
+    abi_raw = str(data.get("apk_third_party_abi") or "").strip()
+    auto_managed = bool(data.get("apk_third_party_abi_auto", not bool(abi_raw)))
+    if not abi_raw or (refresh_from_ldplayer and auto_managed):
+        detected_abi = detect_third_party_abi(data)
+        if detected_abi and detected_abi != abi_raw:
+            data["apk_third_party_abi"] = detected_abi
+            data["apk_third_party_abi_auto"] = True
+            changed = True
+        elif not abi_raw:
+            data["apk_third_party_abi"] = detected_abi or DEFAULT_ABI
+            data["apk_third_party_abi_auto"] = True
+            changed = True
+
+    if persist and changed:
+        try:
+            from monitor_config import save_raw_monitor_config
+
+            save_raw_monitor_config(data)
+        except Exception:  # noqa: BLE001
+            pass
+    return data
 
 
 def _http_get_json(url: str, *, timeout: float = 30.0) -> Any:

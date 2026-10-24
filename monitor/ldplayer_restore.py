@@ -68,20 +68,48 @@ def _append_restore_log(message: str) -> None:
 
 
 def read_ldplayer_path(gnbots_root: Path) -> Path | None:
+    info = read_ldplayer_install_info(gnbots_root)
+    path = info.get("path")
+    return path if isinstance(path, Path) else None
+
+
+def read_ldplayer_install_info(gnbots_root: Path) -> dict[str, Any]:
+    """Return LDPlayer install path plus ABI hint from GnBots LDPath64/LDPath32."""
     config_path = gnbots_root / "config.json"
     if not config_path.exists():
-        return None
+        return {"path": None, "sourceKey": None, "abi": None}
     try:
         with config_path.open(encoding="utf-8-sig") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return None
+        return {"path": None, "sourceKey": None, "abi": None}
     if not isinstance(data, dict):
-        return None
-    for key in ("LDPath64", "LDPath32"):
+        return {"path": None, "sourceKey": None, "abi": None}
+
+    # Prefer an existing path; keep key order so 64-bit farms win when both are set.
+    for key, abi in (("LDPath64", "arm64-v8a"), ("LDPath32", "armeabi-v7a")):
         raw = str(data.get(key) or "").strip()
-        if raw:
-            return Path(raw)
+        if not raw:
+            continue
+        path = Path(raw)
+        return {"path": path, "sourceKey": key, "abi": abi}
+    return {"path": None, "sourceKey": None, "abi": None}
+
+
+def infer_abi_from_ldplayer_path(path: Path | str | None) -> str | None:
+    """Best-effort ABI guess from an LDPlayer install folder name."""
+    if not path:
+        return None
+    text = str(path).lower().replace("\\", "/")
+    if any(token in text for token in ("ldplayer64", "ld64", "player64")):
+        return "arm64-v8a"
+    if any(token in text for token in ("ldplayer32", "ld32", "player32")):
+        return "armeabi-v7a"
+    # LDPlayer 9 is the current 64-bit Android 9 line.
+    if re.search(r"/ldplayer9(?:/|$)", text):
+        return "arm64-v8a"
+    if re.search(r"/ldplayer5(?:/|$)", text) and "64" not in text:
+        return "armeabi-v7a"
     return None
 
 
@@ -97,6 +125,30 @@ def resolve_ldplayer_base(config: dict[str, Any]) -> Path:
     if not base.is_absolute():
         base = (ROOT / base).resolve()
     return base
+
+
+def detect_ldplayer_abi(config: dict[str, Any]) -> str | None:
+    """Detect emulator ABI from GnBots LDPath* keys and/or install path."""
+    override = str(config.get("ldplayer_path") or "").strip()
+    if override:
+        inferred = infer_abi_from_ldplayer_path(override)
+        if inferred:
+            return inferred
+    try:
+        gnbots_root = resolve_gnbots_root(config)
+    except Exception:  # noqa: BLE001
+        gnbots_root = None
+    if gnbots_root is not None:
+        info = read_ldplayer_install_info(gnbots_root)
+        if info.get("abi"):
+            return str(info["abi"])
+        inferred = infer_abi_from_ldplayer_path(info.get("path"))
+        if inferred:
+            return inferred
+    try:
+        return infer_abi_from_ldplayer_path(resolve_ldplayer_base(config))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def resolve_ldconsole(config: dict[str, Any]) -> Path:

@@ -492,6 +492,12 @@ def normalize_monitor_config(raw: dict[str, Any]) -> dict[str, Any]:
     """Align in-memory config (API URL, absolute paths). Does not rewrite config.json except via ensure_absolute_paths_in_config_file."""
     config = normalize_monitor_config_paths(dict(raw))
     config["gnbots_api_url"] = configured_gnbots_api_url(config)
+    try:
+        from apk_third_party import ensure_apk_third_party_defaults
+
+        ensure_apk_third_party_defaults(config, persist=False, refresh_from_ldplayer=True)
+    except Exception:  # noqa: BLE001
+        pass
     return config
 
 
