@@ -1,22 +1,22 @@
 # Sentinel
 
-Windows monitor and control stack for **GnBots** — live dashboard, LDPlayer restore/provision, Whiteout APK updates, automation, system tray, and headless stack orchestration.
+Windows monitor and control stack for **GnBots** (default) or **Frostguard** — live dashboard, emulator restore/provision, Whiteout APK updates, automation, system tray, and headless stack orchestration.
 
 | | |
 |--|--|
 | **Dashboard** | http://localhost:8787 |
-| **Primary OS** | Windows bot PC (GnBots + LDPlayer) |
-| **Dev / CI** | Python FastAPI app + pytest also run on Linux (GnBots/LDPlayer offline) |
-| **Current version** | 0.1.10 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
+| **Primary OS** | Windows bot PC (GnBots/Frostguard + emulators) |
+| **Dev / CI** | Python FastAPI app + pytest also run on Linux (bot/emulator offline) |
+| **Current version** | 0.2.3 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
 
 Full feature list, compatibility matrix, and how-to: **[`monitor/README.md`](monitor/README.md)**.
 
 ## What you can do
 
-- **Watch the farm** — accounts, screenshots, logs, host resources, GnBots online/offline
-- **Control GnBots** — launch/close on the host; start/stop sessions and emulators via the Remote API
+- **Watch the farm** — accounts, screenshots, logs, host resources, bot online/offline
+- **Control the bot** — launch/close on the host; start/stop sessions and emulators (GnBots Remote API or Frostguard bridge)
 - **Restore LDPlayer** — `.ldbk` backups, fix recommended emulator settings, provision new accounts
-- **Update Whiteout APKs** — single or bulk; bulk work runs as background jobs (safe to refresh)
+- **Update Whiteout APKs** — cache sync + verified install (no false success); bulk work runs as background jobs (safe to refresh)
 - **Automate recovery** — optional stuck-screen learning (event page → Back / restart / warn), auto-stop on problem emulators, auto-APK when newer, issue reports + fix suggestions ([`monitor/docs/AUTOMATION.md`](monitor/docs/AUTOMATION.md))
 - **Notify & reach remotely** — browser web push; expose `:8787` through your own tunnel/proxy
 
