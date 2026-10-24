@@ -82,6 +82,13 @@ def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
         updates["progress"] = _progress_for_status(str(updates["status"]))
     with _APK_JOB_LOCK:
         job = _APK_UPDATE_JOBS.setdefault(job_id, {})
+        current_status = str(job.get("status") or "")
+        new_status = updates.get("status")
+        # Never resurrect a finished job (worker may still be unwinding after reap/cancel).
+        if current_status in _terminal_statuses() and (
+            new_status is None or str(new_status) not in _terminal_statuses()
+        ):
+            return dict(job)
         if "progress" in updates and updates.get("status") not in _terminal_statuses():
             previous = job.get("progress")
             new_progress = int(updates["progress"])
@@ -100,6 +107,9 @@ def _fail_job_stalled(job_id: str, *, reason: str) -> dict[str, Any] | None:
         status = str(job.get("status") or "")
         if status in _terminal_statuses():
             return dict(job)
+        # Signal the worker to stop the batch; do not discard — discard left the
+        # worker free to set status back to "updating" and unlock a second job.
+        _APK_JOB_CANCEL.add(job_id)
         current = job.get("currentIndex")
         failures = list(job.get("failures") or [])
         if current is not None:
@@ -124,9 +134,29 @@ def _fail_job_stalled(job_id: str, *, reason: str) -> dict[str, Any] | None:
         )
         job["updatedAt"] = _utc_now_iso()
         snapshot = dict(job)
-    _APK_JOB_CANCEL.discard(job_id)
     _append_apk_job_log(f"[{job_id}] stalled: {reason}")
     return snapshot
+
+
+def _instance_reap_limit_seconds(
+    job: dict[str, Any],
+    *,
+    instance_timeout_seconds: float | None,
+) -> float:
+    """Wall-clock before reap treats an in-flight instance as wedged.
+
+    Prefer the job's own timeout (from config) so raising apk_update_instance_timeout
+    cannot race the status-poll reaper into failing a still-legal update.
+    """
+    if instance_timeout_seconds is not None:
+        return float(instance_timeout_seconds)
+    configured = job.get("instanceTimeoutSeconds")
+    if configured is not None:
+        try:
+            return max(1.0, float(configured)) + 120.0
+        except (TypeError, ValueError):
+            pass
+    return float(DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS + 120)
 
 
 def reap_stale_apk_update_jobs(
@@ -136,11 +166,6 @@ def reap_stale_apk_update_jobs(
 ) -> list[dict[str, Any]]:
     """Mark hung active jobs failed so the UI cannot sit on Updating forever."""
     idle_limit = float(APK_JOB_STALE_SECONDS if max_idle_seconds is None else max_idle_seconds)
-    instance_limit = float(
-        DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS + 120
-        if instance_timeout_seconds is None
-        else instance_timeout_seconds
-    )
     now = time.time()
     reaped: list[dict[str, Any]] = []
     with _APK_JOB_LOCK:
@@ -153,6 +178,9 @@ def reap_stale_apk_update_jobs(
         job_id = str(job.get("id") or "")
         if not job_id:
             continue
+        instance_limit = _instance_reap_limit_seconds(
+            job, instance_timeout_seconds=instance_timeout_seconds
+        )
         instance_started = _parse_iso_to_epoch(str(job.get("instanceStartedAt") or ""))
         if instance_started is not None and (now - instance_started) > instance_limit:
             index = job.get("currentIndex")
@@ -497,6 +525,14 @@ def _apk_update_worker(
         for position, index in enumerate(indexes):
             if _job_cancelled(job_id):
                 _append_apk_job_log(f"[{job_id}] cancelled before index={index}")
+                break
+            with _APK_JOB_LOCK:
+                existing = str((_APK_UPDATE_JOBS.get(job_id) or {}).get("status") or "")
+            if existing in _terminal_statuses():
+                _APK_JOB_CANCEL.add(job_id)
+                _append_apk_job_log(
+                    f"[{job_id}] stopping before index={index}: already {existing}"
+                )
                 break
 
             with _APK_JOB_LOCK:
