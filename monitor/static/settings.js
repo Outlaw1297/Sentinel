@@ -2495,7 +2495,7 @@ async function refreshRemoteApkStatusQuiet() {
   }
 }
 
-async function queueSelectedApkUpdate({ skipConfirm = false, force = false } = {}) {
+async function queueSelectedApkUpdate({ skipConfirm = false, force = false, pushCache = false } = {}) {
   if (restoreLocked()) {
     setRestorePageStatus("Stop the bot before updating emulator APKs.", "warn");
     return false;
@@ -2508,7 +2508,7 @@ async function queueSelectedApkUpdate({ skipConfirm = false, force = false } = {
   }
 
   const outdatedIndexes = indexesWithApkUpdatesForSelectedInstances();
-  const targetIndexes = force ? indexes : outdatedIndexes.length ? outdatedIndexes : indexes;
+  const targetIndexes = force || pushCache ? indexes : outdatedIndexes.length ? outdatedIndexes : indexes;
 
   if (
     !skipConfirm &&
@@ -2521,9 +2521,11 @@ async function queueSelectedApkUpdate({ skipConfirm = false, force = false } = {
         "",
         force
           ? "This bypasses version checks and reinstalls from the APK cache."
-          : outdatedIndexes.length
-            ? `Only instances needing an update will be touched (${outdatedIndexes.length}).`
-            : "All selected instances will be checked and updated if needed.",
+          : pushCache
+            ? "Selected instances get this cached APK unless a live check already confirmed they are current."
+            : outdatedIndexes.length
+              ? `Only instances needing an update will be touched (${outdatedIndexes.length}).`
+              : "All selected instances will be checked and updated if needed.",
         "Each instance update applies to every account on that emulator.",
         "Each emulator will be started if needed. This can take several minutes per instance.",
         "You can refresh this page — progress continues in the background.",
@@ -2541,7 +2543,7 @@ async function queueSelectedApkUpdate({ skipConfirm = false, force = false } = {
 
   const query = force
     ? `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&force=1&only_outdated=0&check_game_update=0`
-    : `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&only_outdated=1&check_game_update=1`;
+    : `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&only_outdated=1&check_game_update=1${pushCache ? "&push_cache=1" : ""}`;
 
   try {
     const response = await fetch(query, { method: "POST" });
@@ -2588,7 +2590,8 @@ async function checkRemoteApk({ sync = false } = {}) {
     renderRestoreInstanceList(restoreRows);
     if (sync && payload.downloaded) {
       const versionLabel = payload.localVersion || payload.remoteVersion || "";
-      // Cache sync ≠ emulator install. Push to selected instances when possible.
+      // Cache sync ≠ emulator install. push_cache installs the download on selected
+      // instances whose version is unknown; only_outdated would drop those.
       if (restoreLocked()) {
         setRestorePageStatus(
           `Downloaded ${versionLabel} into the APK cache only. Stop the bot, then Update selected instances to install on emulators.`.trim(),
@@ -2605,7 +2608,7 @@ async function checkRemoteApk({ sync = false } = {}) {
           `Downloaded ${versionLabel} into cache. Installing on selected emulators…`.trim(),
           "pending",
         );
-        await queueSelectedApkUpdate({ skipConfirm: true, force: false });
+        await queueSelectedApkUpdate({ skipConfirm: true, pushCache: true });
         return;
       }
     } else if (payload.localAheadOfRemote) {

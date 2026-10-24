@@ -3316,6 +3316,7 @@ async def update_all_emulator_apks(
     force: bool = Query(False),
     scope: str | None = Query(None),
     check_game_update: bool = Query(True),
+    push_cache: bool = Query(False),
 ) -> dict[str, Any]:
     """Queue a background APK update job (returns immediately to avoid proxy 502s)."""
     activity = await resolve_bot_activity(config)
@@ -3335,6 +3336,7 @@ async def update_all_emulator_apks(
             force=force,
             scope=scope,
             check_game_update=check_game_update,
+            push_cache=push_cache,
             source="manual",
         )
     except FileNotFoundError as exc:

@@ -145,6 +145,22 @@ def _record_job_issues(job: dict[str, Any]) -> None:
         pass
 
 
+def _apk_row_should_install(row: dict[str, Any], *, push_cache: bool) -> bool:
+    """Whether an inspected instance should receive the cached APK.
+
+    A normal outdated-only update installs only when inspect reports an update.
+    After a cache download, also install when the result is inconclusive or the
+    persisted version was not confirmed live. Stopped emulators with no saved
+    version never get ``updateAvailable`` and would otherwise be skipped.
+    Instances already confirmed on the cache version stay skipped.
+    """
+    if row.get("updateAvailable") or row.get("gameUpdateRequired"):
+        return True
+    if not push_cache:
+        return False
+    return not (row.get("versionConfirmed") and row.get("updateAvailable") is False)
+
+
 def _resolve_target_indexes(
     config: dict[str, Any],
     *,
@@ -153,6 +169,7 @@ def _resolve_target_indexes(
     only_outdated: bool,
     force: bool,
     check_game_update: bool,
+    push_cache: bool = False,
 ) -> tuple[list[int], dict[str, Any]]:
     from whiteout_apk import (
         get_persisted_apk_update_instance_indexes,
@@ -184,7 +201,7 @@ def _resolve_target_indexes(
                     check_game_update=check_game_update,
                     boot_if_needed=True,
                 )
-                if row.get("updateAvailable") or row.get("gameUpdateRequired"):
+                if _apk_row_should_install(row, push_cache=push_cache):
                     filtered.append(index)
             return filtered, meta
         return targets, meta
@@ -211,7 +228,7 @@ def _resolve_target_indexes(
                     check_game_update=check_game_update,
                     boot_if_needed=True,
                 )
-                if row.get("updateAvailable") or row.get("gameUpdateRequired"):
+                if _apk_row_should_install(row, push_cache=push_cache):
                     filtered.append(index)
             return filtered, meta
         return sorted(set(targets)), meta
@@ -225,7 +242,7 @@ def _resolve_target_indexes(
         targets = []
         for index in normalized:
             row = inspect_whiteout_apk_for_index(config, index)
-            if row.get("updateAvailable") or row.get("gameUpdateRequired"):
+            if _apk_row_should_install(row, push_cache=push_cache):
                 targets.append(index)
         return targets, meta
     return normalized, meta
@@ -410,6 +427,7 @@ def start_apk_update_job(
     force: bool = False,
     scope: str | None = None,
     check_game_update: bool = True,
+    push_cache: bool = False,
     source: str = "manual",
 ) -> dict[str, Any]:
     """Queue a background APK update job and return immediately."""
@@ -429,6 +447,7 @@ def start_apk_update_job(
         only_outdated=only_outdated,
         force=force,
         check_game_update=check_game_update,
+        push_cache=push_cache,
     )
 
     job_id = uuid.uuid4().hex[:12]
@@ -457,6 +476,7 @@ def start_apk_update_job(
         "updatedAt": started_at,
         "force": bool(force),
         "onlyOutdated": bool(only_outdated),
+        "pushCache": bool(push_cache),
     }
     with _APK_JOB_LOCK:
         _APK_UPDATE_JOBS[job_id] = job

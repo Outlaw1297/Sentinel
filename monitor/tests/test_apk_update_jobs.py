@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from apk_update_jobs import (
+    _resolve_target_indexes,
     find_active_apk_update_job,
     get_apk_update_job,
     list_apk_update_jobs,
@@ -128,6 +129,64 @@ class ApkUpdateJobsTests(unittest.TestCase):
                         self.assertEqual(finished["updated"], 0)
                         self.assertEqual(finished["failed"], 1)
                         self.assertIn("still needs an APK update", finished["failures"][0]["error"])
+
+    def test_push_cache_keeps_inconclusive_instances(self) -> None:
+        """A fresh cache download must install when inspect cannot prove the instance is current."""
+
+        def decision(_config, index, **_kwargs):
+            rows = {
+                1: {
+                    "index": 1,
+                    "updateAvailable": None,
+                    "versionConfirmed": False,
+                    "checkState": "unavailable",
+                    "installedVersion": None,
+                    "latestVersion": "1.34.16",
+                },
+                2: {
+                    "index": 2,
+                    "updateAvailable": False,
+                    "versionConfirmed": True,
+                    "installedVersion": "1.34.16",
+                    "latestVersion": "1.34.16",
+                },
+                3: {
+                    "index": 3,
+                    "updateAvailable": False,
+                    "versionConfirmed": False,
+                    "installedVersion": "1.34.16",
+                    "latestVersion": "1.34.16",
+                },
+                4: {
+                    "index": 4,
+                    "updateAvailable": True,
+                    "versionConfirmed": False,
+                },
+            }
+            return rows[index]
+
+        with patch("profile_discovery.resolve_selected_profile_for_root", return_value="Farm"):
+            with patch("host_status.resolve_gnbots_root", return_value=Path(".")):
+                with patch("whiteout_apk.inspect_whiteout_apk_for_update_decision", side_effect=decision):
+                    dropped, _meta = _resolve_target_indexes(
+                        {},
+                        scope="selected",
+                        indexes=[1, 2, 3, 4],
+                        only_outdated=True,
+                        force=False,
+                        check_game_update=True,
+                    )
+                    kept, _meta = _resolve_target_indexes(
+                        {},
+                        scope="selected",
+                        indexes=[1, 2, 3, 4],
+                        only_outdated=True,
+                        force=False,
+                        check_game_update=True,
+                        push_cache=True,
+                    )
+        self.assertEqual(dropped, [4])
+        self.assertEqual(kept, [1, 3, 4])
 
 
 if __name__ == "__main__":
