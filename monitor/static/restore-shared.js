@@ -294,6 +294,27 @@ function formatApkUpdateJobStatus(job) {
   return { progress, message, status };
 }
 
+function clearApkUpdateJobSession(jobId) {
+  try {
+    const stored = sessionStorage.getItem("sentinelApkUpdateJobId");
+    if (!jobId || stored === jobId) sessionStorage.removeItem("sentinelApkUpdateJobId");
+  } catch {
+    // ignore
+  }
+}
+
+async function cancelApkUpdateJob(jobId) {
+  const response = await fetch(`/api/emulators/apk/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.message || "Could not cancel APK update.");
+  }
+  clearApkUpdateJobSession(jobId);
+  return payload.job || payload;
+}
+
 async function pollApkUpdateJob(jobId, options = {}) {
   const onStatus = typeof options.onStatus === "function" ? options.onStatus : () => {};
   const deadline = Date.now() + (options.timeoutMs || 4 * 60 * 60 * 1000);
@@ -315,20 +336,12 @@ async function pollApkUpdateJob(jobId, options = {}) {
     const job = payload.job || {};
     const status = String(job.status || "");
     onStatus(job);
-    if (status === "completed") {
-      try {
-        sessionStorage.removeItem("sentinelApkUpdateJobId");
-      } catch {
-        // ignore
-      }
+    if (status === "completed" || status === "cancelled") {
+      clearApkUpdateJobSession(jobId);
       return job;
     }
     if (status === "failed") {
-      try {
-        sessionStorage.removeItem("sentinelApkUpdateJobId");
-      } catch {
-        // ignore
-      }
+      clearApkUpdateJobSession(jobId);
       throw new Error(job.message || "APK update failed.");
     }
     await new Promise((resolve) => setTimeout(resolve, options.pollMs || 2500));
@@ -346,7 +359,7 @@ async function findActiveApkUpdateJob() {
     return (
       jobs.find((job) => {
         const status = String(job.status || "");
-        return status && status !== "completed" && status !== "failed";
+        return status && status !== "completed" && status !== "failed" && status !== "cancelled";
       }) || null
     );
   } catch {
@@ -402,4 +415,5 @@ window.GnBotsRestore = {
   pollApkUpdateJob,
   findActiveApkUpdateJob,
   resumeApkUpdateJobPolling,
+  cancelApkUpdateJob,
 };

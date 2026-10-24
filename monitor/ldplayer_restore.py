@@ -1178,16 +1178,67 @@ def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
             if isinstance(previous, (int, float)):
                 updates["progress"] = max(int(previous), int(new_progress))
         job.update(updates)
+        job["updatedAt"] = datetime.now(timezone.utc).isoformat()
         return dict(job)
 
 
+# Restore bodies can legitimately run a long time (ldconsole restore timeout is 7200s),
+# but a job with no updatedAt heartbeat for this long is almost certainly wedged.
+RESTORE_JOB_STALE_SECONDS = 7800
+
+
+def _parse_restore_iso(value: str | None) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def reap_stale_restore_jobs(*, max_idle_seconds: float | None = None) -> list[dict[str, Any]]:
+    idle_limit = float(RESTORE_JOB_STALE_SECONDS if max_idle_seconds is None else max_idle_seconds)
+    now = time.time()
+    reaped: list[dict[str, Any]] = []
+    with _RESTORE_LOCK:
+        candidates = [
+            (job_id, dict(job))
+            for job_id, job in _RESTORE_JOBS.items()
+            if str(job.get("status") or "") not in {"completed", "failed"}
+        ]
+    for job_id, job in candidates:
+        stamp = _parse_restore_iso(str(job.get("updatedAt") or job.get("startedAt") or ""))
+        if stamp is None or (now - stamp) <= idle_limit:
+            continue
+        finished_at = datetime.now(timezone.utc).isoformat()
+        message = (
+            f"Restore job went silent for {int(idle_limit)}s "
+            f"(status={job.get('status')}, index={job.get('index')}). Marked failed."
+        )
+        failed = _set_job(job_id, status="failed", message=message, finishedAt=finished_at, stalled=True)
+        try:
+            busy_index = int(job.get("index"))
+        except (TypeError, ValueError):
+            busy_index = None
+        if busy_index is not None and busy_index >= 0:
+            _clear_instance_busy(busy_index, job_id)
+        _append_restore_log(f"[{job_id}] stalled: {message}")
+        reaped.append(failed)
+    return reaped
+
+
 def get_restore_job(job_id: str) -> dict[str, Any] | None:
+    reap_stale_restore_jobs()
     with _RESTORE_LOCK:
         job = _RESTORE_JOBS.get(job_id)
         return dict(job) if job else None
 
 
 def list_restore_jobs(limit: int = 20) -> list[dict[str, Any]]:
+    reap_stale_restore_jobs()
     with _RESTORE_LOCK:
         jobs = sorted(_RESTORE_JOBS.values(), key=lambda row: row.get("startedAt") or "", reverse=True)
         return [dict(job) for job in jobs[:limit]]

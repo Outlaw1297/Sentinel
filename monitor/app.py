@@ -88,6 +88,7 @@ from whiteout_apk import (
     save_persisted_apk_update_instance_indexes,
 )
 from apk_update_jobs import (
+    cancel_apk_update_job,
     find_active_apk_update_job,
     get_apk_update_job,
     list_apk_update_jobs,
@@ -3666,6 +3667,17 @@ async def get_emulator_apk_update_job(job_id: str) -> dict[str, Any]:
     if not job:
         raise HTTPException(status_code=404, detail=f"Unknown APK update job: {job_id}")
     return {"ok": True, "job": job}
+
+
+@app.post("/api/emulators/apk/jobs/{job_id}/cancel")
+async def cancel_emulator_apk_update_job(job_id: str) -> dict[str, Any]:
+    """Abort a stuck/in-flight APK update so Restore UI unlocks."""
+    try:
+        job = cancel_apk_update_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown APK update job: {job_id}") from exc
+    invalidate_dashboard_cache()
+    return {"ok": True, "job": job, "message": job.get("message") or "APK update cancelled."}
 
 
 @app.post("/api/emulators/update-apk")

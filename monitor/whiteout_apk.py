@@ -1582,6 +1582,7 @@ def update_whiteout_apk_on_instance(
     wait_for_resource_pack: bool | None = None,
     resource_timeout_seconds: int | None = None,
     batch: bool = False,
+    on_progress: Any | None = None,
 ) -> dict[str, Any]:
     from ldplayer_restore import (
         list_running_ld_indexes,
@@ -1590,7 +1591,15 @@ def update_whiteout_apk_on_instance(
         stop_ldplayer_instance_best_effort,
     )
 
+    def _progress(message: str, pct: int | None = None) -> None:
+        if on_progress:
+            try:
+                on_progress(message, pct)
+            except Exception:  # noqa: BLE001
+                pass
+
     ldconsole = resolve_ldconsole(config)
+    _progress("Checking / syncing APK cache…", 20)
     apk_info = ensure_latest_whiteout_apk(config) if sync_latest else apk_status(config)
     if sync_latest:
         apk_paths = [Path(path) for path in apk_info.get("files") or []]
@@ -1616,19 +1625,24 @@ def update_whiteout_apk_on_instance(
         override_seconds=resource_timeout_seconds,
         batch=batch,
     )
+    # Batch installs must not inherit the 30-minute single-instance installapp budget.
+    install_timeout = 600 if batch else 1800
 
     try:
+        _progress("Waiting for Android boot…", 25)
         wait_for_android_boot(ldconsole, index)
         latest_text = str(latest_version or "").strip() or None
         install_attempts: list[str] = []
         installed_text: str | None = None
 
         for attempt in range(1, 3):
+            _progress(f"Installing APK (attempt {attempt}/2)…", 35 + attempt * 5)
             install_output = install_whiteout_apk(
                 ldconsole,
                 index,
                 apk_paths,
                 package_name=package_name,
+                timeout_seconds=install_timeout,
             )
             install_attempts.append(install_output or f"attempt {attempt}")
             time.sleep(5.0)
@@ -1674,6 +1688,7 @@ def update_whiteout_apk_on_instance(
 
         if wait_for_resource_pack:
             try:
+                _progress("Running post-install / resource-pack workflow…", 55)
                 resource_pack = run_whiteout_post_install_workflow(
                     ldconsole,
                     index,
@@ -1681,6 +1696,7 @@ def update_whiteout_apk_on_instance(
                     run_ldconsole,
                     config=config,
                     timeout_seconds=pack_timeout,
+                    on_progress=on_progress,
                 )
             except Exception as exc:  # noqa: BLE001
                 resource_error = str(exc)
@@ -5081,9 +5097,11 @@ def install_whiteout_apk(
     apk_paths: list[Path],
     *,
     package_name: str = DEFAULT_PACKAGE_NAME,
+    timeout_seconds: int = 1800,
 ) -> str:
     from ldplayer_restore import run_ldconsole
 
+    install_timeout = max(60, int(timeout_seconds))
     staged_paths, stage_root = _stage_apks_for_install(apk_paths)
     try:
         # Split APK -r upgrades often hang forever on LDPlayer; uninstall -k then fresh install.
@@ -5108,7 +5126,7 @@ def install_whiteout_apk(
                 str(index),
                 "--filename",
                 str(staged_paths[0]),
-                timeout=1800,
+                timeout=install_timeout,
             )
             output = (result.stdout or result.stderr or "").strip()
             if result.returncode != 0:
@@ -5125,7 +5143,7 @@ def install_whiteout_apk(
             str(index),
             "--command",
             command,
-            timeout=1800,
+            timeout=install_timeout,
         )
         output = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0 or "failure" in output.lower():
@@ -5139,7 +5157,7 @@ def install_whiteout_apk(
                     str(index),
                     "--filename",
                     str(apk_path),
-                    timeout=1800,
+                    timeout=install_timeout,
                 )
                 step_output = (step.stdout or step.stderr or "").strip()
                 chunks.append(step_output)
