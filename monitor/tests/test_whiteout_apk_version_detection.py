@@ -196,6 +196,15 @@ Package [com.gof.global.arch] (ghi):
     def test_update_whiteout_apk_on_instance_runs_workflow_and_stops_emulator(self) -> None:
         fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"
         fake_ldconsole.write_bytes(b"")
+        apk_info = {
+            "dir": str(self.apk_dir),
+            "downloaded": False,
+            "versionName": "1.32.21",
+            "packageName": "com.gof.global",
+            "files": [str(self.apk_dir / name) for name in ("main.apk", "arch.apk", "pack.apk")],
+            "localSize": 3,
+            "remoteSize": 3,
+        }
         with patch("ldplayer_restore.resolve_ldconsole", return_value=fake_ldconsole):
             with patch("ldplayer_restore.run_ldconsole"):
                 with patch("ldplayer_restore.list_running_ld_indexes", return_value=set()):
@@ -203,64 +212,103 @@ Package [com.gof.global.arch] (ghi):
                         "ldplayer_restore.stop_ldplayer_instance_best_effort",
                     ) as stop_mock:
                         with patch("whiteout_apk.wait_for_android_boot"):
-                            with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
-                                with patch(
-                                    "whiteout_apk.run_whiteout_post_install_workflow",
-                                    return_value={"completed": True, "downloadPercent": 100},
-                                ) as workflow_mock:
+                            with patch("whiteout_apk.ensure_latest_whiteout_apk", return_value=apk_info):
+                                with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
                                     with patch(
-                                        "whiteout_apk.read_installed_package_version",
-                                        return_value={"versionName": "1.32.21"},
-                                    ):
+                                        "whiteout_apk.run_whiteout_post_install_workflow",
+                                        return_value={"completed": True, "downloadPercent": 100},
+                                    ) as workflow_mock:
                                         with patch(
-                                            "whiteout_apk.inspect_whiteout_apk_for_index",
-                                            return_value={"updateAvailable": False},
+                                            "whiteout_apk.read_installed_package_version",
+                                            return_value={"versionName": "1.32.21"},
                                         ):
-                                            with patch("monitor_config.CONFIG_PATH", self.config_path):
-                                                result = update_whiteout_apk_on_instance(self.config, 3)
-                                                from whiteout_apk import get_persisted_instance_row
+                                            with patch(
+                                                "whiteout_apk.probe_game_update_prompt",
+                                                return_value={"gameUpdateRequired": False},
+                                            ):
+                                                with patch(
+                                                    "whiteout_apk.inspect_whiteout_apk_for_index",
+                                                    return_value={"updateAvailable": False},
+                                                ):
+                                                    with patch("monitor_config.CONFIG_PATH", self.config_path):
+                                                        result = update_whiteout_apk_on_instance(self.config, 3)
+                                                        from whiteout_apk import get_persisted_instance_row
 
-                                                self.assertEqual(
-                                                    get_persisted_instance_row(3).get("installedVersion"),
-                                                    "1.32.21",
-                                                )
-                                                self.assertEqual(get_persisted_instance_row(3).get("source"), "live")
+                                                        self.assertEqual(
+                                                            get_persisted_instance_row(3).get("installedVersion"),
+                                                            "1.32.21",
+                                                        )
+                                                        self.assertEqual(
+                                                            get_persisted_instance_row(3).get("source"),
+                                                            "live",
+                                                        )
         workflow_mock.assert_called_once()
         stop_mock.assert_called_once()
         self.assertEqual(result["installedVersion"], "1.32.21")
         self.assertTrue(result["resourcePack"]["completed"])
 
-    def test_update_persists_latest_version_when_device_read_fails(self) -> None:
+    def test_update_fails_when_device_version_unconfirmed(self) -> None:
+        """Download/install must not claim success by persisting cache version as installed."""
         fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"
         fake_ldconsole.write_bytes(b"")
+        apk_info = {
+            "dir": str(self.apk_dir),
+            "downloaded": False,
+            "versionName": "1.32.21",
+            "packageName": "com.gof.global",
+            "files": [str(self.apk_dir / name) for name in ("main.apk", "arch.apk", "pack.apk")],
+        }
         with patch("ldplayer_restore.resolve_ldconsole", return_value=fake_ldconsole):
             with patch("ldplayer_restore.run_ldconsole"):
                 with patch("ldplayer_restore.list_running_ld_indexes", return_value=set()):
                     with patch("ldplayer_restore.stop_ldplayer_instance_best_effort"):
                         with patch("whiteout_apk.wait_for_android_boot"):
-                            with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
-                                with patch(
-                                    "whiteout_apk.run_whiteout_post_install_workflow",
-                                    return_value={"completed": True, "downloadPercent": 100},
-                                ):
+                            with patch("whiteout_apk.ensure_latest_whiteout_apk", return_value=apk_info):
+                                with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
                                     with patch(
-                                        "whiteout_apk.read_installed_package_version",
-                                        return_value={"versionName": None, "checkState": "offline", "installed": True},
+                                        "whiteout_apk.run_whiteout_post_install_workflow",
+                                        return_value={"completed": True, "downloadPercent": 100},
                                     ):
                                         with patch(
-                                            "whiteout_apk.inspect_whiteout_apk_for_index",
-                                            return_value={"updateAvailable": False, "installedVersion": "1.32.21"},
+                                            "whiteout_apk.read_installed_package_version",
+                                            return_value={
+                                                "versionName": None,
+                                                "checkState": "offline",
+                                                "installed": True,
+                                            },
                                         ):
                                             with patch("monitor_config.CONFIG_PATH", self.config_path):
-                                                result = update_whiteout_apk_on_instance(self.config, 7)
-                                                from whiteout_apk import get_persisted_instance_row
+                                                with self.assertRaisesRegex(RuntimeError, "could not be confirmed"):
+                                                    update_whiteout_apk_on_instance(self.config, 7)
 
-                                                self.assertEqual(
-                                                    get_persisted_instance_row(7).get("installedVersion"),
-                                                    "1.32.21",
-                                                )
-                                                self.assertEqual(get_persisted_instance_row(7).get("source"), "install")
-        self.assertEqual(result["installedVersion"], None)
+    def test_update_fails_when_emulator_still_on_old_version(self) -> None:
+        fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"
+        fake_ldconsole.write_bytes(b"")
+        apk_info = {
+            "dir": str(self.apk_dir),
+            "downloaded": True,
+            "versionName": "1.34.16",
+            "packageName": "com.gof.global",
+            "files": [str(self.apk_dir / name) for name in ("main.apk", "arch.apk", "pack.apk")],
+        }
+        with patch("ldplayer_restore.resolve_ldconsole", return_value=fake_ldconsole):
+            with patch("ldplayer_restore.run_ldconsole"):
+                with patch("ldplayer_restore.list_running_ld_indexes", return_value=set()):
+                    with patch("ldplayer_restore.stop_ldplayer_instance_best_effort"):
+                        with patch("whiteout_apk.wait_for_android_boot"):
+                            with patch("whiteout_apk.ensure_latest_whiteout_apk", return_value=apk_info):
+                                with patch("whiteout_apk.install_whiteout_apk", return_value="installed"):
+                                    with patch(
+                                        "whiteout_apk.run_whiteout_post_install_workflow",
+                                        return_value={"completed": True, "downloadPercent": 100},
+                                    ):
+                                        with patch(
+                                            "whiteout_apk.read_installed_package_version",
+                                            return_value={"versionName": "1.33.9.37"},
+                                        ):
+                                            with patch("monitor_config.CONFIG_PATH", self.config_path):
+                                                with self.assertRaisesRegex(RuntimeError, "left version 1.33.9.37"):
+                                                    update_whiteout_apk_on_instance(self.config, 2)
 
     def test_offline_inspect_shows_persisted_version_after_update(self) -> None:
         fake_ldconsole = Path(self.tempdir) / "ldconsole.exe"

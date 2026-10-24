@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.13 — 2026-10-24
+
+### APK updates
+- Download/sync only fills the APK cache; Restore states that clearly and auto-queues install on selected emulators after a successful download
+- APK install jobs fail if the emulator remains on an older version or still shows the in-game Update dialog (stops false “success” on a second instance)
+- Partial batch jobs list which instance indexes failed and why
+- APK20 ABI mismatches list available architectures (Whiteout catalog is currently arm64-v8a only)
+- Staging an XAPK clears stale `main`/`arch`/`pack` splits before writing the new cache
+
 ## 0.1.12 — 2026-10-23
 
 ### APK updates

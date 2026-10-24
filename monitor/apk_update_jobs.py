@@ -280,6 +280,20 @@ def _apk_update_worker(
                 # Batch installs use a shorter resource-pack budget so a hung optional
                 # download on one instance cannot block the rest of the queue.
                 result = update_whiteout_apk_on_instance(config, index, batch=True)
+                # Soft-success guard: never count an instance that still needs an update.
+                apk_row = result.get("apk") if isinstance(result.get("apk"), dict) else {}
+                if (
+                    result.get("updateAvailable")
+                    or apk_row.get("updateAvailable")
+                    or apk_row.get("gameUpdateRequired")
+                    or result.get("gameUpdateRequired")
+                ):
+                    installed = result.get("installedVersion") or apk_row.get("installedVersion") or "?"
+                    latest = result.get("latestVersion") or apk_row.get("latestVersion") or "?"
+                    raise RuntimeError(
+                        f"Instance {index} still needs an APK update after install "
+                        f"(installed={installed}, cache={latest})."
+                    )
                 results.append(result)
                 pack = result.get("resourcePack") or {}
                 if pack and not pack.get("completed") and pack.get("reason") in {
@@ -300,14 +314,45 @@ def _apk_update_worker(
 
         updated = len(results)
         failed = len(failures)
+
+        def _index_list(rows: list[dict[str, Any]], key: str = "index") -> str:
+            values = [str(row.get(key)) for row in rows if row.get(key) is not None]
+            return ", ".join(f"#{value}" for value in values) if values else ""
+
+        def _failure_detail() -> str:
+            parts: list[str] = []
+            for row in failures[:6]:
+                idx = row.get("index")
+                err = str(row.get("error") or "failed").strip()
+                if len(err) > 160:
+                    err = err[:157] + "..."
+                if idx is None:
+                    parts.append(err)
+                else:
+                    parts.append(f"#{idx}: {err}")
+            extra = len(failures) - len(parts)
+            if extra > 0:
+                parts.append(f"+{extra} more")
+            return "; ".join(parts)
+
         if not indexes and not failures:
             message = "No Whiteout Survival APK updates needed."
             status = "completed"
         elif failed and not updated:
-            message = f"Could not update APK on {failed} instance{'s' if failed != 1 else ''}."
+            detail = _failure_detail()
+            message = (
+                f"Could not update APK on {failed} instance{'s' if failed != 1 else ''}"
+                f"{f' ({detail})' if detail else ''}."
+            )
             status = "failed"
         elif failed:
-            message = f"Updated {updated} instance{'s' if updated != 1 else ''}; {failed} failed."
+            ok_list = _index_list(results)
+            detail = _failure_detail()
+            message = (
+                f"Updated {updated} instance{'s' if updated != 1 else ''}"
+                f"{f' ({ok_list})' if ok_list else ''}; "
+                f"{failed} failed{f' ({detail})' if detail else ''}."
+            )
             status = "completed"
         else:
             message = f"Updated Whiteout Survival on {updated} instance{'s' if updated != 1 else ''}."

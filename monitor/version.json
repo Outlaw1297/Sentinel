@@ -1,8 +1,8 @@
 {
-    "appVersion": "0.1.12",
-    "commit": "c91e6facb0434dc6a989ffeeb85762a3f7056dfd",
-    "commitShort": "c91e6fa",
-    "branch": "main",
-    "builtAt": "2026-10-24T05:16:33Z",
+    "appVersion": "0.1.13",
+    "commit": "a0c45194cf10042623b0b819d9b1b5e0f9ced992",
+    "commitShort": "a0c4519",
+    "branch": "cursor/release-v0.1.12-9a49",
+    "builtAt": "2026-10-24T05:58:46Z",
     "repo": "Outlaw1297/Sentinel"
 }
