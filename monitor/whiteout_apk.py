@@ -2263,6 +2263,7 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
             pass
 
     downloaded = False
+    gnbots_ver: str | None = None
     if decision.get("shouldDownloadGnbots") and url:
         if remote_size is None and not zip_path.is_file():
             raise FileNotFoundError(
@@ -2278,21 +2279,10 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
                 remote_size=remote_size if isinstance(remote_size, int) else local_size,
                 remote_url=url,
             )
-        # Clear third-party provenance so the next size check treats this as GnBots.
-        manifest_path = apk_dir / "manifest.json"
-        if manifest_path.is_file():
-            try:
-                manifest = read_apk_manifest(apk_dir)
-                if str(manifest.get("source") or "").startswith("third_party"):
-                    manifest["source"] = "gnbots_url"
-                    if gnbots_ver:
-                        manifest["version_name"] = gnbots_ver
-                    manifest_path.write_text(
-                        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8",
-                    )
-            except Exception:  # noqa: BLE001
-                pass
+        # Do NOT rewrite cache manifest until after extract succeeds. Rewriting early
+        # (source/version) made a failed extract look like a settled GnBots cache on
+        # the next ensure_latest call — size matched, splits stayed stale, installs
+        # silently pushed the old APKs.
     elif url and not zip_path.is_file():
         # No decision to download but cache empty — last-resort bootstrap from URL.
         if remote_size is None:
@@ -2303,9 +2293,41 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
 
     install_files = [apk_dir / name for name in APK_INSTALL_ORDER]
     needs_extract = downloaded or not all(path.is_file() for path in install_files)
+    # Recover from a prior download that replaced game.zip but failed mid-extract:
+    # splits still exist so the check above would skip, leaving a permanent stale cache.
+    if zip_path.is_file() and not needs_extract:
+        zip_manifest_version = str(
+            _read_manifest_from_zip(zip_path).get("version_name") or ""
+        ).strip() or None
+        split_version = resolve_local_apk_version(config, apk_dir)
+        if zip_manifest_version and split_version and version_is_older(split_version, zip_manifest_version):
+            needs_extract = True
+        else:
+            zip_mtime = zip_path.stat().st_mtime
+            split_mtime = max(
+                (path.stat().st_mtime for path in install_files if path.is_file()),
+                default=0.0,
+            )
+            if zip_mtime > split_mtime + 1:
+                needs_extract = True
     if needs_extract and zip_path.is_file():
         # Third-party sync stores an XAPK as game.zip; detect and stage splits accordingly.
         _stage_or_extract_game_zip(zip_path, apk_dir, config)
+        if downloaded and gnbots_ver:
+            # Clear third-party provenance only after splits match the new GnBots zip.
+            manifest_path = apk_dir / "manifest.json"
+            if manifest_path.is_file():
+                try:
+                    manifest = read_apk_manifest(apk_dir)
+                    if str(manifest.get("source") or "").startswith("third_party"):
+                        manifest["source"] = "gnbots_url"
+                        manifest["version_name"] = gnbots_ver
+                        manifest_path.write_text(
+                            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
 
     missing = [name for name in APK_INSTALL_ORDER if not (apk_dir / name).is_file()]
     if missing:
