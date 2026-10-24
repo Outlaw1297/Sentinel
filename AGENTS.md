@@ -2,7 +2,7 @@
 
 ## Cursor Cloud specific instructions
 
-Sentinel is a **Windows-oriented** Python FastAPI dashboard (in `monitor/`) that monitors/controls GnBots + LDPlayer on a bot PC. Native launchers under `monitor/native/` are C#/.NET 8 and only used for packaged Windows release builds. On this Linux VM you can install the Python deps, run the cross-platform pytest suite, and run the dashboard server; full end-to-end control of GnBots/LDPlayer is Windows-only and cannot run here.
+Sentinel is a **Windows-oriented** Python FastAPI dashboard (in `monitor/`) that monitors/controls **GnBots** (default) or **Frostguard** plus emulators (LDPlayer/MuMu/…) on a bot PC. Native launchers under `monitor/native/` are C#/.NET 8 and only used for packaged Windows release builds. On this Linux VM you can install the Python deps, run the cross-platform pytest suite, and run the dashboard server; full end-to-end bot/emulator control is Windows-only and cannot run here. Frostguard observe + user-DB SQLite helpers work on Linux; host exe start/stop does not. See `monitor/docs/FROSTGUARD.md` and `monitor/docs/EMULATORS.md`.
 
 ### Environment
 - Python venv lives at `monitor/venv` (created by the startup update script). Use `monitor/venv/bin/python` for all commands.

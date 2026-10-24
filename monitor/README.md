@@ -1,26 +1,29 @@
 # Sentinel Monitor
 
-Local web dashboard for a **GnBots bot PC**. Sentinel watches accounts and LDPlayer emulators, controls GnBots, restores instances from backups, updates Whiteout APKs, and can automate common farm recovery work.
+Local web dashboard for a **bot PC**. Sentinel watches accounts and emulators, controls **GnBots** (default) or **Frostguard**, restores LDPlayer instances from backups, updates Whiteout APKs, and can automate common farm recovery work.
 
 Open **http://localhost:8787** after start.
 
 ```
 Bot PC (this machine)                 Optional remote access
 ┌──────────────────────────┐          ┌──────────────────────────┐
-│ GnBots.exe  API :5508    │          │ Tunnel / reverse proxy   │
-│ LDPlayer + .ldbk backups │          │ → bot PC :8787           │
-│ Sentinel dashboard :8787 │ ◄────────│ (Tailscale, Cloudflare,  │
-└──────────────────────────┘          │  nginx, …)               │
+│ GnBots :5508 and/or      │          │ Tunnel / reverse proxy   │
+│ Frostguard + workspace DB│          │ → bot PC :8787           │
+│ Emulators (LDPlayer/…)   │          │ (Tailscale, Cloudflare,  │
+│ Sentinel dashboard :8787 │ ◄────────│  nginx, …)               │
+└──────────────────────────┘          └──────────────────────────┘
 ```
 
 Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/README.md`](tunnel/README.md).
+
+**Bot / emulator providers:** [`docs/FROSTGUARD.md`](docs/FROSTGUARD.md) · [`docs/EMULATORS.md`](docs/EMULATORS.md)
 
 ---
 
 ## Features
 
 ### Live farm dashboard (`/`)
-- Launch / close GnBots on the host; Start / Stop / Stop All / Stop Emulators through the Remote API
+- Launch / close the active bot on the host; Start / Stop / Stop All / Stop Emulators (GnBots Remote API or Frostguard bridge)
 - Live account table with sort, filter, per-account actions, and session screenshots
 - Host resource pills, stack status, issue-focused and recent logs
 - Restore-recommended banner when backups or health checks say work is needed
@@ -35,28 +38,29 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 
 ### Whiteout APK updates
 - Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (defaults to `apk20`, ABI/package auto-filled from LDPlayer) so farms are not stuck waiting for GnBots to refresh the package
-- Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk` and install / update selected emulators
+- **Download** fills the local APK cache only (`main.apk` / `arch.apk` / `pack.apk`); Restore auto-queues **Update selected** after a successful download when the bot is stopped and instances are selected
+- Install jobs fail if the emulator stays on an older `versionName` or still shows the in-game Update dialog
 - **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
 - Choose “instances to update” once; reuse for manual bulk update or automation
 
 ### Accounts & bot configuration (`/settings`)
 | Tab | What you do |
 |-----|-------------|
-| **Bot Settings** | Edit GnBots settings groups / raw JSON (bot must be stopped; restart required) |
-| **Account Settings** | Per-account Action Editor, advanced settings, templates, schedules |
+| **Bot Settings** | Edit GnBots settings groups / raw JSON (bot must be stopped; restart required). Frostguard: use profile/task toggles instead of Action Editor |
+| **Account Settings** | Per-account Action Editor, advanced settings, templates, schedules (GnBots) |
 | **Account Names** | Bulk switch-account names with history |
 | **Bulk Actions** | Apply the same field, schedule, or timer across many accounts |
-| **Add Account** | Provision a new LDPlayer instance + Whiteout APK + GnBots account (background job) |
+| **Add Account** | Provision emulator + Whiteout APK + bot profile (GnBots JSON or Frostguard workspace DB when `bot_provider=frostguard`) |
 | **Emulator Restore** | Backups, fix settings, APK update/install, restore jobs |
 | **Automation** | Auto-stop, auto-APK, issue report, fix suggestions |
-| **Sentinel** | Monitor `config.json`, Check / Apply self-updates |
+| **Sentinel** | Monitor `config.json`, bot/emulator provider, Check / Apply self-updates |
 
 ### Automation (`/settings?tab=automation`)
 - **Record issue history** from alertable bot logs
 - **Learn stuck-screen patterns** from same-screen timeouts (for example event pages)
 - **Auto-fix stuck screens** — Press Back, restart the emulator, or warn you (opt-in)
-- **Auto-stop GnBots** when problem emulators cluster (cooldown-protected)
-- **Auto-update APKs** when a newer package is available (only while GnBots is stopped)
+- **Auto-stop bot** when problem emulators cluster (GnBots Stop or Frostguard bridge; cooldown-protected)
+- **Auto-update APKs** when a newer package is available (only while the active bot is stopped)
 - **Common-issues report** and **playbook suggestions** (optional OpenAI-compatible LLM enrichment)
 
 Details and config keys: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
@@ -76,18 +80,19 @@ Details and config keys: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 | Dashboard UI + Settings | Yes | Yes |
 | Pytest suite | Yes | Yes (cross-platform tests) |
 | GnBots Remote API control | Yes (`:5508`) | Offline / connection refused (graceful) |
+| Frostguard observe + user-DB writers | Yes | Observe + SQLite OK; host exe start/stop Windows-only |
 | LDPlayer restore, fix settings, provision | Yes | Not available |
-| Screenshots from sessions | Yes | Typically **503** |
+| Screenshots from sessions | Yes | Typically **503** (no emulator) |
 | Tray, watcher, scheduled tasks, UAC elevation | Yes | N/A |
 | Release installer / PyInstaller / native `.exe` | Yes | Build scripts are Windows-only |
 
 **Runtime:** Python **3.12+** (release builds target 3.12/3.13).  
-**Ports:** dashboard **8787** (binds `0.0.0.0` by default), GnBots API **5508**.
+**Ports:** dashboard **8787** (binds `0.0.0.0` by default), GnBots API **5508**, Frostguard localhost bridge (derived port from workspace identity).
 
 ### Two locks to know
 
-1. **Bot running** — profile edits, restore, and APK update stay read-only while GnBots sessions are active. Stop the bot from the dashboard first.
-2. **Windows Administrator** — required to commit LDPlayer config (Fix settings, some post-restore health work) and some GnBots launches. Dev `run.bat` sessions work for monitoring, logs, push, and most settings without elevation.
+1. **Bot running** — profile edits, restore, and APK update stay read-only while the active bot sessions are running. Stop the bot from the dashboard first.
+2. **Windows Administrator** — required to commit LDPlayer config (Fix settings, some post-restore health work) and some host launches. Dev `run.bat` sessions work for monitoring, logs, push, and most settings without elevation.
 
 ---
 
