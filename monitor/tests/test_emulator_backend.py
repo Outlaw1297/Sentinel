@@ -78,6 +78,31 @@ def test_mumu_list_instances_empty_when_exe_missing(tmp_path: Path):
     assert backend.resolve_install(config) is None
 
 
+def test_memu_running_indexes_match_status_column_only(tmp_path: Path, monkeypatch):
+    console = tmp_path / "memuc.exe"
+    console.write_bytes(b"")
+    # hwnd/pid/disk contain the digit 1; only the status column decides.
+    stdout = "\n".join(
+        [
+            "0,MEmu,2160,0,1234,1",
+            "1,Farm,131072,1,4096",
+            "2,Word,100,Running,50",
+            "3,Short,1",
+            "4,StoppedName,0",
+        ]
+    )
+
+    def _fake_run(exe, *args, timeout=None):
+        completed = MagicMock()
+        completed.returncode = 0
+        completed.stdout = stdout
+        completed.stderr = ""
+        return completed
+
+    monkeypatch.setattr("emulator_backend._run_exe", _fake_run)
+    assert MEmuBackend().running_indexes({"memu_path": str(console)}) == {1, 2, 3}
+
+
 def test_memu_launch_raises_when_exe_missing(tmp_path: Path):
     config = {"memu_path": str(tmp_path / "nope" / "memuc.exe")}
     with pytest.raises(FileNotFoundError):

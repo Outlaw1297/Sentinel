@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -167,6 +167,94 @@ def test_bridge_post_command_mocked():
     assert kwargs["json"]["text"] == "/startbot"
     assert kwargs["json"]["chatId"] == "123"
     assert kwargs["json"]["workspaceId"] == "abc"
+
+
+def test_wait_for_process_pids_retries_past_one_second(monkeypatch):
+    import frostguard_bridge as bridge
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(bridge.time, "time", lambda: clock["t"])
+
+    def _sleep(seconds: float) -> None:
+        clock["t"] += seconds
+
+    monkeypatch.setattr(bridge.time, "sleep", _sleep)
+
+    def _pids(_config):
+        if clock["t"] >= 3:
+            return [77]
+        return []
+
+    monkeypatch.setattr(bridge, "process_pids", _pids)
+    assert bridge._wait_for_process_pids({}, timeout_seconds=15) == [77]
+    assert clock["t"] >= 3
+
+
+def test_host_start_shows_gui_and_accepts_live_child(tmp_path: Path, monkeypatch):
+    import frostguard_bridge as bridge
+
+    exe = tmp_path / "Frostguard.exe"
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(bridge, "_is_windows", lambda: True)
+    monkeypatch.setattr(bridge, "process_running", lambda _config: False)
+    monkeypatch.setattr(bridge, "_wait_for_process_pids", lambda _config: [])
+    proc = MagicMock()
+    proc.pid = 4321
+    proc.poll.return_value = None
+    popen = MagicMock(return_value=proc)
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+
+    result = bridge.host_start({"frostguard_exe": str(exe)})
+
+    assert result["ok"] is True
+    assert result["pids"] == [4321]
+    assert popen.call_args.kwargs == {"cwd": str(exe.parent)}
+
+
+def test_host_start_fails_when_launcher_exits_unseen(tmp_path: Path, monkeypatch):
+    import frostguard_bridge as bridge
+
+    exe = tmp_path / "Frostguard.exe"
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(bridge, "_is_windows", lambda: True)
+    monkeypatch.setattr(bridge, "process_running", lambda _config: False)
+    monkeypatch.setattr(bridge, "_wait_for_process_pids", lambda _config: [])
+    proc = MagicMock()
+    proc.pid = 4321
+    proc.poll.return_value = 1
+    monkeypatch.setattr(bridge.subprocess, "Popen", MagicMock(return_value=proc))
+
+    result = bridge.host_start({"frostguard_exe": str(exe)})
+
+    assert result["ok"] is False
+    assert "not seen" in result["message"]
+
+
+def test_global_start_stop_use_frostguard_bridge(monkeypatch):
+    import app as app_module
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        app_module,
+        "config",
+        {"bot_provider": "frostguard", "dashboard_cache_seconds": 0},
+    )
+    calls: list[str] = []
+
+    def _run(config, command_id):
+        calls.append(command_id)
+        return {"ok": True, "action": command_id}
+
+    monkeypatch.setattr("frostguard_bridge.run_bot_command", _run)
+    client = TestClient(app_module.app)
+    with patch.object(app_module, "call_gnbots", new_callable=AsyncMock) as mocked:
+        started = client.post("/api/commands/start")
+        stopped = client.post("/api/commands/stop")
+    assert started.status_code == 200
+    assert stopped.status_code == 200
+    assert calls == ["start", "stop"]
+    assert mocked.await_count == 0
+    assert started.json()["provider"] == "frostguard"
 
 
 def test_start_bot_requires_pid(tmp_path: Path):

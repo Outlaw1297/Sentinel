@@ -24,6 +24,10 @@ from frostguard_workspace import (
 from host_status import find_processes
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _hidden_kwargs() -> dict[str, Any]:
     try:
         from host_status import _hidden_windows_subprocess_kwargs
@@ -166,8 +170,29 @@ def process_pids(config: dict[str, Any]) -> list[int]:
     return pids
 
 
+_HOST_START_TIMEOUT_SECONDS = 15.0
+
+
+def _wait_for_process_pids(
+    config: dict[str, Any],
+    timeout_seconds: float = _HOST_START_TIMEOUT_SECONDS,
+) -> list[int]:
+    """Poll until the Frostguard image is visible, or the timeout elapses.
+
+    A Java/desktop launcher often is not in the process list after one second.
+    """
+    deadline = time.time() + timeout_seconds
+    while True:
+        pids = process_pids(config)
+        if pids:
+            return pids
+        if time.time() >= deadline:
+            return []
+        time.sleep(1)
+
+
 def host_start(config: dict[str, Any]) -> dict[str, Any]:
-    if os.name != "nt":
+    if not _is_windows():
         return {
             "ok": False,
             "action": "start",
@@ -202,25 +227,28 @@ def host_start(config: dict[str, Any]) -> dict[str, Any]:
     if not path.is_file():
         return {"ok": False, "action": "start", "message": f"frostguard_exe not found: {path}"}
     try:
-        subprocess.Popen(
+        # Frostguard is a GUI app — do not pass CREATE_NO_WINDOW / SW_HIDE or the
+        # main window stays invisible (looks like Launch did nothing).
+        proc = subprocess.Popen(
             [str(path)],
             cwd=str(path.parent),
-            **_hidden_kwargs(),
         )
     except OSError as exc:
         return {"ok": False, "action": "start", "message": str(exc)}
-    time.sleep(1.0)
-    running = process_running(config)
+    pids = _wait_for_process_pids(config)
+    if not pids and proc.poll() is None:
+        pids = [int(proc.pid)]
+    running = bool(pids)
     return {
         "ok": running,
         "action": "start",
         "message": "Frostguard start requested." if running else "Frostguard start launched but process not seen yet.",
-        "pids": process_pids(config),
+        "pids": pids,
     }
 
 
 def host_stop(config: dict[str, Any]) -> dict[str, Any]:
-    if os.name != "nt":
+    if not _is_windows():
         return {
             "ok": False,
             "action": "stop",
@@ -284,6 +312,18 @@ def host_action(config: dict[str, Any], action: str) -> dict[str, Any]:
     if normalized == "restart":
         return host_restart(config)
     return {"ok": False, "action": action, "message": f"Unknown host action: {action}"}
+
+
+def run_bot_command(config: dict[str, Any], command_id: str) -> dict[str, Any]:
+    """Map dashboard Start/Stop onto the Frostguard localhost bridge."""
+    normalized = str(command_id or "").strip().lower()
+    if normalized == "play":
+        normalized = "start"
+    if normalized == "start":
+        return start_bot(config)
+    if normalized in {"stop", "stopall"}:
+        return stop_bot(config)
+    return {"ok": False, "message": f"Frostguard has no bridge command for {command_id}."}
 
 
 def start_bot(config: dict[str, Any]) -> dict[str, Any]:

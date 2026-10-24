@@ -291,9 +291,12 @@ class MEmuBackend:
             console = self._console(config)
         except FileNotFoundError:
             return set()
-        # memuc listvms marks running VMs; also try `listvms` status column when present.
+        # memuc listvms CSV: index,title,hwnd,running,pid[,disk]
+        # `running` is its own column (0 or 1). Match that column exactly —
+        # a substring search treats hwnd/pid/disk values such as 2160 as running.
         result = _run_exe(console, "listvms", timeout=30)
         indexes: set[int] = set()
+        running_tokens = {"1", "true", "running", "started"}
         for line in (result.stdout or "").splitlines():
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 2:
@@ -302,11 +305,13 @@ class MEmuBackend:
                 index = int(parts[0])
             except ValueError:
                 continue
-            # Common shapes: ...,1 (running) or status token "Running"
-            status_bits = " ".join(parts[2:]).lower()
-            if any(tok in status_bits for tok in ("running", "1", "true", "started")):
-                indexes.add(index)
-            elif len(parts) >= 3 and parts[2] in {"1", "true"}:
+            if len(parts) >= 4:
+                status = parts[3].lower()
+            elif len(parts) >= 3:
+                status = parts[2].lower()
+            else:
+                status = ""
+            if status in running_tokens:
                 indexes.add(index)
         return indexes
 

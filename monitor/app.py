@@ -3088,6 +3088,16 @@ async def run_global_command(command_id: str) -> dict[str, Any]:
         set_gnbots_user_stop_suppress(120)
 
     try:
+        if get_bot_backend(config).provider_id == "frostguard" and resolved_id in {"start", "stop", "stopall"}:
+            import frostguard_bridge as bridge
+
+            result = await asyncio.to_thread(bridge.run_bot_command, config, resolved_id)
+            if not result.get("ok"):
+                raise HTTPException(
+                    status_code=503,
+                    detail=str(result.get("message") or result.get("error") or "Frostguard command failed."),
+                )
+            return {"ok": True, "provider": "frostguard", "command": resolved_id, "data": result}
         return await call_gnbots(
             config,
             method=meta["method"],

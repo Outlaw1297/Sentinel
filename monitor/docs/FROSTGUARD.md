@@ -50,7 +50,7 @@ When Frostguard has Telegram integration enabled, it exposes:
 
 Sentinel uses `chatId` from watcher props so replies land in the operator chat. Prefer **localhost** bridge mode — do not compete with the official watcher on Telegram `getUpdates`.
 
-Host start/stop/restart of `frostguard_exe` is Windows-only (same `CREATE_NO_WINDOW` style as other Sentinel host scripts). On Linux, host actions return `ok: false` with a clear message; RO observe still works.
+Host start/stop/restart of `frostguard_exe` is Windows-only. The launcher is started as a visible GUI process (hidden-window flags keep the Frostguard window from appearing) and Sentinel waits for the process the same way it waits for GnBots. taskkill still runs hidden. On Linux, host actions return `ok: false` with a clear message; RO observe still works. Dashboard Start/Stop call `/startbot` and `/stopbot` on the localhost bridge when the bot provider is Frostguard.
 
 ## Capabilities
 
