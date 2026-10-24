@@ -1565,13 +1565,27 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
         result["thirdParty"] = {"ok": False, "enabled": True, "error": str(exc)}
 
     if sync and result.get("updateAvailable") and not result.get("localAheadOfRemote"):
+        # Never prefer third-party when GnBots game.zip already signals an update
+        # (size mismatch / missing zip). Otherwise a mid-tier APK20 build can
+        # win over a newer GnBots zip and leave bots on the wrong version.
+        gnbots_size_update = bool(
+            url
+            and (
+                (remote_size is not None and remote_size != local_size)
+                or missing_zip
+            )
+        )
         prefer_third_party = bool(
             third_party
             and third_party.get("ok")
             and third_party.get("updateAvailable")
+            and not gnbots_size_update
             and (
                 not url
-                or version_is_older(str(remote_zip_version or local_version or ""), str(third_party.get("remoteVersion") or ""))
+                or version_is_older(
+                    str(remote_zip_version or local_version or ""),
+                    str(third_party.get("remoteVersion") or ""),
+                )
             )
         )
         synced: dict[str, Any] | None = None
@@ -1884,7 +1898,19 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
     zip_path = apk_dir / "game.zip"
     url = resolve_whiteout_apk_url(config)
 
-    # Prefer a third-party catalog when it reports a newer version than the GnBots URL/cache.
+    remote_size = _remote_game_zip_size(url) if url else None
+    local_size = zip_path.stat().st_size if zip_path.is_file() else None
+    gnbots_size_update = bool(
+        url
+        and (
+            (remote_size is not None and remote_size != local_size)
+            or (not zip_path.is_file() and remote_size is not None)
+        )
+    )
+
+    # Prefer third-party only when it is strictly newer than local/cache and GnBots
+    # is not already signaling a newer game.zip. Missing splits alone must not force
+    # a third-party sync (that downgraded caches that still had a good game.zip).
     try:
         from apk_third_party import check_third_party_apk_remote, sync_third_party_apk, third_party_enabled
 
@@ -1895,12 +1921,21 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
             zip_version = None
             if zip_path.is_file():
                 zip_version = _read_manifest_from_zip(zip_path).get("version_name")
-            gnbots_best = zip_version or local_version
-            if third.get("ok") and third_version and (
-                third.get("updateAvailable")
-                or version_is_older(str(gnbots_best or ""), third_version)
-                or not all((apk_dir / name).is_file() for name in APK_INSTALL_ORDER)
-            ):
+            best_local = zip_version or local_version
+            third_newer = bool(
+                third.get("ok")
+                and third_version
+                and version_is_older(str(best_local or ""), third_version)
+            )
+            files_ready = all((apk_dir / name).is_file() for name in APK_INSTALL_ORDER)
+            bootstrap_third = bool(
+                third.get("ok")
+                and third_version
+                and not url
+                and not zip_path.is_file()
+                and not files_ready
+            )
+            if (third_newer and not gnbots_size_update) or bootstrap_third:
                 synced = sync_third_party_apk(config, force=True)
                 install_files = [apk_dir / name for name in APK_INSTALL_ORDER]
                 missing = [path.name for path in install_files if not path.is_file()]
@@ -1921,8 +1956,6 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
         # Fall through to GnBots URL / local cache when the catalog is unreachable.
         pass
 
-    remote_size = _remote_game_zip_size(url) if url else None
-    local_size = zip_path.stat().st_size if zip_path.is_file() else None
     downloaded = False
 
     if url and remote_size is not None and remote_size != local_size:
