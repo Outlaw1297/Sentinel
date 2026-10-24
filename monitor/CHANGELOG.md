@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 — 2026-10-24
+
+### Frostguard parity progress
+- Global Start/Stop/Stop All/Stop Emulators dispatch through Frostguard bridge + emulator quit when `bot_provider` is frostguard (GnBots Remote API path unchanged)
+- Dashboard accounts from Frostguard SQLite profiles + emulator running indexes; `botActive` via pid/lock/tasks
+- Screenshots via `EmulatorBackend.screencap_png` mapped by profile instance index
+- Optional user-DB writers (`set_profile_enabled` / upsert) with one-time `.bak`; profiles/tasks/command APIs
+- Auto-stop and stuck-screen instance resolution aware of Frostguard; `/api/bot/reconnect` for active provider
+
 ## 0.2.0 — 2026-10-23
 
 ### Dual bot providers
