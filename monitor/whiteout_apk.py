@@ -429,6 +429,27 @@ def merge_persisted_apk_cache(result: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _stage_or_extract_game_zip(zip_path: Path, apk_dir: Path, config: dict[str, Any]) -> None:
+    """Extract GnBots game.zip splits, or re-stage an XAPK stored as game.zip."""
+    try:
+        from apk_third_party import game_zip_looks_like_xapk, resolve_third_party_abi, stage_xapk_into_apk_dir
+
+        if game_zip_looks_like_xapk(zip_path):
+            # Third-party sync stores the XAPK as game.zip. Re-stage into main/arch/pack
+            # instead of dumping original split names (which leaves arch.apk missing and
+            # overwrites the Sentinel cache manifest).
+            stage_xapk_into_apk_dir(
+                zip_path,
+                apk_dir,
+                abi=resolve_third_party_abi(config),
+                write_game_zip=False,
+            )
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    _extract_game_zip(zip_path, apk_dir)
+
+
 def refresh_local_apk_cache_from_disk(config: dict[str, Any]) -> dict[str, Any]:
     """Refresh persisted cache version from split APKs; avoid downgrading via stale game.zip."""
     apk_dir = resolve_whiteout_apk_dir(config)
@@ -453,7 +474,7 @@ def refresh_local_apk_cache_from_disk(config: dict[str, Any]) -> dict[str, Any]:
 
     version_before = str(get_persisted_apk_cache_state().get("versionName") or "").strip()
     if needs_extract and not split_ahead_of_zip:
-        _extract_game_zip(zip_path, apk_dir)
+        _stage_or_extract_game_zip(zip_path, apk_dir, config)
         invalidate_apk_inspect_cache()
 
     sync_apk_manifest_from_main_apk(config)
@@ -1919,22 +1940,7 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
     needs_extract = downloaded or not all(path.is_file() for path in install_files)
     if needs_extract and zip_path.is_file():
         # Third-party sync stores an XAPK as game.zip; detect and stage splits accordingly.
-        try:
-            with zipfile.ZipFile(zip_path) as archive:
-                names = {Path(name).name.lower() for name in archive.namelist()}
-            if "manifest.json" in names and any(name.endswith(".apk") for name in names) and not {
-                "main.apk",
-                "arch.apk",
-                "pack.apk",
-            }.issubset(names):
-                from apk_third_party import stage_xapk_into_apk_dir
-
-                stage_xapk_into_apk_dir(zip_path, apk_dir)
-                needs_extract = False
-        except (OSError, zipfile.BadZipFile):
-            pass
-        if needs_extract:
-            _extract_game_zip(zip_path, apk_dir)
+        _stage_or_extract_game_zip(zip_path, apk_dir, config)
 
     missing = [name for name in APK_INSTALL_ORDER if not (apk_dir / name).is_file()]
     if missing:
