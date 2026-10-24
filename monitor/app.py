@@ -27,6 +27,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from bot_activity import bot_activity_from_status, normalize_bot_state, profile_settings_locked_from_activity
+from bot_backend import detect_bot_provider, get_bot_backend
+from emulator_backend import detect_emulator_provider, get_emulator_backend
 from gnbots_cache import (
     cached_api_status,
     cached_gnbots_fetch,
@@ -1875,6 +1877,10 @@ class ApkUpdateSelectionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class BotProviderRequest(BaseModel):
+    provider: str = Field(..., min_length=1)
+
+
 class PushNotifyRequest(BaseModel):
     title: str
     body: str
@@ -2416,12 +2422,25 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
     error_logs = mark_account_switch_ocr_logs(error_logs)
     recent_ocr_events = get_recent_ocr_events(config, limit=8)
 
+    bot_backend = get_bot_backend(config)
+    try:
+        bot_online = bool(bot_backend.is_online(config))
+    except Exception:  # noqa: BLE001
+        bot_online = gnbots is not None
+
     return {
         "gnbotsOnline": gnbots is not None,
         "gnbotsError": gnbots_error,
         "gnbotsProcessRunning": gnbots_process_running(config, stack=stack),
         "gnbotsApi": api_status,
         "gnbotsApiFailures": int(_GNBOTS_API_STATE.get("failures") or 0),
+        "botProvider": detect_bot_provider(config),
+        "botProviderPinned": str(config.get("bot_provider") or "gnbots").strip().lower() or "gnbots",
+        "botCapabilities": bot_backend.capabilities.as_dict(),
+        "botOnline": bot_online,
+        "emulatorProvider": detect_emulator_provider(config),
+        "emulatorProviderPinned": str(config.get("emulator_provider") or "auto").strip().lower() or "auto",
+        "emulatorCapabilities": sorted(get_emulator_backend(config).capabilities),
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "profile": profile_name,
         "botActive": bool(activity.get("botActive")),
@@ -2799,6 +2818,96 @@ async def health() -> dict[str, Any]:
         "error": api.get("error"),
     }
 
+
+@app.get("/api/bot/provider")
+async def get_bot_provider() -> dict[str, Any]:
+    backend = get_bot_backend(config)
+    try:
+        online = await asyncio.to_thread(backend.is_online, config)
+    except Exception:  # noqa: BLE001
+        online = False
+    try:
+        process_running = await asyncio.to_thread(backend.is_process_running, config)
+    except Exception:  # noqa: BLE001
+        process_running = False
+    return {
+        "ok": True,
+        "provider": detect_bot_provider(config),
+        "pinned": str(config.get("bot_provider") or "gnbots").strip().lower() or "gnbots",
+        "online": bool(online),
+        "processRunning": bool(process_running),
+        "capabilities": backend.capabilities.as_dict(),
+    }
+
+
+@app.post("/api/bot/provider")
+async def set_bot_provider(body: BotProviderRequest) -> dict[str, Any]:
+    provider = str(body.provider or "").strip().lower()
+    if provider not in {"auto", "gnbots", "frostguard"}:
+        raise HTTPException(
+            status_code=400,
+            detail="provider must be one of: auto, gnbots, frostguard",
+        )
+    try:
+        coerced, message = await asyncio.to_thread(update_monitor_config_value, "bot_provider", provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write config.json: {exc}") from exc
+
+    reload_runtime_config()
+    backend = get_bot_backend(config)
+    return {
+        "ok": True,
+        "provider": detect_bot_provider(config),
+        "pinned": coerced,
+        "message": message,
+        "capabilities": backend.capabilities.as_dict(),
+    }
+
+
+class EmulatorProviderRequest(BaseModel):
+    provider: str
+
+
+@app.get("/api/emulator/provider")
+async def get_emulator_provider_api() -> dict[str, Any]:
+    backend = get_emulator_backend(config)
+    return {
+        "ok": True,
+        "provider": detect_emulator_provider(config),
+        "pinned": str(config.get("emulator_provider") or "auto").strip().lower() or "auto",
+        "capabilities": sorted(backend.capabilities),
+        "install": str(backend.resolve_install(config) or ""),
+    }
+
+
+@app.post("/api/emulator/provider")
+async def set_emulator_provider_api(body: EmulatorProviderRequest) -> dict[str, Any]:
+    provider = str(body.provider or "").strip().lower()
+    if provider not in {"auto", "ldplayer", "memu", "nox", "mumu"}:
+        raise HTTPException(
+            status_code=400,
+            detail="provider must be one of: auto, ldplayer, memu, nox, mumu",
+        )
+    try:
+        coerced, message = await asyncio.to_thread(
+            update_monitor_config_value, "emulator_provider", provider
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write config.json: {exc}") from exc
+
+    reload_runtime_config()
+    backend = get_emulator_backend(config)
+    return {
+        "ok": True,
+        "provider": detect_emulator_provider(config),
+        "pinned": coerced,
+        "message": message,
+        "capabilities": sorted(backend.capabilities),
+    }
 
 
 def _dashboard_cache_hit() -> dict[str, Any] | None:
@@ -3807,37 +3916,54 @@ async def resources() -> dict[str, Any]:
     return collect_resource_metrics(config)
 
 
+@app.post("/api/host/bot/start")
 @app.post("/api/host/gnbots/start")
 async def launch_gnbots() -> dict[str, Any]:
-    try:
-        await asyncio.to_thread(require_gnbots_elevation, config)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    backend = get_bot_backend(config)
+    if backend.provider_id == "gnbots":
+        try:
+            await asyncio.to_thread(require_gnbots_elevation, config)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     invalidate_dashboard_cache()
     try:
-        # Do not force-restart: a second Launch click while detection is catching up
-        # used to kill the process that just started.
-        result = run_gnbots_process_action("Start", force=False)
+        if backend.provider_id == "gnbots":
+            # Do not force-restart: a second Launch click while detection is catching up
+            # used to kill the process that just started.
+            result = run_gnbots_process_action("Start", force=False)
+        else:
+            result = await asyncio.to_thread(backend.host_action, config, "start")
         if not result.get("ok"):
-            raise HTTPException(status_code=500, detail=result.get("message") or "Failed to launch GnBots")
-        return result
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("message") or f"Failed to launch {backend.provider_id}",
+            )
+        return {**result, "provider": backend.provider_id}
     finally:
         invalidate_dashboard_cache()
 
 
+@app.post("/api/host/bot/stop")
 @app.post("/api/host/gnbots/stop")
 async def close_gnbots() -> dict[str, Any]:
+    backend = get_bot_backend(config)
     invalidate_dashboard_cache()
     try:
-        for path in ("/stopall", "/stop"):
-            try:
-                await call_gnbots(config, method="GET", path=path)
-            except Exception:  # noqa: BLE001
-                pass
-        result = run_gnbots_process_action("Stop")
+        if backend.provider_id == "gnbots":
+            for path in ("/stopall", "/stop"):
+                try:
+                    await call_gnbots(config, method="GET", path=path)
+                except Exception:  # noqa: BLE001
+                    pass
+            result = run_gnbots_process_action("Stop")
+        else:
+            result = await asyncio.to_thread(backend.host_action, config, "stop")
         if not result.get("ok"):
-            raise HTTPException(status_code=500, detail=result.get("message") or "Failed to close GnBots")
-        if push_enabled(config):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("message") or f"Failed to close {backend.provider_id}",
+            )
+        if push_enabled(config) and backend.provider_id == "gnbots":
             await asyncio.to_thread(
                 notify_monitor_event,
                 "GnBots closed",
@@ -3845,27 +3971,32 @@ async def close_gnbots() -> dict[str, Any]:
                 tag="gnbots_closed",
                 config=config,
             )
-        return result
+        return {**result, "provider": backend.provider_id}
     finally:
         invalidate_dashboard_cache()
 
 
+@app.post("/api/host/bot/restart")
 @app.post("/api/host/gnbots/restart")
 async def restart_gnbots() -> dict[str, Any]:
+    backend = get_bot_backend(config)
     invalidate_dashboard_cache()
     try:
-        api = await asyncio.to_thread(gnbots_api_status, config)
-        if api.get("healthy"):
-            for path in ("/stopall", "/stop"):
-                try:
-                    await call_gnbots(config, method="GET", path=path)
-                except Exception:  # noqa: BLE001
-                    pass
+        if backend.provider_id == "gnbots":
+            api = await asyncio.to_thread(gnbots_api_status, config)
+            if api.get("healthy"):
+                for path in ("/stopall", "/stop"):
+                    try:
+                        await call_gnbots(config, method="GET", path=path)
+                    except Exception:  # noqa: BLE001
+                        pass
 
-        result = await asyncio.to_thread(recover_gnbots_api, config, force_restart=True)
-        if not result.get("ok"):
-            return result
-        return result
+            result = await asyncio.to_thread(recover_gnbots_api, config, force_restart=True)
+            if not result.get("ok"):
+                return {**result, "provider": "gnbots"}
+            return {**result, "provider": "gnbots"}
+        result = await asyncio.to_thread(backend.host_action, config, "restart")
+        return {**result, "provider": backend.provider_id}
     finally:
         invalidate_dashboard_cache()
 
