@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 — 2026-10-23
+
+### Dual bot providers
+- Select **GnBots** (default), **Frostguard**, or **auto** under Monitor settings → Bot provider
+- Frostguard observe via read-only workspace SQLite/logs/lock (no wosbot changes)
+- Sentinel localhost bridge to Frostguard `/pid` + `/command` for host and `/startbot`/`/stopbot` when Telegram command server is up
+- Dashboard exposes `botProvider`, `botCapabilities`, `botOnline` while keeping all existing GnBots fields
+- Host start/stop/restart routes also available as `/api/host/bot/*` and dispatch by active provider
+
+### Multi-emulator
+- `EmulatorBackend` for **LDPlayer** (full), **MEmu**, **Nox**, and **MuMu**
+- Settings → Emulator provider with path overrides; `auto` follows GnBots emulator hints
+- Restore/`.ldbk` remains LDPlayer-only; other emulators support list/launch/quit/ADB/screencap
+- Docs: `docs/FROSTGUARD.md`, `docs/EMULATORS.md`
+
 ## 0.1.12 — 2026-10-23
 
 ### APK updates

@@ -70,6 +70,10 @@ Host start/stop/restart of `frostguard_exe` is Windows-only (same `CREATE_NO_WIN
 4. Pin `bot_provider` to `frostguard` (or `auto`).
 5. Leave `frostguard_bridge_mode` at `localhost` unless you want observe-only (`disabled`).
 
+## Emulators
+
+Frostguard commonly uses **MuMu**; Sentinel also supports LDPlayer/MEmu/Nox. See [EMULATORS.md](EMULATORS.md). Bot provider and emulator provider are independent switches.
+
 ## Out of scope
 
 - Any changes to Shederator/wosbot
