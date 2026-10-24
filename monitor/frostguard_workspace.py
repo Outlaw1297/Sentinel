@@ -230,14 +230,23 @@ def _profile_schema(conn: sqlite3.Connection) -> dict[str, Any] | None:
         "table": table,
         "columns": columns,
         "id": _col(columns, "id", "Id", "profileId", "ProfileId"),
-        "name": _col(columns, "name", "Name", "profileName", "ProfileName"),
+        "name": _col(
+            columns,
+            "name",
+            "Name",
+            "profileName",
+            "ProfileName",
+            "profile_name",
+        ),
         "enabled": _col(columns, "enabled", "Enabled", "active", "Active"),
         "emu": _col(
             columns,
             "emulatorNumber",
             "EmulatorNumber",
+            "emulator_number",
             "emulatorIndex",
             "EmulatorIndex",
+            "emulator_index",
             "index",
             "Index",
             "instanceId",
@@ -450,6 +459,31 @@ def any_task_executing(workspace: Path) -> bool:
     return False
 
 
+def _identity_column(
+    conn: sqlite3.Connection,
+    table: str,
+    want: str,
+    id_col: str | None,
+    name_col: str | None,
+) -> str | None:
+    """Column that identifies ``want``. An id match wins so a numeric id cannot also hit a name."""
+    if id_col:
+        row = conn.execute(
+            f'SELECT 1 FROM "{table}" WHERE CAST("{id_col}" AS TEXT) = ? LIMIT 1',
+            (want,),
+        ).fetchone()
+        if row is not None:
+            return id_col
+    if name_col and name_col != id_col:
+        row = conn.execute(
+            f'SELECT 1 FROM "{table}" WHERE CAST("{name_col}" AS TEXT) = ? LIMIT 1',
+            (want,),
+        ).fetchone()
+        if row is not None:
+            return name_col
+    return None
+
+
 def set_profile_enabled(workspace: Path, profile_id: str, enabled: bool) -> dict[str, Any]:
     """Toggle a profile's enabled/active flag in user frostguard.db."""
     want = str(profile_id or "").strip()
@@ -477,18 +511,12 @@ def set_profile_enabled(workspace: Path, profile_id: str, enabled: bool) -> dict
         else:
             value = "true" if enabled else "false"
 
-        where_parts: list[str] = []
-        params: list[Any] = [value]
-        if id_col:
-            where_parts.append(f'CAST("{id_col}" AS TEXT) = ?')
-            params.append(want)
-        if name_col:
-            where_parts.append(f'CAST("{name_col}" AS TEXT) = ?')
-            params.append(want)
-        where_sql = " OR ".join(where_parts)
+        match_col = _identity_column(conn, table, want, id_col, name_col)
+        if not match_col:
+            return {"ok": False, "message": f"Profile not found: {want}", "updated": 0}
         cur = conn.execute(
-            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE {where_sql}',
-            params,
+            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE CAST("{match_col}" AS TEXT) = ?',
+            (value, want),
         )
         conn.commit()
         if cur.rowcount <= 0:
@@ -536,7 +564,7 @@ def upsert_profile(workspace: Path, fields: dict[str, Any]) -> dict[str, Any]:
         if emu is None:
             emu = fields.get("instanceId", fields.get("instanceIndex", fields.get("emulatorIndex")))
 
-        # Look up existing by id or name.
+        # Look up existing by id, then name, then the emulator slot this row is bound to.
         existing = None
         if id_col and profile_id is not None:
             existing = conn.execute(
@@ -547,6 +575,15 @@ def upsert_profile(workspace: Path, fields: dict[str, Any]) -> dict[str, Any]:
             existing = conn.execute(
                 f'SELECT * FROM "{table}" WHERE CAST("{name_col}" AS TEXT) = ? LIMIT 1',
                 (str(name),),
+            ).fetchone()
+        if existing is None and emu_col and emu is not None:
+            try:
+                emu_key: Any = int(emu)
+            except (TypeError, ValueError):
+                emu_key = emu
+            existing = conn.execute(
+                f'SELECT * FROM "{table}" WHERE "{emu_col}" = ? OR CAST("{emu_col}" AS TEXT) = ? LIMIT 1',
+                (emu_key, str(emu_key)),
             ).fetchone()
 
         updates: dict[str, Any] = {}
@@ -677,17 +714,12 @@ def set_task_enabled(workspace: Path, task_id: str, enabled: bool) -> dict[str, 
         value: Any = 1 if enabled else 0
         if "INT" not in col_type and "BOOL" not in col_type and col_type:
             value = "true" if enabled else "false"
-        where_parts: list[str] = []
-        params: list[Any] = [value]
-        if id_col:
-            where_parts.append(f'CAST("{id_col}" AS TEXT) = ?')
-            params.append(want)
-        if name_col:
-            where_parts.append(f'CAST("{name_col}" AS TEXT) = ?')
-            params.append(want)
+        match_col = _identity_column(conn, table, want, id_col, name_col)
+        if not match_col:
+            return {"ok": False, "message": f"Task not found: {want}", "updated": 0}
         cur = conn.execute(
-            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE {" OR ".join(where_parts)}',
-            params,
+            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE CAST("{match_col}" AS TEXT) = ?',
+            (value, want),
         )
         conn.commit()
         if cur.rowcount <= 0:

@@ -105,7 +105,7 @@ def build_frostguard_dashboard_slice(config: dict[str, Any]) -> dict[str, Any]:
 
         bot_active = bool(FrostguardBackend().automation_active(config))
     except Exception:  # noqa: BLE001
-        bot_active = bool(status.get("lockPresent"))
+        bot_active = False
 
     return {
         "accounts": accounts,

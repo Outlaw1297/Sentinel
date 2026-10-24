@@ -76,7 +76,14 @@ def test_frostguard_run_global_command_stopemulators():
     mock_emu.quit_all.assert_called_once_with(config)
 
 
-def test_frostguard_automation_active_lock_and_pid(tmp_path: Path):
+def _queue_log(message: str) -> str:
+    return (
+        "2026-10-24T00:00:00.000Z INFO  [TaskQueue-Alpha] "
+        f"dev.frostguard.engine.schedule.TaskQueue - Alpha - {message}\n"
+    )
+
+
+def test_frostguard_automation_active_ignores_pid_and_stale_lock(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "frostguard.db").write_bytes(b"")
@@ -87,11 +94,33 @@ def test_frostguard_automation_active_lock_and_pid(tmp_path: Path):
         "frostguard_channel": "stable",
         "frostguard_bridge_mode": "localhost",
     }
+    # Command server and a leftover lock are not the run loop.
     with patch("frostguard_bridge.pid_online", return_value=True):
-        assert FrostguardBackend().automation_active(config) is True
+        with patch("frostguard_bridge.process_running", return_value=True):
+            assert FrostguardBackend().automation_active(config) is False
     with patch("frostguard_bridge.pid_online", return_value=False):
         with patch("frostguard_bridge.process_running", return_value=False):
-            assert FrostguardBackend().automation_active(config) is True  # lock + db
+            assert FrostguardBackend().automation_active(config) is False
+
+    logs = workspace / "logs"
+    logs.mkdir()
+    log_path = logs / "frostguard.log"
+    log_path.write_text(_queue_log("Running idle injection: help"), encoding="utf-8")
+    with patch("frostguard_bridge.pid_online", return_value=True):
+        with patch("frostguard_bridge.process_running", return_value=False):
+            assert FrostguardBackend().automation_active(config) is True
+    log_path.write_text(
+        _queue_log("Running idle injection: help")
+        + _queue_log("TaskQueue stopped after worker termination"),
+        encoding="utf-8",
+    )
+    with patch("frostguard_bridge.pid_online", return_value=True):
+        with patch("frostguard_bridge.process_running", return_value=True):
+            assert FrostguardBackend().automation_active(config) is False
+    # Stale queue lines after the process is gone are not a live run.
+    with patch("frostguard_bridge.pid_online", return_value=False):
+        with patch("frostguard_bridge.process_running", return_value=False):
+            assert FrostguardBackend().automation_active(config) is False
 
 
 def test_auto_prefers_gnbots_when_api_up():

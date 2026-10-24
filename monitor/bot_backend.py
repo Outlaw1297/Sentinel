@@ -298,39 +298,33 @@ class FrostguardBackend:
         }
 
     def automation_active(self, config: dict[str, Any]) -> bool:
-        """botActive signal: bridge pid online, workspace lock, or an executing task."""
-        import frostguard_bridge as bridge
-        from frostguard_workspace import (
-            any_task_executing,
-            resolve_workspace,
-            workspace_channel,
-            workspace_status,
-        )
+        """True when the Frostguard run loop is going.
 
-        if bridge.pid_online(config):
-            return True
-        if bridge.process_running(config):
-            # Process alone is weak; require lock or an executing task too.
-            try:
-                workspace = resolve_workspace(config)
-                status = workspace_status(workspace, channel=workspace_channel(config, workspace))
-                if status.get("lockPresent"):
-                    return True
-                if any_task_executing(workspace):
-                    return True
-            except Exception:  # noqa: BLE001
-                pass
+        GET /pid only means the localhost command server answered; that server
+        stays up after /stopbot. frostguard.lock is the workspace file lock and
+        can survive a crash or a clean exit, so lock+db is not a running bot.
+        """
+        import frostguard_bridge as bridge
+        from frostguard_logs import frostguard_run_loop_from_logs
+        from frostguard_workspace import any_task_executing, resolve_workspace
+
+        try:
+            app_up = bool(bridge.process_running(config) or bridge.pid_online(config))
+        except Exception:  # noqa: BLE001
+            app_up = False
+        if not app_up:
             return False
         try:
             workspace = resolve_workspace(config)
-            status = workspace_status(workspace, channel=workspace_channel(config, workspace))
-            if status.get("lockPresent") and status.get("dbPresent"):
-                return True
-            if any_task_executing(workspace):
-                return True
         except Exception:  # noqa: BLE001
             return False
-        return False
+        loop = frostguard_run_loop_from_logs(workspace)
+        if loop is not None:
+            return loop
+        try:
+            return any_task_executing(workspace)
+        except Exception:  # noqa: BLE001
+            return False
 
 
 _BACKENDS: dict[str, BotBackend] = {

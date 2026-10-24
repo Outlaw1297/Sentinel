@@ -176,6 +176,28 @@ def test_set_profile_enabled_writes_and_backs_up(tmp_path: Path):
     assert profiles[0]["active"] is False
 
 
+def test_set_profile_enabled_does_not_match_id_and_name(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Profile ("
+        "id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.execute("INSERT INTO Profile VALUES (10, 'Alpha', 1, 1)")
+    conn.execute("INSERT INTO Profile VALUES (11, '10', 1, 2)")
+    conn.commit()
+    conn.close()
+
+    result = set_profile_enabled(workspace, "10", False)
+    assert result["ok"] is True
+    assert result["updated"] == 1
+    by_id = {row["id"]: row for row in list_profiles(workspace)}
+    assert by_id["10"]["enabled"] is False
+    assert by_id["11"]["enabled"] is True
+
+
 def test_upsert_and_add_profile_for_instance(tmp_path: Path):
     reset_db_backup_state_for_tests()
     workspace = tmp_path / "ws"
@@ -200,6 +222,37 @@ def test_upsert_and_add_profile_for_instance(tmp_path: Path):
     assert by_id["40"]["name"] == "Delta"
     assert by_id["40"]["enabled"] is False
     assert by_id["40"]["instanceId"] == 5
+
+    renamed = add_profile_for_instance(workspace, instance_index=5, name="Delta-2")
+    assert renamed["ok"] is True
+    assert renamed["action"] == "update"
+    profiles = list_profiles(workspace)
+    assert len(profiles) == 1
+    assert profiles[0]["name"] == "Delta-2"
+    assert profiles[0]["instanceId"] == 5
+
+
+def test_add_profile_for_instance_reuses_emulator_number_column(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE profiles ("
+        "id INTEGER PRIMARY KEY, profile_name TEXT, enabled INTEGER, emulator_number TEXT)"
+    )
+    conn.execute("INSERT INTO profiles VALUES (7, 'Alpha', 1, '4')")
+    conn.commit()
+    conn.close()
+
+    renamed = add_profile_for_instance(workspace, instance_index=4, name="Alpha-2")
+    assert renamed["ok"] is True
+    assert renamed["action"] == "update"
+    profiles = list_profiles(workspace)
+    assert len(profiles) == 1
+    assert profiles[0]["id"] == "7"
+    assert profiles[0]["name"] == "Alpha-2"
+    assert profiles[0]["instanceId"] == 4
 
 
 def test_list_tasks_when_present(tmp_path: Path):
@@ -238,3 +291,24 @@ def test_set_task_enabled_writes_user_db(tmp_path: Path):
     assert result["enabled"] is False
     tasks = {row["id"]: row for row in list_tasks(workspace)}
     assert tasks["9"]["enabled"] is False
+
+
+def test_set_task_enabled_does_not_match_id_and_name(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Task (id INTEGER PRIMARY KEY, name TEXT, status TEXT, enabled INTEGER)"
+    )
+    conn.execute("INSERT INTO Task VALUES (9, 'Arena', 'idle', 1)")
+    conn.execute("INSERT INTO Task VALUES (10, '9', 'idle', 1)")
+    conn.commit()
+    conn.close()
+
+    result = set_task_enabled(workspace, "9", False)
+    assert result["ok"] is True
+    assert result["updated"] == 1
+    tasks = {row["id"]: row for row in list_tasks(workspace)}
+    assert tasks["9"]["enabled"] is False
+    assert tasks["10"]["enabled"] is True

@@ -89,74 +89,115 @@ def _cooldown_ok(last_iso: str | None, minutes: int) -> bool:
     return (time.time() - last) >= (minutes * 60)
 
 
-def _collect_trouble_signals(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Detect problem emulators from restore enrichment / log stats when possible."""
+def _signals_from_accounts(
+    accounts: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    from ldplayer_restore import enrich_accounts_with_restore, trouble_reasons_for_account
+
     signals: list[dict[str, Any]] = []
+    for account in accounts:
+        reasons = trouble_reasons_for_account(account, config)
+        if not reasons:
+            continue
+        signals.append(
+            {
+                "account": account.get("name"),
+                "accountId": account.get("id"),
+                "instanceIndex": account.get("instanceId"),
+                "reasons": reasons,
+            }
+        )
+
     try:
-        from account_stats import refresh_log_scan_cache
-        from ldplayer_restore import enrich_accounts_with_restore, trouble_reasons_for_account
-        from profile_accounts import list_profile_account_templates
-        from profile_discovery import resolve_selected_profile_for_root
+        enriched = enrich_accounts_with_restore(accounts, config, bot_active=False)
+        for account in enriched:
+            restore = account.get("emulatorRestore") or {}
+            if restore.get("ldMissing"):
+                signals.append(
+                    {
+                        "account": account.get("name"),
+                        "accountId": account.get("id"),
+                        "instanceIndex": account.get("instanceId"),
+                        "reasons": restore.get("troubleReasons") or ["LDPlayer instance missing"],
+                    }
+                )
+    except Exception:  # noqa: BLE001
+        pass
+    return signals
 
-        gnbots_root = resolve_gnbots_root(config)
-        profile_name = resolve_selected_profile_for_root(gnbots_root) or ""
-        if not profile_name:
-            return signals
 
-        templates = list_profile_account_templates(gnbots_root, profile_name)
-        account_ids = {str(row.get("id") or "") for row in templates if row.get("id")}
-        _global, account_stats = refresh_log_scan_cache(gnbots_root, account_ids, {})
+def _collect_gnbots_trouble_signals(config: dict[str, Any]) -> list[dict[str, Any]]:
+    from account_stats import refresh_log_scan_cache
+    from profile_accounts import list_profile_account_templates
+    from profile_discovery import resolve_selected_profile_for_root
 
-        accounts: list[dict[str, Any]] = []
-        for row in templates:
-            account_id = str(row.get("id") or "")
-            stats = account_stats.get(account_id) or {"errors": 0, "warnings": 0, "runs": 0}
-            accounts.append(
-                {
-                    "id": account_id,
-                    "name": row.get("name") or account_id,
-                    "instanceId": row.get("instanceId", -1),
-                    "restartAccount": False,
-                    "logStats": {
-                        "errorsToday": int(stats.get("errors") or 0),
-                        "warningsToday": int(stats.get("warnings") or 0),
-                        "runsToday": int(stats.get("runs") or 0),
-                    },
-                }
-            )
+    gnbots_root = resolve_gnbots_root(config)
+    profile_name = resolve_selected_profile_for_root(gnbots_root) or ""
+    if not profile_name:
+        return []
 
-        for account in accounts:
-            reasons = trouble_reasons_for_account(account, config)
-            if not reasons:
-                continue
-            signals.append(
-                {
-                    "account": account.get("name"),
-                    "accountId": account.get("id"),
-                    "instanceIndex": account.get("instanceId"),
-                    "reasons": reasons,
-                }
-            )
+    templates = list_profile_account_templates(gnbots_root, profile_name)
+    account_ids = {str(row.get("id") or "") for row in templates if row.get("id")}
+    _global, account_stats = refresh_log_scan_cache(gnbots_root, account_ids, {})
 
-        try:
-            enriched = enrich_accounts_with_restore(accounts, config, bot_active=False)
-            for account in enriched:
-                restore = account.get("emulatorRestore") or {}
-                if restore.get("ldMissing"):
-                    signals.append(
-                        {
-                            "account": account.get("name"),
-                            "accountId": account.get("id"),
-                            "instanceIndex": account.get("instanceId"),
-                            "reasons": restore.get("troubleReasons") or ["LDPlayer instance missing"],
-                        }
-                    )
-        except Exception:  # noqa: BLE001
-            pass
+    accounts: list[dict[str, Any]] = []
+    for row in templates:
+        account_id = str(row.get("id") or "")
+        stats = account_stats.get(account_id) or {"errors": 0, "warnings": 0, "runs": 0}
+        accounts.append(
+            {
+                "id": account_id,
+                "name": row.get("name") or account_id,
+                "instanceId": row.get("instanceId", -1),
+                "restartAccount": False,
+                "logStats": {
+                    "errorsToday": int(stats.get("errors") or 0),
+                    "warningsToday": int(stats.get("warnings") or 0),
+                    "runsToday": int(stats.get("runs") or 0),
+                },
+            }
+        )
+    return _signals_from_accounts(accounts, config)
+
+
+def _collect_frostguard_trouble_signals(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Trouble rows from the Frostguard workspace, not leftover GnBots profile JSON."""
+    from frostguard_workspace import list_profiles, resolve_workspace
+
+    accounts: list[dict[str, Any]] = []
+    for row in list_profiles(resolve_workspace(config)):
+        if not isinstance(row, dict):
+            continue
+        account_id = str(row.get("id") or "")
+        accounts.append(
+            {
+                "id": account_id,
+                "name": row.get("name") or account_id,
+                "instanceId": row.get("instanceId", -1),
+                "restartAccount": False,
+                "logStats": {
+                    "errorsToday": 0,
+                    "warningsToday": 0,
+                    "runsToday": 0,
+                },
+            }
+        )
+    return _signals_from_accounts(accounts, config)
+
+
+def _collect_trouble_signals(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Detect problem emulators for the active bot provider."""
+    try:
+        from bot_backend import detect_bot_provider
+
+        if detect_bot_provider(config) == "frostguard":
+            return _collect_frostguard_trouble_signals(config)
+        return _collect_gnbots_trouble_signals(config)
     except Exception as exc:  # noqa: BLE001
         _AUTOMATION_STATE["lastError"] = f"trouble scan: {exc}"
         _append_automation_log(f"trouble scan failed: {exc}")
-    return signals
+    return []
 
 
 def _maybe_stop_gnbots_for_trouble(config: dict[str, Any]) -> dict[str, Any] | None:

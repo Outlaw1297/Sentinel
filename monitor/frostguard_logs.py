@@ -82,6 +82,40 @@ def collect_frostguard_log_entries(
     return {"logs": recent, "errorLog": errors}
 
 
+_QUEUE_LOGGER = "schedule.TaskQueue"
+_QUEUE_STOP = "taskqueue stopped after worker termination"
+
+
+def frostguard_run_loop_from_logs(workspace: Path) -> bool | None:
+    """Whether ``logs/frostguard.log`` shows the automation queues still going.
+
+    Returns None when the log has no TaskQueue lines. The last TaskQueue line
+    wins: ``/stopbot`` logs "TaskQueue stopped after worker termination" and
+    leaves the command server up.
+    """
+    path = Path(workspace) / "logs" / "frostguard.log"
+    if not path.is_file():
+        return None
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > 262144:
+                handle.seek(size - 262144)
+            blob = handle.read()
+    except OSError:
+        return None
+    text = blob.decode("utf-8", errors="replace")
+    if size > 262144:
+        text = text.split("\n", 1)[-1]
+    last_queue = ""
+    for line in text.splitlines():
+        if _QUEUE_LOGGER in line:
+            last_queue = line
+    if not last_queue:
+        return None
+    return _QUEUE_STOP not in last_queue.lower()
+
+
 def frostguard_log_paths_for_reader(config: dict[str, Any], *, limit: int = 20) -> list[Path]:
     """Paths that log_reader-style helpers can tail."""
     return recent_log_paths(resolve_workspace(config), limit=limit)

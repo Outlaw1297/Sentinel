@@ -2440,30 +2440,30 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
             from frostguard_logs import collect_frostguard_log_entries
 
             frostguard_slice = build_frostguard_dashboard_slice(config)
-            fg_accounts = list(frostguard_slice.get("accounts") or [])
-            if fg_accounts:
-                accounts = fg_accounts
-                active_count = sum(1 for row in accounts if row.get("inSession"))
-                running_count = sum(1 for row in accounts if row.get("isRunning"))
-                booting_count = sum(1 for row in accounts if row.get("isBooting"))
-                enabled_count = sum(1 for row in accounts if row.get("active"))
-                try:
-                    enrich_accounts_with_restore(
-                        accounts,
-                        config,
-                        bot_active=bool(frostguard_slice.get("botActive")),
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+            # An empty workspace list is the Frostguard empty state. Do not keep
+            # GnBots profile JSON, and do not let leftover GnBots logs hide
+            # workspace account logs.
+            accounts = list(frostguard_slice.get("accounts") or [])
+            active_count = sum(1 for row in accounts if row.get("inSession"))
+            running_count = sum(1 for row in accounts if row.get("isRunning"))
+            booting_count = sum(1 for row in accounts if row.get("isBooting"))
+            enabled_count = sum(1 for row in accounts if row.get("active"))
+            try:
+                enrich_accounts_with_restore(
+                    accounts,
+                    config,
+                    bot_active=bool(frostguard_slice.get("botActive")),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 bot_active = bool(bot_backend.automation_active(config))
             except Exception:  # noqa: BLE001
                 bot_active = bool(frostguard_slice.get("botActive"))
             bot_state = "Running" if bot_active else str(frostguard_slice.get("botState") or "Idle")
-            if not recent_logs:
-                fg_logs = collect_frostguard_log_entries(config)
-                recent_logs = fg_logs.get("logs") or []
-                error_logs = fg_logs.get("errorLog") or error_logs
+            fg_logs = collect_frostguard_log_entries(config)
+            recent_logs = list(fg_logs.get("logs") or [])
+            error_logs = list(fg_logs.get("errorLog") or [])
             if not profile_name:
                 profile_name = "frostguard"
         except Exception:  # noqa: BLE001
@@ -3285,11 +3285,67 @@ async def get_session(account_id: str) -> dict[str, Any]:
     return await call_gnbots(config, method="GET", path=f"/sessions/{slot}")
 
 
+_FROSTGUARD_REBOOT_CODES = {"reboot", "/reboot", "restart", "/restart"}
+
+
+def _is_frostguard_reboot_code(run_code: str | None) -> bool:
+    return str(run_code or "").strip().lower() in _FROSTGUARD_REBOOT_CODES
+
+
+def _frostguard_reboot_account(account_id: str) -> dict[str, Any]:
+    """Restart one profile's emulator.
+
+    Bridge ``/reboot`` halts the engine and closes every enabled emulator.
+    Session Restart/Reboot is scoped to the account in the path.
+    """
+    from frostguard_workspace import list_profiles, resolve_workspace
+
+    want = str(account_id or "").strip()
+    profiles = list_profiles(resolve_workspace(config))
+    match = None
+    for row in profiles:
+        keys = {str(row.get("id") or "").strip(), str(row.get("name") or "").strip()}
+        if want and want in keys:
+            match = row
+            break
+    if match is None:
+        raise HTTPException(status_code=404, detail=f"Frostguard profile not found: {want}")
+    try:
+        index = int(match.get("instanceId", -1))
+    except (TypeError, ValueError):
+        index = -1
+    if index < 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Frostguard profile {want} has no emulator index to reboot.",
+        )
+    backend = get_emulator_backend(config)
+    try:
+        backend.quit(config, index)
+    except Exception:  # noqa: BLE001
+        # Quit can fail when the instance is already stopped; launch still restarts that slot.
+        pass
+    try:
+        backend.launch(config, index)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc).strip() or "Could not restart the Frostguard emulator.",
+        ) from exc
+    return {
+        "ok": True,
+        "provider": "frostguard",
+        "command": "reboot",
+        "accountId": str(match.get("id") or want),
+        "instanceIndex": index,
+        "scope": "account",
+    }
+
+
 def _frostguard_session_exec_response(run_code: str | None = None) -> None:
     """Frostguard has no GnBots session exec; map reboot allowlist or return 501."""
-    text = str(run_code or "").strip().lower()
-    if text in {"reboot", "/reboot", "restart", "/restart"}:
-        return  # caller may map to bridge command
+    if _is_frostguard_reboot_code(run_code):
+        return  # caller restarts that account's emulator
     raise HTTPException(
         status_code=501,
         detail=(
@@ -3328,10 +3384,14 @@ async def _frostguard_bridge_text_command(text: str) -> dict[str, Any]:
 async def get_session_run_codes(account_id: str, code: str | None = None) -> dict[str, Any]:
     if detect_bot_provider(config) == "frostguard":
         _frostguard_session_exec_response(code)
-        if code:
-            mapped = "/reboot" if str(code).strip().lower() in {"reboot", "/reboot", "restart", "/restart"} else None
-            if mapped:
-                return await _frostguard_bridge_text_command(mapped)
+        if code and _is_frostguard_reboot_code(code):
+            # Same epoch bump as POST session exec: an in-flight rebuild must not
+            # recache pre-reboot botActive.
+            invalidate_dashboard_cache()
+            try:
+                return await asyncio.to_thread(_frostguard_reboot_account, account_id)
+            finally:
+                invalidate_dashboard_cache()
         raise HTTPException(
             status_code=501,
             detail="Frostguard session exec list is unavailable; use /api/frostguard/command.",
@@ -3347,13 +3407,8 @@ async def post_session_run_code(account_id: str, body: SessionExecRequest) -> di
     try:
         if detect_bot_provider(config) == "frostguard":
             _frostguard_session_exec_response(body.run_code)
-            mapped = (
-                "/reboot"
-                if str(body.run_code or "").strip().lower() in {"reboot", "/reboot", "restart", "/restart"}
-                else None
-            )
-            if mapped:
-                return await _frostguard_bridge_text_command(mapped)
+            if _is_frostguard_reboot_code(body.run_code):
+                return await asyncio.to_thread(_frostguard_reboot_account, account_id)
             raise HTTPException(status_code=501, detail="Frostguard session exec unavailable.")
         slot = await resolve_session_slot(config, account_id)
         return await call_gnbots(
@@ -3375,13 +3430,8 @@ async def run_session_code(account_id: str, run_code: str) -> dict[str, Any]:
     try:
         if detect_bot_provider(config) == "frostguard":
             _frostguard_session_exec_response(run_code)
-            mapped = (
-                "/reboot"
-                if str(run_code).strip().lower() in {"reboot", "/reboot", "restart", "/restart"}
-                else None
-            )
-            if mapped:
-                return await _frostguard_bridge_text_command(mapped)
+            if _is_frostguard_reboot_code(run_code):
+                return await asyncio.to_thread(_frostguard_reboot_account, account_id)
             raise HTTPException(status_code=501, detail="Frostguard session exec unavailable.")
         slot = await resolve_session_slot(config, account_id)
         return await call_gnbots(

@@ -67,7 +67,7 @@ def test_dashboard_slice_accounts_and_issues(tmp_path: Path):
     assert accounts["10"]["isRunning"] is True
     assert accounts["11"]["inSession"] is False
     assert any(issue.get("title") == "Stuck" for issue in accounts["10"]["issues"])
-    assert slice_payload["botActive"] is True  # lock + db
+    assert slice_payload["botActive"] is False  # lock + db is not a live run loop
 
 
 def test_command_router_frostguard_path(client, tmp_path: Path):
@@ -143,3 +143,96 @@ def test_screenshots_list_frostguard(client, tmp_path: Path):
     assert payload["provider"] == "frostguard"
     assert payload["count"] == 1
     assert payload["screenshots"][0]["accountId"] == "10"
+
+
+def test_dashboard_empty_frostguard_replaces_gnbots_accounts_and_logs(client, tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Profile (id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.commit()
+    conn.close()
+    logs = workspace / "logs"
+    logs.mkdir()
+    (logs / "account_alpha.log").write_text(
+        "2026-10-24 00:00:01 INFO [Alpha] frostguard line\n",
+        encoding="utf-8",
+    )
+    cfg = {
+        "bot_provider": "frostguard",
+        "frostguard_workspace": str(workspace),
+        "frostguard_channel": "stable",
+        "include_resources": False,
+        "dashboard_cache_seconds": 0,
+    }
+    gnbots_accounts = [
+        {
+            "id": "gn-1",
+            "name": "Leftover",
+            "active": True,
+            "instanceId": 9,
+        }
+    ]
+    with patch.object(app_module, "config", cfg):
+        with patch.object(app_module, "load_profile_dashboard_maps", return_value=(gnbots_accounts, {}, {}, {})):
+            with patch.object(app_module, "read_dashboard_logs", return_value=([{"message": "gnbots stale"}], [])):
+                with patch("frostguard_bridge.pid_online", return_value=True):
+                    with patch("frostguard_bridge.process_running", return_value=True):
+                        with patch("emulator_backend.get_emulator_backend") as mock_get:
+                            backend = MagicMock()
+                            backend.running_indexes.return_value = set()
+                            mock_get.return_value = backend
+                            payload = app_module.build_dashboard_payload(cfg, None, "offline")
+    assert payload["accounts"] == []
+    assert payload["botProvider"] == "frostguard"
+    assert payload["botActive"] is False
+    assert payload["summary"]["totalAccounts"] == 0
+    assert any("frostguard line" in str(row.get("message") or row.get("raw") or "") for row in payload["logs"])
+    assert all("gnbots stale" not in str(row) for row in payload["logs"])
+
+
+def test_session_reboot_is_per_account_and_invalidates_cache(client, tmp_path: Path):
+    workspace = _make_workspace(tmp_path)
+    cfg = {
+        "bot_provider": "frostguard",
+        "frostguard_workspace": str(workspace),
+        "dashboard_cache_seconds": 60,
+    }
+    epoch_before = app_module.dashboard_cache_epoch()
+    mock_backend = MagicMock()
+    with patch.object(app_module, "config", cfg):
+        with patch.object(app_module, "get_emulator_backend", return_value=mock_backend):
+            with patch("frostguard_bridge.post_command") as mocked_post:
+                response = client.get("/api/sessions/10/exec", params={"code": "reboot"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == "account"
+    assert body["accountId"] == "10"
+    assert body["instanceIndex"] == 2
+    mock_backend.quit.assert_called_once()
+    assert mock_backend.quit.call_args.args[1] == 2
+    mock_backend.launch.assert_called_once()
+    assert mock_backend.launch.call_args.args[1] == 2
+    mocked_post.assert_not_called()
+    assert app_module.dashboard_cache_epoch() >= epoch_before + 2
+
+
+def test_session_run_reboot_does_not_use_global_bridge(client, tmp_path: Path):
+    workspace = _make_workspace(tmp_path)
+    cfg = {
+        "bot_provider": "frostguard",
+        "frostguard_workspace": str(workspace),
+    }
+    mock_backend = MagicMock()
+    with patch.object(app_module, "config", cfg):
+        with patch.object(app_module, "get_emulator_backend", return_value=mock_backend):
+            with patch("frostguard_bridge.post_command") as mocked_post:
+                response = client.post("/api/sessions/11/run/restart")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accountId"] == "11"
+    assert body["instanceIndex"] == 3
+    mocked_post.assert_not_called()
+    assert mock_backend.launch.call_args.args[1] == 3
