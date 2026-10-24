@@ -16,7 +16,7 @@ Full feature list, compatibility matrix, and how-to: **[`monitor/README.md`](mon
 - **Watch the farm** — accounts, screenshots, logs, host resources, GnBots online/offline
 - **Control GnBots** — launch/close on the host; start/stop sessions and emulators via the Remote API
 - **Restore LDPlayer** — `.ldbk` backups, fix recommended emulator settings, provision new accounts
-- **Update Whiteout APKs** — single or bulk; bulk work runs as background jobs (safe to refresh)
+- **Update Whiteout APKs** — cache sync + verified install (no false success); bulk work runs as background jobs (safe to refresh)
 - **Automate recovery** — optional stuck-screen learning (event page → Back / restart / warn), auto-stop on problem emulators, auto-APK when newer, issue reports + fix suggestions ([`monitor/docs/AUTOMATION.md`](monitor/docs/AUTOMATION.md))
 - **Notify & reach remotely** — browser web push; expose `:8787` through your own tunnel/proxy
 

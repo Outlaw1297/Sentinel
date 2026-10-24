@@ -35,8 +35,10 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 
 ### Whiteout APK updates
 - Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (defaults to `apk20`, ABI/package auto-filled from LDPlayer) so farms are not stuck waiting for GnBots to refresh the package
-- Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk` and install / update selected emulators
-- **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
+- `apk_source_policy` (`auto` by default) keeps the **newer** of GnBots vs third-party by `versionName` (not Content-Length alone), so an APK20 XAPK cache is not overwritten mid-batch by an older GnBots zip
+- Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk`; **Download** fills the local cache only, then Restore auto-queues **Update selected** when the bot is stopped and instances are selected
+- Install jobs **verify** device `versionName` (force-stop → uninstall → install → retry once; fail if still old or the in-game Update dialog remains) — no silent false success
+- **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue); partial failures list which indexes failed
 - Choose “instances to update” once; reuse for manual bulk update or automation
 
 ### Accounts & bot configuration (`/settings`)
@@ -154,8 +156,9 @@ Expect GnBots offline and screenshot **503**s — that is normal without Windows
 
 1. Stop GnBots
 2. On **Emulator Restore**, select instances (or use your saved “instances to update”)
-3. Click **Update APK** — a background job starts immediately
-4. Watch progress on the same tab; refresh is safe; the UI reconnects to the job
+3. Optionally **Check / Download latest APK** to refresh the cache (Download auto-queues install when unlocked + selected)
+4. Or click **Update selected** / **Force update selected** — a background job starts immediately
+5. Watch progress on the same tab; refresh is safe; the UI reconnects to the job. If any index fails version verification, Force update those indexes alone
 
 ### Turn on automation
 
@@ -190,7 +193,7 @@ First run copies `config.example.json` → `config.json`. Important groups:
 | Group | Keys (examples) | Purpose |
 |-------|-----------------|---------|
 | Paths / API | `gnbots_api_url`, `gnbots_root`, `gnbots_exe`, `ldplayer_backups_dir`, `ldplayer_path` | Find GnBots + LDPlayer |
-| Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
+| Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_source_policy`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
 | Dashboard | `dashboard_host`, `dashboard_port`, refresh/cache intervals, screenshot interval | UI polling behavior |
 | Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
 | Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
