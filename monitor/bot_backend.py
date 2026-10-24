@@ -39,7 +39,7 @@ FROSTGUARD_CAPABILITIES = BotCapabilities(
     supports_remote_api=False,
     supports_session_exec=False,
     supports_settings_api=False,
-    supports_screenshots_api=False,
+    supports_screenshots_api=True,
     supports_action_editor=False,
     supports_profile_json=False,
 )
@@ -59,6 +59,10 @@ class BotBackend(Protocol):
     def status_summary(self, config: dict[str, Any]) -> dict[str, Any]: ...
 
     def list_accounts(self, config: dict[str, Any]) -> list[dict[str, Any]]: ...
+
+    def run_global_command(self, config: dict[str, Any], command_id: str) -> dict[str, Any]: ...
+
+    def automation_active(self, config: dict[str, Any]) -> bool: ...
 
 
 class GnBotsBackend:
@@ -162,6 +166,27 @@ class GnBotsBackend:
             )
         return accounts
 
+    def run_global_command(self, config: dict[str, Any], command_id: str) -> dict[str, Any]:
+        """GnBots path stays on the Remote API; callers should use call_gnbots."""
+        return {
+            "ok": False,
+            "provider": self.provider_id,
+            "command": command_id,
+            "message": "GnBots global commands go through the Remote API (call_gnbots).",
+        }
+
+    def automation_active(self, config: dict[str, Any]) -> bool:
+        """True when GnBots process/API indicates an active bot run."""
+        try:
+            from host_status import gnbots_api_status
+
+            api = gnbots_api_status(config)
+            if api.get("healthy") and self.is_process_running(config):
+                return True
+            return bool(api.get("healthy"))
+        except Exception:  # noqa: BLE001
+            return self.is_process_running(config)
+
 
 class FrostguardBackend:
     provider_id = "frostguard"
@@ -220,6 +245,92 @@ class FrostguardBackend:
         from frostguard_workspace import list_profiles, resolve_workspace
 
         return list_profiles(resolve_workspace(config))
+
+    def run_global_command(self, config: dict[str, Any], command_id: str) -> dict[str, Any]:
+        """Map dashboard Start/Stop commands onto Frostguard bridge + emulator quit."""
+        import frostguard_bridge as bridge
+
+        resolved = str(command_id or "").strip().lower()
+        if resolved == "play":
+            resolved = "start"
+
+        if resolved in {"start"}:
+            result = bridge.start_bot(config)
+            return {
+                "ok": bool(result.get("ok")),
+                "provider": self.provider_id,
+                "command": resolved,
+                "data": result,
+                "message": result.get("message") or result.get("error") or "startbot",
+            }
+        if resolved in {"stop", "stopall"}:
+            result = bridge.stop_bot(config)
+            return {
+                "ok": bool(result.get("ok")),
+                "provider": self.provider_id,
+                "command": resolved,
+                "data": result,
+                "message": result.get("message") or result.get("error") or "stopbot",
+            }
+        if resolved == "stopemulators":
+            try:
+                from emulator_backend import get_emulator_backend
+
+                get_emulator_backend(config).quit_all(config)
+                return {
+                    "ok": True,
+                    "provider": self.provider_id,
+                    "command": resolved,
+                    "message": "Emulator quit_all requested.",
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "provider": self.provider_id,
+                    "command": resolved,
+                    "message": str(exc).strip() or exc.__class__.__name__,
+                }
+        return {
+            "ok": False,
+            "provider": self.provider_id,
+            "command": resolved,
+            "message": f"Unknown Frostguard command: {command_id}",
+        }
+
+    def automation_active(self, config: dict[str, Any]) -> bool:
+        """botActive signal: bridge pid online, workspace lock, or an executing task."""
+        import frostguard_bridge as bridge
+        from frostguard_workspace import (
+            any_task_executing,
+            resolve_workspace,
+            workspace_channel,
+            workspace_status,
+        )
+
+        if bridge.pid_online(config):
+            return True
+        if bridge.process_running(config):
+            # Process alone is weak; require lock or an executing task too.
+            try:
+                workspace = resolve_workspace(config)
+                status = workspace_status(workspace, channel=workspace_channel(config, workspace))
+                if status.get("lockPresent"):
+                    return True
+                if any_task_executing(workspace):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+        try:
+            workspace = resolve_workspace(config)
+            status = workspace_status(workspace, channel=workspace_channel(config, workspace))
+            if status.get("lockPresent") and status.get("dbPresent"):
+                return True
+            if any_task_executing(workspace):
+                return True
+        except Exception:  # noqa: BLE001
+            return False
+        return False
 
 
 _BACKENDS: dict[str, BotBackend] = {

@@ -47,6 +47,51 @@ def test_frostguard_capabilities_conservative():
     assert caps == FROSTGUARD_CAPABILITIES
     assert caps.supports_remote_api is False
     assert caps.supports_action_editor is False
+    assert caps.supports_screenshots_api is True
+
+
+def test_frostguard_run_global_command_start_stop():
+    config = {"bot_provider": "frostguard"}
+    backend = FrostguardBackend()
+    with patch("frostguard_bridge.start_bot", return_value={"ok": True}) as start:
+        result = backend.run_global_command(config, "start")
+    assert result["ok"] is True
+    assert result["command"] == "start"
+    start.assert_called_once()
+
+    with patch("frostguard_bridge.stop_bot", return_value={"ok": True}) as stop:
+        result = backend.run_global_command(config, "stopall")
+    assert result["ok"] is True
+    assert result["command"] == "stopall"
+    stop.assert_called_once()
+
+
+def test_frostguard_run_global_command_stopemulators():
+    config = {"bot_provider": "frostguard"}
+    backend = FrostguardBackend()
+    mock_emu = MagicMock()
+    with patch("emulator_backend.get_emulator_backend", return_value=mock_emu):
+        result = backend.run_global_command(config, "stopemulators")
+    assert result["ok"] is True
+    mock_emu.quit_all.assert_called_once_with(config)
+
+
+def test_frostguard_automation_active_lock_and_pid(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "frostguard.db").write_bytes(b"")
+    (workspace / "frostguard.lock").write_text("1", encoding="utf-8")
+    config = {
+        "bot_provider": "frostguard",
+        "frostguard_workspace": str(workspace),
+        "frostguard_channel": "stable",
+        "frostguard_bridge_mode": "localhost",
+    }
+    with patch("frostguard_bridge.pid_online", return_value=True):
+        assert FrostguardBackend().automation_active(config) is True
+    with patch("frostguard_bridge.pid_online", return_value=False):
+        with patch("frostguard_bridge.process_running", return_value=False):
+            assert FrostguardBackend().automation_active(config) is True  # lock + db
 
 
 def test_auto_prefers_gnbots_when_api_up():

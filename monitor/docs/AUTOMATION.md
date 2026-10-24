@@ -43,12 +43,13 @@ When enabled (`auto_update_apks`) and **GnBots is stopped**, Sentinel periodical
    - Optional **third-party catalog** (`apk_third_party_provider`, for example `apk20`) so updates are not blocked when GnBots has not refreshed its package yet
 2. Updates the instances selected under **Emulator Restore → Instances to update**
 
-Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk` returns a job immediately; poll `/api/emulators/apk/jobs/{id}`). Use **Check for newer APK** / **Download latest APK** on the Restore tab to sync either source.
+Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk` returns a job immediately; poll `/api/emulators/apk/jobs/{id}`). Use **Check for newer APK** / **Download latest APK** on the Restore tab to sync either source into the **local APK cache** — that does not by itself change what is installed on emulators. After a successful download, Restore auto-queues **Update selected instances** when the bot is stopped and instances are selected; otherwise use **Update selected/all** or **Force update selected**. Install jobs now fail if the emulator stays on an older `versionName` or still shows the in-game Update dialog.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `auto_update_apks` | `false` | Master toggle |
 | `auto_update_apks_check_minutes` | `30` | How often to check |
+| `apk_source_policy` | `auto` | `auto` = keep whichever of GnBots/`apk20` has the newer `versionName`; `gnbots` or `third_party` forces that source |
 | `apk_third_party_provider` | `apk20` | Defaults on; set `off` to use only the GnBots URL/local cache |
 | `apk_third_party_package` | auto (`com.gof.global`) | Auto-filled from the Whiteout APK cache when blank |
 | `apk_third_party_abi` | auto from LDPlayer | Auto-filled from GnBots `LDPath64`/`LDPath32` (or install path); override only if needed |

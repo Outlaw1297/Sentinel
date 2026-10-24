@@ -282,9 +282,18 @@ def check_apk20_remote(config: dict[str, Any]) -> dict[str, Any]:
     if variant is None and variants:
         variant = _apk20_pick_variant(variants, abi=abi)
     if variant is None and variants:
+        available = sorted(
+            {
+                str(row.get("architecture") or row.get("variantId") or "?").strip()
+                for row in variants
+                if isinstance(row, dict)
+            }
+        )
+        available_text = ", ".join(available) if available else "none"
         raise RuntimeError(
             f"APK20 catalog has no variant matching ABI {abi} for {package} "
-            f"(versionCode={version_code_int})."
+            f"(versionCode={version_code_int}). Available architectures: {available_text}. "
+            f"Set apk_third_party_abi to a matching ABI (Whiteout on APK20 is currently arm64-v8a only)."
         )
 
     if variant:
@@ -459,6 +468,14 @@ def stage_xapk_into_apk_dir(
 ) -> dict[str, Any]:
     """Extract an XAPK and stage GnBots-compatible split filenames into apk_dir."""
     apk_dir.mkdir(parents=True, exist_ok=True)
+    # Drop previous split cache so a partial XAPK cannot mix with older arch/pack APKs.
+    for stale_name in ("main.apk", "arch.apk", "pack.apk"):
+        stale_path = apk_dir / stale_name
+        if stale_path.is_file():
+            try:
+                stale_path.unlink()
+            except OSError:
+                pass
     staged: dict[str, str] = {}
     manifest: dict[str, Any] = {}
 
@@ -613,17 +630,22 @@ def sync_third_party_apk(config: dict[str, Any], *, force: bool = False) -> dict
             apk_ready=True,
         )
         invalidate_apk_inspect_cache()
+        local_version = staged.get("versionName") or remote.get("remoteVersion")
+        staged_names = ", ".join(sorted((staged.get("files") or {}).keys()))
         return {
             **remote,
             "ok": True,
             "downloaded": True,
             "synced": True,
             "updateAvailable": False,
-            "localVersion": staged.get("versionName") or remote.get("remoteVersion"),
+            "installRequired": True,
+            "localVersion": local_version,
             "stagedFiles": staged.get("files"),
             "message": (
                 f"Downloaded {remote.get('remoteVersion')} from APK20 and staged "
-                f"{', '.join(sorted((staged.get('files') or {}).keys()))}."
+                f"{staged_names} into the APK cache. "
+                f"Cache sync does not install on emulators — use Update selected/all "
+                f"instances (or Force update) to push {local_version}."
             ),
         }
     finally:

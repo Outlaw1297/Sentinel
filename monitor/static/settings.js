@@ -2495,6 +2495,79 @@ async function refreshRemoteApkStatusQuiet() {
   }
 }
 
+async function queueSelectedApkUpdate({ skipConfirm = false, force = false } = {}) {
+  if (restoreLocked()) {
+    setRestorePageStatus("Stop the bot before updating emulator APKs.", "warn");
+    return false;
+  }
+
+  const indexes = selectedInstanceIndexes();
+  if (!indexes.length) {
+    setRestorePageStatus("Select at least one emulator instance to update.", "warn");
+    return false;
+  }
+
+  const outdatedIndexes = indexesWithApkUpdatesForSelectedInstances();
+  const targetIndexes = force ? indexes : outdatedIndexes.length ? outdatedIndexes : indexes;
+
+  if (
+    !skipConfirm &&
+    !window.confirm(
+      [
+        force
+          ? `Force reinstall Whiteout Survival on ${indexes.length} selected instance${indexes.length === 1 ? "" : "s"}?`
+          : `Update Whiteout Survival on ${indexes.length} selected emulator instance${indexes.length === 1 ? "" : "s"}?`,
+        `Instances: ${targetIndexes.map((index) => `#${index}`).join(", ")}`,
+        "",
+        force
+          ? "This bypasses version checks and reinstalls from the APK cache."
+          : outdatedIndexes.length
+            ? `Only instances needing an update will be touched (${outdatedIndexes.length}).`
+            : "All selected instances will be checked and updated if needed.",
+        "Each instance update applies to every account on that emulator.",
+        "Each emulator will be started if needed. This can take several minutes per instance.",
+        "You can refresh this page — progress continues in the background.",
+      ].join("\n"),
+    )
+  ) {
+    return false;
+  }
+
+  setRestorePageStatus(
+    `Queuing Whiteout Survival ${force ? "force " : ""}update on ${targetIndexes.length} instance(s)…`,
+    "pending",
+    5,
+  );
+
+  const query = force
+    ? `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&force=1&only_outdated=0&check_game_update=0`
+    : `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&only_outdated=1&check_game_update=1`;
+
+  try {
+    const response = await fetch(query, { method: "POST" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.detail || payload.message || `HTTP ${response.status}`;
+      throw new Error(
+        typeof detail === "string"
+          ? detail
+          : force
+            ? "Could not force update selected instance APKs."
+            : "Could not update selected instance APKs.",
+      );
+    }
+    await followApkUpdateJob(payload.job || payload, { busyMode: force ? "force" : "selected" });
+    return true;
+  } catch (error) {
+    clearApkUpdateBusyFlags();
+    setRestorePageStatus(
+      error.message || (force ? "Failed to force update selected instance APKs." : "Failed to update selected instance APKs."),
+      "error",
+    );
+    return false;
+  }
+}
+
 async function checkRemoteApk({ sync = false } = {}) {
   checkRemoteApkBusy = true;
   renderRestoreSummary(restoreRows);
@@ -2514,7 +2587,27 @@ async function checkRemoteApk({ sync = false } = {}) {
     renderRestoreSummary(restoreRows);
     renderRestoreInstanceList(restoreRows);
     if (sync && payload.downloaded) {
-      setRestorePageStatus(`Downloaded Whiteout APK ${payload.localVersion || ""}.`.trim(), "ok");
+      const versionLabel = payload.localVersion || payload.remoteVersion || "";
+      // Cache sync ≠ emulator install. Push to selected instances when possible.
+      if (restoreLocked()) {
+        setRestorePageStatus(
+          `Downloaded ${versionLabel} into the APK cache only. Stop the bot, then Update selected instances to install on emulators.`.trim(),
+          "warn",
+        );
+      } else if (!selectedInstanceIndexes().length) {
+        setRestorePageStatus(
+          `Downloaded ${versionLabel} into the APK cache only. Select emulators and click Update selected instances to install.`.trim(),
+          "warn",
+        );
+      } else {
+        checkRemoteApkBusy = false;
+        setRestorePageStatus(
+          `Downloaded ${versionLabel} into cache. Installing on selected emulators…`.trim(),
+          "pending",
+        );
+        await queueSelectedApkUpdate({ skipConfirm: true, force: false });
+        return;
+      }
     } else if (payload.localAheadOfRemote) {
       setRestorePageStatus(
         `Local split APKs are ${payload.localVersion || "newer"}; game.zip is still ${payload.remoteVersion || "older"}. Use Update selected instances — do not download the zip.`,
@@ -2523,11 +2616,14 @@ async function checkRemoteApk({ sync = false } = {}) {
     } else if (payload.updateAvailable) {
       setRestorePageStatus("A newer Whiteout game.zip is available on the GnBots server.", "warn");
     } else {
+      const thirdPartyError = payload.thirdParty?.error;
       setRestorePageStatus(
-        payload.localVersion
-          ? `Local APK cache is ${payload.localVersion}${payload.remoteVersion ? `; remote zip is ${payload.remoteVersion}` : ""}.`
-          : "Local Whiteout APK cache matches the remote source.",
-        "ok",
+        thirdPartyError
+          ? `Local APK cache is ${payload.localVersion || "ready"}; third-party check failed: ${thirdPartyError}`
+          : payload.localVersion
+            ? `Local APK cache is ${payload.localVersion}${payload.remoteVersion ? `; remote is ${payload.remoteVersion}` : ""}. Download updates the cache only — use Update selected instances to install on emulators.`
+            : "Local Whiteout APK cache matches the remote source.",
+        thirdPartyError ? "warn" : "ok",
       );
     }
   } catch (error) {
@@ -2539,101 +2635,11 @@ async function checkRemoteApk({ sync = false } = {}) {
 }
 
 async function updateSelectedInstanceApks() {
-  if (restoreLocked()) {
-    setRestorePageStatus("Stop the bot before updating emulator APKs.", "warn");
-    return;
-  }
-
-  const indexes = selectedInstanceIndexes();
-  if (!indexes.length) {
-    setRestorePageStatus("Select at least one emulator instance to update.", "warn");
-    return;
-  }
-
-  const outdatedIndexes = indexesWithApkUpdatesForSelectedInstances();
-  const targetIndexes = outdatedIndexes.length ? outdatedIndexes : indexes;
-
-  if (
-    !window.confirm(
-      [
-        `Update Whiteout Survival on ${indexes.length} selected emulator instance${indexes.length === 1 ? "" : "s"}?`,
-        `Instances: ${targetIndexes.map((index) => `#${index}`).join(", ")}`,
-        "",
-        outdatedIndexes.length
-          ? `Only instances needing an update will be touched (${outdatedIndexes.length}).`
-          : "All selected instances will be checked and updated if needed.",
-        "Each instance update applies to every account on that emulator.",
-        "Each emulator will be started if needed. This can take several minutes per instance.",
-        "You can refresh this page — progress continues in the background.",
-      ].join("\n"),
-    )
-  ) {
-    return;
-  }
-
-  setRestorePageStatus(`Queuing Whiteout Survival update on ${targetIndexes.length} instance(s)…`, "pending", 5);
-
-  try {
-    const response = await fetch(
-      `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&only_outdated=1&check_game_update=1`,
-      { method: "POST" },
-    );
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = payload.detail || payload.message || `HTTP ${response.status}`;
-      throw new Error(typeof detail === "string" ? detail : "Could not update selected instance APKs.");
-    }
-    await followApkUpdateJob(payload.job || payload, { busyMode: "selected" });
-  } catch (error) {
-    clearApkUpdateBusyFlags();
-    setRestorePageStatus(error.message || "Failed to update selected instance APKs.", "error");
-  }
+  await queueSelectedApkUpdate({ skipConfirm: false, force: false });
 }
 
 async function forceUpdateSelectedApks() {
-  if (restoreLocked()) {
-    setRestorePageStatus("Stop the bot before updating emulator APKs.", "warn");
-    return;
-  }
-
-  const indexes = selectedInstanceIndexes();
-  if (!indexes.length) {
-    setRestorePageStatus("Select at least one emulator instance to force update.", "warn");
-    return;
-  }
-
-  if (
-    !window.confirm(
-      [
-        `Force reinstall Whiteout Survival on ${indexes.length} selected instance${indexes.length === 1 ? "" : "s"}?`,
-        `Instances: ${indexes.map((index) => `#${index}`).join(", ")}`,
-        "",
-        "This bypasses version checks and reinstalls from the APK cache.",
-        "Each emulator will be started if needed. This can take several minutes per instance.",
-        "You can refresh this page — progress continues in the background.",
-      ].join("\n"),
-    )
-  ) {
-    return;
-  }
-
-  setRestorePageStatus(`Queuing force update on ${indexes.length} instance(s)…`, "pending", 5);
-
-  try {
-    const response = await fetch(
-      `/api/emulators/update-apk?scope=selected&indexes=${encodeURIComponent(indexes.join(","))}&force=1&only_outdated=0&check_game_update=0`,
-      { method: "POST" },
-    );
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = payload.detail || payload.message || `HTTP ${response.status}`;
-      throw new Error(typeof detail === "string" ? detail : "Could not force update selected instance APKs.");
-    }
-    await followApkUpdateJob(payload.job || payload, { busyMode: "force" });
-  } catch (error) {
-    clearApkUpdateBusyFlags();
-    setRestorePageStatus(error.message || "Failed to force update selected instance APKs.", "error");
-  }
+  await queueSelectedApkUpdate({ skipConfirm: false, force: true });
 }
 
 async function updateAllApks() {
@@ -6135,7 +6141,8 @@ async function loadUpdateStatus(force = false) {
     if (!response.ok) throw new Error(body.detail || "Update check failed.");
     const versionLabel = body.localVersion ? `v${body.localVersion}` : "";
     const local = [versionLabel, body.localCommitShort].filter(Boolean).join(" ") || "unknown";
-    const remote = body.remoteCommitShort || "unknown";
+    const remoteVersionLabel = body.remoteVersion ? `v${body.remoteVersion}` : "";
+    const remote = [remoteVersionLabel, body.remoteCommitShort].filter(Boolean).join(" ") || "unknown";
     summary.textContent = body.updateAvailable
       ? `Update available: ${local} → ${remote}${body.remoteMessage ? ` — ${body.remoteMessage}` : ""}`
       : `Up to date (${local}) via ${body.updateMode || "release"}.`;
@@ -6182,15 +6189,26 @@ function renderAutomationToggles(status, config) {
       checked: Boolean(cfg.auto_update_apks),
     },
   ];
-  els.automationToggles.innerHTML = fields
-    .map(
-      (field) => `
+  const sourcePolicy = String(cfg.apk_source_policy || "auto").toLowerCase();
+  els.automationToggles.innerHTML =
+    fields
+      .map(
+        (field) => `
     <label class="automation-toggle-row">
       <input type="checkbox" data-automation-key="${field.key}" ${field.checked ? "checked" : ""}>
       <span>${escapeHtml(field.label)}</span>
     </label>`,
-    )
-    .join("");
+      )
+      .join("") +
+    `
+    <label class="automation-toggle-row automation-select-row">
+      <span>APK source policy</span>
+      <select data-automation-key="apk_source_policy">
+        <option value="auto" ${sourcePolicy === "auto" ? "selected" : ""}>Auto — newer of GnBots / third-party</option>
+        <option value="third_party" ${sourcePolicy === "third_party" || sourcePolicy === "apk20" ? "selected" : ""}>Force third-party (APK20)</option>
+        <option value="gnbots" ${sourcePolicy === "gnbots" ? "selected" : ""}>Force GnBots game.zip</option>
+      </select>
+    </label>`;
 
   if (els.automationMeta) {
     const state = status?.state || {};
@@ -6334,15 +6352,21 @@ function renderAssistantSuggestions(payload) {
 }
 
 async function saveAutomationToggle(key, enabled) {
+  await saveAutomationConfigValue(key, enabled ? "true" : "false");
+  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: enabled };
+}
+
+async function saveAutomationConfigValue(key, value) {
   const response = await fetch(
-    `/api/monitor-config/${encodeURIComponent(key)}/update?value=${encodeURIComponent(enabled ? "true" : "false")}`,
+    `/api/monitor-config/${encodeURIComponent(key)}/update?value=${encodeURIComponent(String(value))}`,
   );
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = body.detail || body.error || response.statusText;
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
-  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: enabled };
+  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: value };
+  return body;
 }
 
 async function loadAutomationTab() {
@@ -6415,6 +6439,20 @@ els.automationReportDays?.addEventListener("change", () => {
 });
 
 els.automationToggles?.addEventListener("change", async (event) => {
+  const select = event.target.closest("select[data-automation-key]");
+  if (select) {
+    const key = select.dataset.automationKey;
+    const previous = currentMonitorConfig?.[key] || "auto";
+    try {
+      setAutomationPageStatus(`Saving ${key}…`, "pending");
+      await saveAutomationConfigValue(key, select.value);
+      setAutomationPageStatus(`Saved ${key}.`, "ok");
+    } catch (error) {
+      select.value = previous;
+      setAutomationPageStatus(error.message || "Could not save automation setting.", "error");
+    }
+    return;
+  }
   const input = event.target.closest("input[data-automation-key]");
   if (!input) return;
   const key = input.dataset.automationKey;

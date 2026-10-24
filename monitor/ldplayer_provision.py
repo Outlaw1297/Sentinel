@@ -261,7 +261,13 @@ def _provision_worker(
         )
         _append_provision_log(f"[{job_id}] installing apk on index={index}")
         wait_for_android_boot(ldconsole, index)
-        install_output = install_whiteout_apk(ldconsole, index, apk_paths)
+        package_name = str(apk_info.get("packageName") or "com.gof.global")
+        install_output = install_whiteout_apk(
+            ldconsole,
+            index,
+            apk_paths,
+            package_name=package_name,
+        )
         ensure_ldplayer_instance_stopped(ldconsole, index, run_ldconsole)
         installed_version = str(apk_info.get("versionName") or "").strip() or None
         if installed_version:
@@ -277,32 +283,72 @@ def _provision_worker(
                 f"[{job_id}] persisted installed apk version {installed_version} for index={index}"
             )
 
-        _set_job(job_id, status="adding-profile", message="Adding account to GnBots profile…")
-        account_record = _build_account_from_clone_source(
-            config,
-            profile_name,
-            source_type=source_type,
-            source_id=source_id,
-            account_name=account_name,
-            instance_id=index,
-        )
-        created = append_profile_account(config, profile_name, account_record)
+        from bot_backend import detect_bot_provider
 
-        finished_at = datetime.now(timezone.utc).isoformat()
-        message = (
-            f"Created LDPlayer instance {index} ({account_name}), installed Whiteout Survival, "
-            f"and added profile account {created['id']}."
-        )
-        _set_job(
-            job_id,
-            status="completed",
-            message=message,
-            finishedAt=finished_at,
-            account=created,
-            settingsResult=settings_result,
-            apkInfo={"versionName": apk_info.get("versionName"), "output": install_output[:500]},
-        )
-        _append_provision_log(f"[{job_id}] completed index={index} account={created['id']}")
+        bot_provider = detect_bot_provider(config)
+        if bot_provider == "frostguard":
+            _set_job(
+                job_id,
+                status="adding-profile",
+                message="Adding profile to Frostguard workspace database…",
+            )
+            from frostguard_workspace import add_profile_for_instance, resolve_workspace
+
+            workspace = resolve_workspace(config)
+            created = add_profile_for_instance(
+                workspace,
+                instance_index=index,
+                name=account_name,
+            )
+            if not created.get("ok"):
+                raise RuntimeError(
+                    created.get("message")
+                    or "Failed to insert Frostguard profile row into workspace DB."
+                )
+            account_id = created.get("profileId") or created.get("id") or account_name
+            finished_at = datetime.now(timezone.utc).isoformat()
+            message = (
+                f"Created LDPlayer instance {index} ({account_name}), installed Whiteout Survival, "
+                f"and added Frostguard workspace profile {account_id}."
+            )
+            _set_job(
+                job_id,
+                status="completed",
+                message=message,
+                finishedAt=finished_at,
+                account={"id": account_id, "name": account_name, "instanceId": index, "source": "frostguard"},
+                settingsResult=settings_result,
+                apkInfo={"versionName": apk_info.get("versionName"), "output": install_output[:500]},
+                frostguardProfile=created,
+            )
+            _append_provision_log(f"[{job_id}] completed index={index} frostguard_profile={account_id}")
+        else:
+            _set_job(job_id, status="adding-profile", message="Adding account to GnBots profile…")
+            account_record = _build_account_from_clone_source(
+                config,
+                profile_name,
+                source_type=source_type,
+                source_id=source_id,
+                account_name=account_name,
+                instance_id=index,
+            )
+            created = append_profile_account(config, profile_name, account_record)
+
+            finished_at = datetime.now(timezone.utc).isoformat()
+            message = (
+                f"Created LDPlayer instance {index} ({account_name}), installed Whiteout Survival, "
+                f"and added profile account {created['id']}."
+            )
+            _set_job(
+                job_id,
+                status="completed",
+                message=message,
+                finishedAt=finished_at,
+                account=created,
+                settingsResult=settings_result,
+                apkInfo={"versionName": apk_info.get("versionName"), "output": install_output[:500]},
+            )
+            _append_provision_log(f"[{job_id}] completed index={index} account={created['id']}")
     except Exception as exc:  # noqa: BLE001
         finished_at = datetime.now(timezone.utc).isoformat()
         message = str(exc) or "Account provisioning failed."
