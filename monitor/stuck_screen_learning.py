@@ -509,6 +509,23 @@ def resolve_instance_index(
             pass
     if not account:
         return None
+    want = str(account).strip().casefold()
+    # Frostguard: map account/profile name → emulatorNumber from user workspace DB.
+    try:
+        from bot_backend import detect_bot_provider
+
+        if detect_bot_provider(config) == "frostguard":
+            from frostguard_workspace import list_profiles, resolve_workspace
+
+            for row in list_profiles(resolve_workspace(config)):
+                name = str(row.get("name") or "").strip().casefold()
+                account_id = str(row.get("id") or "").strip().casefold()
+                if want and want in {name, account_id}:
+                    idx = int(row.get("instanceId", -1))
+                    return idx if idx >= 0 else None
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from host_status import resolve_gnbots_root
         from profile_accounts import list_profile_account_templates
@@ -518,7 +535,6 @@ def resolve_instance_index(
         profile_name = resolve_selected_profile_for_root(gnbots_root) or ""
         if not profile_name:
             return None
-        want = str(account).strip().casefold()
         for row in list_profile_account_templates(gnbots_root, profile_name):
             name = str(row.get("name") or "").strip().casefold()
             account_id = str(row.get("id") or "").strip().casefold()
