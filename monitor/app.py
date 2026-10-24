@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from bot_activity import bot_activity_from_status, normalize_bot_state, profile_settings_locked_from_activity
+from bot_backend import detect_bot_provider, get_bot_backend
 from gnbots_cache import (
     cached_api_status,
     cached_gnbots_fetch,
@@ -1875,6 +1876,10 @@ class ApkUpdateSelectionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class BotProviderRequest(BaseModel):
+    provider: str = Field(..., min_length=1)
+
+
 class PushNotifyRequest(BaseModel):
     title: str
     body: str
@@ -2416,12 +2421,22 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
     error_logs = mark_account_switch_ocr_logs(error_logs)
     recent_ocr_events = get_recent_ocr_events(config, limit=8)
 
+    bot_backend = get_bot_backend(config)
+    try:
+        bot_online = bool(bot_backend.is_online(config))
+    except Exception:  # noqa: BLE001
+        bot_online = gnbots is not None
+
     return {
         "gnbotsOnline": gnbots is not None,
         "gnbotsError": gnbots_error,
         "gnbotsProcessRunning": gnbots_process_running(config, stack=stack),
         "gnbotsApi": api_status,
         "gnbotsApiFailures": int(_GNBOTS_API_STATE.get("failures") or 0),
+        "botProvider": detect_bot_provider(config),
+        "botProviderPinned": str(config.get("bot_provider") or "gnbots").strip().lower() or "gnbots",
+        "botCapabilities": bot_backend.capabilities.as_dict(),
+        "botOnline": bot_online,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "profile": profile_name,
         "botActive": bool(activity.get("botActive")),
@@ -2799,6 +2814,52 @@ async def health() -> dict[str, Any]:
         "error": api.get("error"),
     }
 
+
+@app.get("/api/bot/provider")
+async def get_bot_provider() -> dict[str, Any]:
+    backend = get_bot_backend(config)
+    try:
+        online = await asyncio.to_thread(backend.is_online, config)
+    except Exception:  # noqa: BLE001
+        online = False
+    try:
+        process_running = await asyncio.to_thread(backend.is_process_running, config)
+    except Exception:  # noqa: BLE001
+        process_running = False
+    return {
+        "ok": True,
+        "provider": detect_bot_provider(config),
+        "pinned": str(config.get("bot_provider") or "gnbots").strip().lower() or "gnbots",
+        "online": bool(online),
+        "processRunning": bool(process_running),
+        "capabilities": backend.capabilities.as_dict(),
+    }
+
+
+@app.post("/api/bot/provider")
+async def set_bot_provider(body: BotProviderRequest) -> dict[str, Any]:
+    provider = str(body.provider or "").strip().lower()
+    if provider not in {"auto", "gnbots", "frostguard"}:
+        raise HTTPException(
+            status_code=400,
+            detail="provider must be one of: auto, gnbots, frostguard",
+        )
+    try:
+        coerced, message = await asyncio.to_thread(update_monitor_config_value, "bot_provider", provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write config.json: {exc}") from exc
+
+    reload_runtime_config()
+    backend = get_bot_backend(config)
+    return {
+        "ok": True,
+        "provider": detect_bot_provider(config),
+        "pinned": coerced,
+        "message": message,
+        "capabilities": backend.capabilities.as_dict(),
+    }
 
 
 def _dashboard_cache_hit() -> dict[str, Any] | None:

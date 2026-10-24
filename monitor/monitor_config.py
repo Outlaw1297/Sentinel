@@ -27,9 +27,20 @@ PATH_CONFIG_KEYS = frozenset(
         "nox_path",
         "mumu_path",
         "whiteout_apk_dir",
+        "frostguard_workspace",
+        "frostguard_exe",
     }
 )
-OPTIONAL_PATH_CONFIG_KEYS = frozenset({"ldplayer_path", "memu_path", "nox_path", "mumu_path"})
+OPTIONAL_PATH_CONFIG_KEYS = frozenset(
+    {
+        "ldplayer_path",
+        "memu_path",
+        "nox_path",
+        "mumu_path",
+        "frostguard_workspace",
+        "frostguard_exe",
+    }
+)
 
 LD_HEALTH_FLAT_KEYS = frozenset(
     {
@@ -106,6 +117,58 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "type": "text",
                 "label": "Process name",
                 "hint": "Usually GnBots (no .exe).",
+            },
+        ],
+    },
+    {
+        "id": "bot-provider",
+        "title": "Bot provider",
+        "description": (
+            "Choose GnBots (default) or Frostguard. Auto prefers GnBots when its API/process "
+            "is up, otherwise Frostguard when a workspace lock/db/process is present."
+        ),
+        "restart": "immediate",
+        "fields": [
+            {
+                "key": "bot_provider",
+                "type": "select",
+                "label": "Bot provider",
+                "options": ["gnbots", "frostguard", "auto"],
+                "hint": "Default gnbots keeps existing farms unchanged. Use auto only when both may be installed.",
+            },
+            {
+                "key": "frostguard_workspace",
+                "type": "text",
+                "label": "Frostguard workspace",
+                "hint": "Optional absolute path. Blank uses ~/.frostguard/workspaces/{channel}/default.",
+                "placeholder": "C:\\Users\\You\\.frostguard\\workspaces\\stable\\default",
+            },
+            {
+                "key": "frostguard_exe",
+                "type": "text",
+                "label": "Frostguard.exe path",
+                "hint": "Optional launcher for host start/stop. Leave blank if you only observe via workspace files.",
+                "placeholder": "C:\\Games\\Frostguard\\Frostguard.exe",
+            },
+            {
+                "key": "frostguard_process_name",
+                "type": "text",
+                "label": "Frostguard process name",
+                "hint": "Usually Frostguard (no .exe).",
+            },
+            {
+                "key": "frostguard_channel",
+                "type": "select",
+                "label": "Frostguard channel",
+                "options": ["stable", "nightly"],
+                "hint": "Used for workspace identity and default workspace path.",
+            },
+            {
+                "key": "frostguard_bridge_mode",
+                "type": "select",
+                "label": "Frostguard bridge mode",
+                "options": ["localhost", "disabled"],
+                "hint": "localhost uses Frostguard's Telegram command server (/pid, /command). disabled = observe-only.",
             },
         ],
     },
