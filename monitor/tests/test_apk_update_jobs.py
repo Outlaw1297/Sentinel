@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -202,6 +203,111 @@ class ApkUpdateJobsTests(unittest.TestCase):
                         self.assertEqual(cancelled["status"], "cancelled")
                         self.assertIsNone(find_active_apk_update_job())
                         wait_for_apk_update_job(job["id"], timeout_seconds=5)
+
+    def test_reap_uses_job_instance_timeout_not_global_default(self) -> None:
+        """Raising apk_update_instance_timeout must not let status-poll reap early."""
+        # Started 1500s ago — past default reap (1020) but inside job's 1800+120 window.
+        started = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 1500))
+        with apk_update_jobs._APK_JOB_LOCK:
+            apk_update_jobs._APK_UPDATE_JOBS["long1"] = {
+                "id": "long1",
+                "status": "updating",
+                "progress": 40,
+                "message": "Updating instance 2…",
+                "currentIndex": 2,
+                "instanceStartedAt": started,
+                "instanceTimeoutSeconds": 1800,
+                "updatedAt": _fresh_iso(),
+                "startedAt": started,
+                "failures": [],
+                "failed": 0,
+            }
+            apk_update_jobs._APK_INSTANCE_BUSY[2] = "long1"
+        reaped = reap_stale_apk_update_jobs()
+        self.assertEqual(reaped, [])
+        job = get_apk_update_job("long1")
+        assert job is not None
+        self.assertEqual(job["status"], "updating")
+        self.assertIn(2, apk_update_jobs.apk_update_busy_indexes())
+
+    def test_reap_signals_cancel_so_worker_cannot_resurrect(self) -> None:
+        config = {"apk_update_instance_timeout": 30}
+
+        gate = threading.Event()
+        second_started = threading.Event()
+
+        def blocked_then_ok(_config, index, **_kwargs):
+            if index == 1:
+                gate.wait(timeout=5)
+                time.sleep(0.05)
+                return {"index": index, "apk": {"updateAvailable": False}, "message": "late"}
+            second_started.set()
+            return {
+                "index": index,
+                "installedVersion": "1.34.16",
+                "apk": {"index": index, "updateAvailable": False},
+                "message": "ok",
+            }
+
+        with patch("apk_update_jobs._resolve_target_indexes", return_value=([1, 2], {"scope": "indexes"})):
+            with patch("whiteout_apk.update_whiteout_apk_on_instance", side_effect=blocked_then_ok):
+                with patch("apk_update_jobs._best_effort_stop_instance"):
+                    with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={}):
+                        with patch(
+                            "whiteout_apk.save_persisted_apk_update_instance_indexes",
+                            return_value=[1, 2],
+                        ):
+                            job = start_apk_update_job(
+                                config, indexes=[1, 2], only_outdated=False, force=True
+                            )
+                            job_id = job["id"]
+                            deadline = time.time() + 2.0
+                            while time.time() < deadline:
+                                current = get_apk_update_job(job_id)
+                                if current and current.get("currentIndex") == 1:
+                                    break
+                                time.sleep(0.02)
+                            # Simulate status-poll reap while worker is still inside instance 1.
+                            with apk_update_jobs._APK_JOB_LOCK:
+                                row = apk_update_jobs._APK_UPDATE_JOBS[job_id]
+                                row["instanceStartedAt"] = "2000-01-01T00:00:00+00:00"
+                                row["updatedAt"] = "2000-01-01T00:00:00+00:00"
+                            reaped = reap_stale_apk_update_jobs(instance_timeout_seconds=1)
+                            self.assertEqual(len(reaped), 1)
+                            self.assertIn(job_id, apk_update_jobs._APK_JOB_CANCEL)
+                            gate.set()
+                            finished = wait_for_apk_update_job(job_id, timeout_seconds=5)
+                            assert finished is not None
+                            self.assertEqual(finished["status"], "failed")
+                            self.assertTrue(finished.get("stalled"))
+                            self.assertFalse(second_started.is_set())
+                            self.assertIsNone(find_active_apk_update_job())
+
+    def test_set_job_does_not_resurrect_terminal_status(self) -> None:
+        with apk_update_jobs._APK_JOB_LOCK:
+            apk_update_jobs._APK_UPDATE_JOBS["done1"] = {
+                "id": "done1",
+                "status": "failed",
+                "progress": 100,
+                "message": "stalled",
+                "stalled": True,
+            }
+        snap = apk_update_jobs._set_job(
+            "done1",
+            status="updating",
+            progress=40,
+            currentIndex=3,
+            message="Updating instance 3…",
+        )
+        self.assertEqual(snap["status"], "failed")
+        self.assertEqual(snap["progress"], 100)
+        self.assertNotIn("currentIndex", snap)
+
+
+def _fresh_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 if __name__ == "__main__":
