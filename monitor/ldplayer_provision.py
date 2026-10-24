@@ -60,21 +60,38 @@ def _resolve_ldplayer_add_result(
     returncode: int,
     output: str,
 ) -> tuple[int, str] | None:
-    """LDPlayer `add` often returns the new instance index as exit code (not stderr)."""
-    clean = str(name or "").strip()
-    for row in after_rows:
-        if str(row.get("name") or "").strip().casefold() == clean.casefold():
-            index = int(row["index"])
-            return index, output or f"Created LDPlayer instance {index}"
+    """LDPlayer `add` often returns the new instance index as exit code (not stderr).
 
-    created = sorted(int(row["index"]) for row in after_rows if int(row["index"]) not in before_indexes)
-    if created:
-        index = created[-1]
+    Prefer the exit-code index when it appears as a *new* instance. Name matches only
+    count when the index was not present before ``add`` — otherwise a failed/duplicate
+    add would treat a live farm instance as newly created. When multiple new indexes
+    appear (concurrent adds) and neither exit code nor a new name match resolves,
+    return None rather than guessing ``created[-1]``.
+    """
+    clean = str(name or "").strip()
+    after_by_index = {int(row["index"]): row for row in after_rows}
+    created = sorted(index for index in after_by_index if index not in before_indexes)
+    rc = int(returncode)
+
+    # Exit code is the most authoritative signal once the new index is listable.
+    if rc >= 0 and rc not in before_indexes and rc in after_by_index:
+        return rc, output or f"Created LDPlayer instance {rc}"
+
+    for row in after_rows:
+        if str(row.get("name") or "").strip().casefold() != clean.casefold():
+            continue
+        index = int(row["index"])
+        if index in before_indexes:
+            # Name already existed before add (duplicate / failed add). Do not bind
+            # settings/APK/profile work to the pre-existing live instance.
+            return None
         return index, output or f"Created LDPlayer instance {index}"
 
-    rc = int(returncode)
-    if rc >= 0 and rc not in before_indexes and any(int(row["index"]) == rc for row in after_rows):
-        return rc, output or f"Created LDPlayer instance {rc}"
+    # Single new index with no usable exit-code/name signal (some LD builds).
+    if len(created) == 1:
+        index = created[0]
+        return index, output or f"Created LDPlayer instance {index}"
+
     return None
 
 
