@@ -450,6 +450,51 @@ def _stage_or_extract_game_zip(zip_path: Path, apk_dir: Path, config: dict[str, 
     _extract_game_zip(zip_path, apk_dir)
 
 
+def _apk_cache_is_third_party_xapk(apk_dir: Path, zip_path: Path | None = None) -> bool:
+    """True when the local cache was staged from a third-party XAPK (not a GnBots game.zip)."""
+    manifest = read_apk_manifest(apk_dir)
+    source = str(manifest.get("source") or "").strip().lower()
+    if source.startswith("third_party"):
+        return True
+    if zip_path is None:
+        zip_path = apk_dir / "game.zip"
+    if not zip_path.is_file():
+        return False
+    try:
+        from apk_third_party import game_zip_looks_like_xapk
+
+        return bool(game_zip_looks_like_xapk(zip_path))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def gnbots_zip_size_signals_update(
+    config: dict[str, Any],
+    *,
+    url: str | None,
+    zip_path: Path,
+    remote_size: int | None,
+    local_size: int | None,
+) -> bool:
+    """Whether a GnBots game.zip Content-Length mismatch should trigger a download.
+
+    APK20 stores an XAPK as ``game.zip``. That file's size almost never matches the
+    GnBots ``game.zip`` URL, so treating size mismatch alone as "newer package"
+    oscillates the cache every ``ensure_latest`` call (instance 1 APK20 → instance 2
+    OK → instance 3 re-downloads older GnBots zip).
+    """
+    if not url or remote_size is None:
+        return False
+    if not zip_path.is_file() or local_size is None:
+        return True
+    if int(remote_size) == int(local_size):
+        return False
+    apk_dir = zip_path.parent
+    if _apk_cache_is_third_party_xapk(apk_dir, zip_path):
+        return False
+    return True
+
+
 def refresh_local_apk_cache_from_disk(config: dict[str, Any]) -> dict[str, Any]:
     """Refresh persisted cache version from split APKs; avoid downgrading via stale game.zip."""
     apk_dir = resolve_whiteout_apk_dir(config)
@@ -1546,7 +1591,13 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
     if zip_path.is_file():
         remote_zip_version = _read_manifest_from_zip(zip_path).get("version_name")
     local_version = local.get("versionName")
-    remote_newer = remote_size is not None and remote_size != local_size
+    remote_newer = gnbots_zip_size_signals_update(
+        config,
+        url=url,
+        zip_path=zip_path,
+        remote_size=remote_size,
+        local_size=local_size,
+    )
     missing_zip = bool(url) and not zip_path.is_file()
     local_ahead_of_remote = bool(
         local_version
@@ -1611,14 +1662,16 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
         result["thirdParty"] = {"ok": False, "enabled": True, "error": str(exc)}
 
     if sync and result.get("updateAvailable") and not result.get("localAheadOfRemote"):
-        # Never prefer third-party when GnBots game.zip already signals an update
-        # (size mismatch / missing zip). Otherwise a mid-tier APK20 build can
-        # win over a newer GnBots zip and leave bots on the wrong version.
+        # Prefer a real GnBots game.zip content update over a mid-tier APK20 build.
+        # Do not treat XAPK-vs-GnBots size mismatch as a GnBots update (that oscillates).
         gnbots_size_update = bool(
-            url
-            and (
-                (remote_size is not None and remote_size != local_size)
-                or missing_zip
+            missing_zip
+            or gnbots_zip_size_signals_update(
+                config,
+                url=url,
+                zip_path=zip_path,
+                remote_size=remote_size,
+                local_size=local_size,
             )
         )
         prefer_third_party = bool(
@@ -1948,10 +2001,13 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
     remote_size = _remote_game_zip_size(url) if url else None
     local_size = zip_path.stat().st_size if zip_path.is_file() else None
     gnbots_size_update = bool(
-        url
-        and (
-            (remote_size is not None and remote_size != local_size)
-            or (not zip_path.is_file() and remote_size is not None)
+        (not zip_path.is_file() and url and remote_size is not None)
+        or gnbots_zip_size_signals_update(
+            config,
+            url=url,
+            zip_path=zip_path,
+            remote_size=remote_size,
+            local_size=local_size,
         )
     )
 
@@ -2005,7 +2061,7 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
 
     downloaded = False
 
-    if url and remote_size is not None and remote_size != local_size:
+    if gnbots_size_update and zip_path.is_file() and url and remote_size is not None:
         _download_game_zip(url, zip_path)
         downloaded = True
         local_size = zip_path.stat().st_size
@@ -2027,6 +2083,7 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing APK files in {apk_dir}: {', '.join(missing)}")
 
     manifest = read_apk_manifest(apk_dir)
+    source_tag = str(manifest.get("source") or "").strip()
     result = {
         "dir": str(apk_dir),
         "downloaded": downloaded,
@@ -2035,7 +2092,11 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
         "versionName": resolve_local_apk_version(config, apk_dir) or manifest.get("version_name"),
         "packageName": manifest.get("package_name"),
         "files": [str(apk_dir / name) for name in APK_INSTALL_ORDER],
-        "source": "gnbots_url" if url else "local",
+        "source": (
+            "third_party:apk20"
+            if source_tag.startswith("third_party") or _apk_cache_is_third_party_xapk(apk_dir, zip_path)
+            else ("gnbots_url" if url else "local")
+        ),
     }
     sync_apk_manifest_from_main_apk(config)
     persist_apk_cache_state(
