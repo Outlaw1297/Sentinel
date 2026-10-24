@@ -18,7 +18,7 @@ APK bulk updates run as **background jobs**. Refreshing the page no longer cance
 
 ## Features
 
-### 1. Auto-stop GnBots for problem emulators
+### 1. Auto-stop bot for problem emulators
 
 When enabled (`auto_stop_gnbots_on_trouble`), each automation tick looks for severe trouble signals such as:
 
@@ -26,11 +26,18 @@ When enabled (`auto_stop_gnbots_on_trouble`), each automation tick looks for sev
 - Emulator / offline style trouble reasons from restore enrichment
 - Clusters of low-uptime accounts (threshold: `auto_stop_min_troubled`)
 
-If GnBots is running and the cooldown has elapsed, Sentinel issues a **Stop** so you can restore or fix settings safely.
+If the active bot is running and the cooldown has elapsed, Sentinel issues a **Stop** so you can restore or fix settings safely. Dispatch follows `bot_provider`:
+
+| Provider | Stop path | Action type |
+|----------|-----------|-------------|
+| `gnbots` | GnBots process **Stop** | `stop_gnbots_on_trouble` |
+| `frostguard` | Bridge `/stopbot`, then host stop if needed | `stop_frostguard_on_trouble` |
+
+Config key names keep the historical `auto_stop_gnbots_*` prefix for compatibility. Frostguard setup: [FROSTGUARD.md](FROSTGUARD.md).
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `auto_stop_gnbots_on_trouble` | `false` | Master toggle |
+| `auto_stop_gnbots_on_trouble` | `false` | Master toggle (both providers) |
 | `auto_stop_gnbots_cooldown_minutes` | `30` | Minimum minutes between auto-stops |
 | `auto_stop_min_troubled` | `3` | How many low-uptime signals before uptime alone triggers a stop |
 
@@ -95,6 +102,8 @@ A **seed rule** (`seed-event-press-back`) matches screens whose name contains `e
 | `warn_user` | Web-push + event log (`tag=stuck-screen`) | Push configured (still records a detail if push fails) |
 
 If Back/restart cannot resolve an emulator index from the account name, Sentinel **falls back to warn**.
+
+**Instance resolution:** GnBots maps account name/id → profile JSON `instanceId`. When `bot_provider=frostguard`, Sentinel maps name/id → workspace profile `emulatorNumber` instead (same warn fallback if unresolved).
 
 #### Rule store (`logs/stuck-screen-rules.json`)
 
@@ -203,16 +212,20 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 |---------|--------------|---------------|
 | No new rules appear | Learning off, or no same-screen log lines ingested | `stuck_screen_learning_enabled`; issue history toggle; bot logs contain `Same screen timeout at …` |
 | Rules exist but nothing runs | Auto-fix off, or rules still disabled | `stuck_screen_auto_fix_enabled`; enable specific rules in the Automation tab |
-| Auto-fix only warns | Instance index unknown, or not on Windows/LDPlayer | Account name must map to a profile instance; Back/restart need `ldconsole` + ADB |
+| Auto-fix only warns | Instance index unknown, or not on Windows/LDPlayer | Account name must map to a profile instance (GnBots JSON or Frostguard `emulatorNumber`); Back/restart need emulator ADB |
 | Same event never re-fixed | Event id already in `autoFixedEventIds` | Expected once-per-event; wait for a new timeout log |
 | Fixes feel spammy | Cooldown too low | Raise `cooldownSeconds` (30–3600) on the rule |
-| Linux / Cloud Agent | Remediations that need LDPlayer fail gracefully | Dashboard + learning still work; expect warn fallback / offline GnBots |
+| Download succeeded but emulators stay old | Cache sync ≠ install | After Download, Restore auto-queues **Update selected** only if bot is stopped and instances are selected; otherwise click **Update selected** / **Force update selected** |
+| Install job fails after “success” | Version verify or Update dialog still present | Job refuses OK if `versionName` is older than cache or `gameUpdateRequired`; confirm `apk_third_party_abi` (APK20 Whiteout is currently **arm64-v8a** only) |
+| APK20 check lists architectures | ABI mismatch | Error text includes available ABIs; set `apk_third_party_abi` to a listed value or use 64-bit emulator paths |
+| Linux / Cloud Agent | Remediations that need LDPlayer fail gracefully | Dashboard + learning still work; expect warn fallback / offline bot |
 
 ## Safety notes
 
-- Auto APK updates **never** run while GnBots is running (same lock as manual updates).
+- Scheduled auto APK updates skip while the **GnBots** host process is running. Manual Restore updates also lock on dashboard `botActive` (Frostguard-aware).
+- **Download latest APK** only fills the local cache; install is a separate Update/Force-update job (auto-queued after download when safe).
 - Stuck-screen **auto-fix is off by default**; learning can still propose rules safely.
 - Learned/manual rules are **disabled until you enable them**; only the seed event→Back rule ships enabled.
-- Press Back / restart emulator require Windows + LDPlayer ADB; if the instance cannot be resolved, Sentinel falls back to warning you.
-- Auto-stop is off by default; enable only if you want Sentinel to halt the farm when emulators look broken.
+- Press Back / restart emulator require Windows + emulator ADB; if the instance cannot be resolved, Sentinel falls back to warning you.
+- Auto-stop is off by default; enable only if you want Sentinel to halt the farm when emulators look broken (GnBots or Frostguard).
 - Issue history grows up to ~5000 events and rolls older rows off.
