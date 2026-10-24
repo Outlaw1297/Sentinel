@@ -7,6 +7,7 @@
 - APK install jobs fail if the emulator remains on an older version or still shows the in-game Update dialog
 - Before split install: force-stop Whiteout, require uninstall success, verify version before launching the game, and retry install once if the first attempt left the old build (common on the first instance in a batch)
 - Stop mid-batch cache oscillation: an APK20 XAPK stored as `game.zip` no longer looks like a “newer” GnBots zip just because Content-Length differs (that re-downloaded an older build onto the 3rd instance)
+- `apk_source_policy` (`auto` / `gnbots` / `third_party`): default `auto` keeps whichever source has the newer Whiteout `versionName` (probe-caches GnBots zip version by Content-Length)
 - Partial batch jobs list which instance indexes failed and why
 - APK20 ABI mismatches list available architectures (Whiteout catalog is currently arm64-v8a only)
 - Staging an XAPK clears stale `main`/`arch`/`pack` splits before writing the new cache

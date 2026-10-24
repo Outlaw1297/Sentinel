@@ -6188,15 +6188,26 @@ function renderAutomationToggles(status, config) {
       checked: Boolean(cfg.auto_update_apks),
     },
   ];
-  els.automationToggles.innerHTML = fields
-    .map(
-      (field) => `
+  const sourcePolicy = String(cfg.apk_source_policy || "auto").toLowerCase();
+  els.automationToggles.innerHTML =
+    fields
+      .map(
+        (field) => `
     <label class="automation-toggle-row">
       <input type="checkbox" data-automation-key="${field.key}" ${field.checked ? "checked" : ""}>
       <span>${escapeHtml(field.label)}</span>
     </label>`,
-    )
-    .join("");
+      )
+      .join("") +
+    `
+    <label class="automation-toggle-row automation-select-row">
+      <span>APK source policy</span>
+      <select data-automation-key="apk_source_policy">
+        <option value="auto" ${sourcePolicy === "auto" ? "selected" : ""}>Auto — newer of GnBots / third-party</option>
+        <option value="third_party" ${sourcePolicy === "third_party" || sourcePolicy === "apk20" ? "selected" : ""}>Force third-party (APK20)</option>
+        <option value="gnbots" ${sourcePolicy === "gnbots" ? "selected" : ""}>Force GnBots game.zip</option>
+      </select>
+    </label>`;
 
   if (els.automationMeta) {
     const state = status?.state || {};
@@ -6340,15 +6351,21 @@ function renderAssistantSuggestions(payload) {
 }
 
 async function saveAutomationToggle(key, enabled) {
+  await saveAutomationConfigValue(key, enabled ? "true" : "false");
+  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: enabled };
+}
+
+async function saveAutomationConfigValue(key, value) {
   const response = await fetch(
-    `/api/monitor-config/${encodeURIComponent(key)}/update?value=${encodeURIComponent(enabled ? "true" : "false")}`,
+    `/api/monitor-config/${encodeURIComponent(key)}/update?value=${encodeURIComponent(String(value))}`,
   );
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = body.detail || body.error || response.statusText;
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
-  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: enabled };
+  currentMonitorConfig = { ...(currentMonitorConfig || {}), [key]: value };
+  return body;
 }
 
 async function loadAutomationTab() {
@@ -6421,6 +6438,20 @@ els.automationReportDays?.addEventListener("change", () => {
 });
 
 els.automationToggles?.addEventListener("change", async (event) => {
+  const select = event.target.closest("select[data-automation-key]");
+  if (select) {
+    const key = select.dataset.automationKey;
+    const previous = currentMonitorConfig?.[key] || "auto";
+    try {
+      setAutomationPageStatus(`Saving ${key}…`, "pending");
+      await saveAutomationConfigValue(key, select.value);
+      setAutomationPageStatus(`Saved ${key}.`, "ok");
+    } catch (error) {
+      select.value = previous;
+      setAutomationPageStatus(error.message || "Could not save automation setting.", "error");
+    }
+    return;
+  }
   const input = event.target.closest("input[data-automation-key]");
   if (!input) return;
   const key = input.dataset.automationKey;

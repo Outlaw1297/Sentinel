@@ -49,6 +49,7 @@ Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk
 |-----|---------|---------|
 | `auto_update_apks` | `false` | Master toggle |
 | `auto_update_apks_check_minutes` | `30` | How often to check |
+| `apk_source_policy` | `auto` | `auto` = keep whichever of GnBots/`apk20` has the newer `versionName`; `gnbots` or `third_party` forces that source |
 | `apk_third_party_provider` | `apk20` | Defaults on; set `off` to use only the GnBots URL/local cache |
 | `apk_third_party_package` | auto (`com.gof.global`) | Auto-filled from the Whiteout APK cache when blank |
 | `apk_third_party_abi` | auto from LDPlayer | Auto-filled from GnBots `LDPath64`/`LDPath32` (or install path); override only if needed |
