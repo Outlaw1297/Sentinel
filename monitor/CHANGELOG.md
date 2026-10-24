@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3 — 2026-10-24
+
+### Updates UI
+- Stable channel compares app versions against the highest published GitHub release (not `main` tip SHA or `/releases/latest` publish order)
+- Same installed version shows **Up to date** even when `main` has moved; newer releases show as `v0.1.13 → v0.2.2`
+- Apply update downloads that same highest-version release zip
+
 ## 0.2.2 — 2026-10-24
 
 ### APK updates

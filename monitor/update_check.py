@@ -10,7 +10,15 @@ import urllib.request
 from typing import Any
 
 from monitor_config import read_raw_monitor_config
-from update_info import find_git_root, is_git_install, local_commit, read_local_version_info
+from update_info import (
+    find_git_root,
+    is_git_install,
+    local_commit,
+    normalize_version_string,
+    parse_app_version,
+    read_local_version_info,
+    version_is_older,
+)
 
 _CHECK_CACHE: dict[str, Any] = {"at": 0.0, "result": None}
 _CACHE_SECONDS = 900.0
@@ -39,17 +47,105 @@ def _run_git(args: list[str], *, cwd: str) -> str:
     return output
 
 
-def _github_commit(repo: str, branch: str) -> dict[str, Any]:
-    url = f"https://api.github.com/repos/{repo}/commits/{branch}"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "gnbot-monitor"})
+def _github_json(url: str) -> Any:
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "gnbot-monitor"},
+    )
     with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _github_commit(repo: str, branch: str) -> dict[str, Any]:
+    payload = _github_json(f"https://api.github.com/repos/{repo}/commits/{branch}")
     sha = str(payload.get("sha") or "").strip()
     message = ""
     commit = payload.get("commit")
     if isinstance(commit, dict):
         message = str(commit.get("message") or "").splitlines()[0]
     return {"commit": sha, "commitShort": sha[:7], "message": message}
+
+
+def _github_tag_commit(repo: str, tag: str) -> str:
+    """Resolve a release tag to its commit SHA (handles annotated tags)."""
+    tag_name = str(tag or "").strip()
+    if not tag_name:
+        return ""
+    try:
+        payload = _github_json(f"https://api.github.com/repos/{repo}/git/refs/tags/{tag_name}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError):
+        return ""
+    obj = payload.get("object") if isinstance(payload, dict) else None
+    if not isinstance(obj, dict):
+        return ""
+    sha = str(obj.get("sha") or "").strip()
+    obj_type = str(obj.get("type") or "").strip().lower()
+    if obj_type != "tag" or not sha:
+        return sha
+    try:
+        tag_payload = _github_json(f"https://api.github.com/repos/{repo}/git/tags/{sha}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError):
+        return sha
+    if isinstance(tag_payload, dict):
+        tagged = tag_payload.get("object")
+        if isinstance(tagged, dict):
+            return str(tagged.get("sha") or sha).strip()
+    return sha
+
+
+def _release_version(tag_name: str | None) -> str:
+    return normalize_version_string(tag_name)
+
+
+def pick_highest_release(releases: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the highest semver among non-draft, non-prerelease GitHub releases."""
+    best: dict[str, Any] | None = None
+    best_parsed: tuple[int, ...] = ()
+    for entry in releases:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("draft") or entry.get("prerelease"):
+            continue
+        tag = str(entry.get("tag_name") or "").strip()
+        version = _release_version(tag)
+        parsed = parse_app_version(version)
+        if not parsed:
+            continue
+        if best is None or parsed > best_parsed:
+            message = str(entry.get("name") or "").strip()
+            body = str(entry.get("body") or "").strip()
+            if body:
+                first_line = body.splitlines()[0].strip()
+                if first_line:
+                    message = first_line if not message else message
+            best = {
+                "version": version,
+                "tag": tag,
+                "message": message,
+                "htmlUrl": str(entry.get("html_url") or ""),
+                "targetCommitish": str(entry.get("target_commitish") or ""),
+            }
+            best_parsed = parsed
+    return best
+
+
+def _github_highest_release(repo: str) -> dict[str, Any]:
+    payload = _github_json(f"https://api.github.com/repos/{repo}/releases?per_page=50")
+    if not isinstance(payload, list):
+        raise RuntimeError("GitHub releases response was not a list")
+    best = pick_highest_release(payload)
+    if best is None:
+        raise RuntimeError("No published GitHub releases found")
+    sha = _github_tag_commit(repo, str(best.get("tag") or ""))
+    if not sha:
+        # Fall back to branch tip only for commit display; version compare still wins.
+        tip = _github_commit(repo, str(best.get("targetCommitish") or "main"))
+        sha = str(tip.get("commit") or "")
+        if not best.get("message"):
+            best["message"] = str(tip.get("message") or "")
+    best["commit"] = sha
+    best["commitShort"] = sha[:7] if sha else ""
+    return best
 
 
 def check_for_updates(*, force: bool = False, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -59,11 +155,15 @@ def check_for_updates(*, force: bool = False, config: dict[str, Any] | None = No
 
     local = read_local_version_info()
     local_sha = local_commit()
+    local_version = str(local.get("appVersion") or "0.0.0")
     repo, branch, channel = _config_update_settings(config)
+    channel_name = channel.strip().lower() or "stable"
     result: dict[str, Any] = {
-        "localVersion": local.get("appVersion") or "0.0.0",
+        "localVersion": local_version,
         "localCommit": local_sha,
         "localCommitShort": str(local.get("commitShort") or local_sha[:7]),
+        "remoteVersion": local_version,
+        "remoteTag": "",
         "remoteCommit": local_sha,
         "remoteCommitShort": str(local.get("commitShort") or local_sha[:7]),
         "remoteMessage": "",
@@ -71,7 +171,7 @@ def check_for_updates(*, force: bool = False, config: dict[str, Any] | None = No
         "updateMode": "release",
         "repo": repo,
         "branch": branch,
-        "channel": channel,
+        "channel": channel_name,
         "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -94,12 +194,25 @@ def check_for_updates(*, force: bool = False, config: dict[str, Any] | None = No
                 result["error"] = str(exc)
     elif repo:
         try:
-            remote = _github_commit(repo, branch if channel == "main" else branch)
-            remote_sha = str(remote.get("commit") or "").lower()
-            result["remoteCommit"] = remote_sha
-            result["remoteCommitShort"] = str(remote.get("commitShort") or remote_sha[:7])
-            result["remoteMessage"] = str(remote.get("message") or "")
-            result["updateAvailable"] = bool(remote_sha and remote_sha != local_sha)
+            if channel_name == "main":
+                remote = _github_commit(repo, branch)
+                remote_sha = str(remote.get("commit") or "").lower()
+                result["remoteCommit"] = remote_sha
+                result["remoteCommitShort"] = str(remote.get("commitShort") or remote_sha[:7])
+                result["remoteMessage"] = str(remote.get("message") or "")
+                result["updateAvailable"] = bool(remote_sha and remote_sha != local_sha)
+            else:
+                # stable (default): compare app versions against the highest published release.
+                # Do not use /releases/latest (publish order) or main tip SHA.
+                remote = _github_highest_release(repo)
+                remote_version = str(remote.get("version") or "")
+                remote_sha = str(remote.get("commit") or "").lower()
+                result["remoteVersion"] = remote_version or result["remoteVersion"]
+                result["remoteTag"] = str(remote.get("tag") or "")
+                result["remoteCommit"] = remote_sha or result["remoteCommit"]
+                result["remoteCommitShort"] = str(remote.get("commitShort") or remote_sha[:7] or result["remoteCommitShort"])
+                result["remoteMessage"] = str(remote.get("message") or "")
+                result["updateAvailable"] = version_is_older(local_version, remote_version)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
             result["error"] = str(exc)
 
