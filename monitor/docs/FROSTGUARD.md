@@ -1,6 +1,21 @@
 # Frostguard dual-provider support
 
-Sentinel can observe and lightly control **Frostguard** alongside **GnBots** without modifying Shederator/wosbot. All Frostguard integration lives in Sentinel (`monitor/`).
+Sentinel can observe and control **Frostguard** alongside **GnBots** without modifying Shederator/wosbot. All Frostguard integration lives in Sentinel (`monitor/`).
+
+## Edit policy (critical)
+
+ALLOWED writes — **user data only**:
+
+- `~/.frostguard/workspaces/.../frostguard.db` (profiles, tasks, enables)
+- Workspace `watcher/telegram-watcher.properties`, `config/`, logs/cache as needed for observe/ops
+
+FORBIDDEN:
+
+- Any Frostguard/wosbot **framework** files (install dir, jars, modules source, exe packaging)
+
+Do not modify Shederator/wosbot. Only Sentinel `monitor/**`.
+
+Before the first SQLite write in a process, Sentinel copies `frostguard.db` → `frostguard.db.bak` once.
 
 ## Defaults (zero surprise)
 
@@ -25,17 +40,21 @@ API helpers:
 
 - `GET /api/bot/provider` — detected provider + capabilities
 - `POST /api/bot/provider` — `{"provider":"auto"|"gnbots"|"frostguard"}`
+- `POST /api/bot/reconnect` — GnBots: `recover_gnbots_api`; Frostguard: re-ping `/pid` or host restart
+- `POST /api/commands/{id}` — GnBots Remote API when provider is gnbots; Frostguard maps `start`/`stop`/`stopall` → bridge `/startbot`/`/stopbot`, `stopemulators` → `EmulatorBackend.quit_all`
 
-Dashboard payload also includes `botProvider`, `botProviderPinned`, `botCapabilities`, and `botOnline` while keeping all existing `gnbots*` fields.
+Dashboard payload also includes `botProvider`, `botProviderPinned`, `botCapabilities`, and `botOnline` while keeping all existing `gnbots*` fields. In Frostguard mode, `accounts` come from the workspace DB + emulator running indexes (`frostguard` slice).
 
-## Read-only workspace monitor
+## Workspace monitor + optional user-DB writers
 
-Sentinel reads (never writes) under the Frostguard workspace:
+Sentinel reads under the Frostguard workspace:
 
-- `frostguard.db` — profiles / incidents (schema discovered via `PRAGMA`)
+- `frostguard.db` — profiles / incidents / tasks (schema discovered via `PRAGMA`)
 - `frostguard.lock` — busy signal
 - `watcher/telegram-watcher.properties` — `token`, `chatId`, `localPort`, `botJarPath`
-- `logs/account_*.log` — account logs
+- `logs/account_*.log` — account logs (fed into dashboard log shapes)
+
+Optional writers (user DB only): `set_profile_enabled`, `upsert_profile`, `add_profile_for_instance`.
 
 **Security:** watcher tokens are read at call time for bridge use and must never be written to Sentinel logs.
 
@@ -50,17 +69,35 @@ When Frostguard has Telegram integration enabled, it exposes:
 
 Sentinel uses `chatId` from watcher props so replies land in the operator chat. Prefer **localhost** bridge mode — do not compete with the official watcher on Telegram `getUpdates`.
 
-Host start/stop/restart of `frostguard_exe` is Windows-only (same `CREATE_NO_WINDOW` style as other Sentinel host scripts). On Linux, host actions return `ok: false` with a clear message; RO observe still works.
+Host start/stop/restart of `frostguard_exe` is Windows-only (same `CREATE_NO_WINDOW` style as other Sentinel host scripts). On Linux, host actions return `ok: false` with a clear message; observe + SQLite still work.
+
+## Frostguard HTTP API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/frostguard/profiles` | List profiles from user DB |
+| `PATCH /api/frostguard/profiles` | `{"id":…,"enabled":true\|false}` toggle (writes user DB) |
+| `GET /api/frostguard/tasks` | List tasks from user DB |
+| `PATCH /api/frostguard/tasks` | `{"id":…,"enabled":true\|false}` toggle (writes user DB) |
+| Provision Add Account | When `bot_provider=frostguard`, inserts a profile row into workspace DB (not GnBots JSON) |
+| `GET /api/frostguard/tasks` | RO task list when a Task table exists |
+| `POST /api/frostguard/command` | Bridge passthrough `{"text":"/reboot"}` |
+
+Session exec endpoints return **501** in Frostguard mode (no GnBots JS exec), except a small reboot allowlist mapped to `/reboot` via the bridge.
+
+Screenshots (`/api/screenshots`, `/api/sessions/{id}/screenshot`) use `EmulatorBackend.screencap_png` mapped by profile `emulatorNumber` / instance index.
 
 ## Capabilities
 
-| Capability | GnBots | Frostguard (phase 1) |
-|------------|--------|----------------------|
-| Remote API / settings / session exec / Action Editor | Yes | No |
-| Screenshots API | Yes | No (later: LDPlayer ADB) |
-| Profile JSON edit | Yes | No (RO SQLite only) |
+| Capability | GnBots | Frostguard |
+|------------|--------|------------|
+| Remote API / settings / Action Editor | Yes | No |
+| Session exec | Yes | 501 / reboot allowlist via bridge |
+| Screenshots API | Yes (Remote API) | Yes (emulator screencap) |
+| Profile JSON edit | Yes | No (SQLite profile enable/upsert only) |
 | Host process start/stop | Yes | Yes (Windows + `frostguard_exe`) |
 | Automation start/stop | GnBots API | `/startbot` `/stopbot` when `/pid` works |
+| Dashboard accounts | Profile JSON + sessions | SQLite profiles + emulator running indexes |
 
 ## Operator setup
 
@@ -77,6 +114,6 @@ Frostguard commonly uses **MuMu**; Sentinel also supports LDPlayer/MEmu/Nox. See
 ## Out of scope
 
 - Any changes to Shederator/wosbot
-- Writing Frostguard’s SQLite by default
+- Writing Frostguard install/jars/modules
 - Scraping Telegram replies for status
-- Cloning GnBots Action Editor / session exec into Frostguard mode
+- Cloning GnBots Action Editor into Frostguard mode

@@ -2428,13 +2428,54 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
     except Exception:  # noqa: BLE001
         bot_online = gnbots is not None
 
-    return {
+    bot_provider = detect_bot_provider(config)
+    bot_active = bool(activity.get("botActive"))
+    bot_state = activity.get("botState") or "Unknown"
+    frostguard_slice: dict[str, Any] | None = None
+
+    # Frostguard: merge FG accounts even when GnBots Remote API is offline.
+    if bot_provider == "frostguard":
+        try:
+            from frostguard_dashboard import build_frostguard_dashboard_slice
+            from frostguard_logs import collect_frostguard_log_entries
+
+            frostguard_slice = build_frostguard_dashboard_slice(config)
+            fg_accounts = list(frostguard_slice.get("accounts") or [])
+            if fg_accounts:
+                accounts = fg_accounts
+                active_count = sum(1 for row in accounts if row.get("inSession"))
+                running_count = sum(1 for row in accounts if row.get("isRunning"))
+                booting_count = sum(1 for row in accounts if row.get("isBooting"))
+                enabled_count = sum(1 for row in accounts if row.get("active"))
+                try:
+                    enrich_accounts_with_restore(
+                        accounts,
+                        config,
+                        bot_active=bool(frostguard_slice.get("botActive")),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                bot_active = bool(bot_backend.automation_active(config))
+            except Exception:  # noqa: BLE001
+                bot_active = bool(frostguard_slice.get("botActive"))
+            bot_state = "Running" if bot_active else str(frostguard_slice.get("botState") or "Idle")
+            if not recent_logs:
+                fg_logs = collect_frostguard_log_entries(config)
+                recent_logs = fg_logs.get("logs") or []
+                error_logs = fg_logs.get("errorLog") or error_logs
+            if not profile_name:
+                profile_name = "frostguard"
+        except Exception:  # noqa: BLE001
+            frostguard_slice = None
+
+    payload: dict[str, Any] = {
         "gnbotsOnline": gnbots is not None,
         "gnbotsError": gnbots_error,
         "gnbotsProcessRunning": gnbots_process_running(config, stack=stack),
         "gnbotsApi": api_status,
         "gnbotsApiFailures": int(_GNBOTS_API_STATE.get("failures") or 0),
-        "botProvider": detect_bot_provider(config),
+        "botProvider": bot_provider,
         "botProviderPinned": str(config.get("bot_provider") or "gnbots").strip().lower() or "gnbots",
         "botCapabilities": bot_backend.capabilities.as_dict(),
         "botOnline": bot_online,
@@ -2443,8 +2484,8 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
         "emulatorCapabilities": sorted(get_emulator_backend(config).capabilities),
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "profile": profile_name,
-        "botActive": bool(activity.get("botActive")),
-        "botState": activity.get("botState") or "Unknown",
+        "botActive": bot_active,
+        "botState": bot_state,
         "status": status,
         "settings": settings,
         "summary": {
@@ -2469,6 +2510,13 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
         "stack": stack,
         "resources": collect_resource_metrics(config) if config.get("include_resources", True) else None,
     }
+    if frostguard_slice is not None:
+        payload["frostguard"] = {
+            "workspace": frostguard_slice.get("workspace"),
+            "incidents": frostguard_slice.get("incidents") or [],
+            "summary": frostguard_slice.get("summary") or {},
+        }
+    return payload
 
 
 def reload_runtime_config() -> dict[str, Any]:
@@ -2870,6 +2918,93 @@ class EmulatorProviderRequest(BaseModel):
     provider: str
 
 
+class FrostguardProfilePatch(BaseModel):
+    id: str | None = None
+    profileId: str | None = None
+    enabled: bool | None = None
+    active: bool | None = None
+
+
+class FrostguardTaskPatch(BaseModel):
+    id: str | None = None
+    taskId: str | None = None
+    enabled: bool | None = None
+    active: bool | None = None
+
+
+class FrostguardCommandRequest(BaseModel):
+    text: str
+
+
+@app.get("/api/frostguard/profiles")
+async def frostguard_list_profiles() -> dict[str, Any]:
+    from frostguard_workspace import list_profiles, resolve_workspace
+
+    workspace = resolve_workspace(config)
+    profiles = await asyncio.to_thread(list_profiles, workspace)
+    return {"ok": True, "workspace": str(workspace), "profiles": profiles, "count": len(profiles)}
+
+
+@app.patch("/api/frostguard/profiles")
+async def frostguard_patch_profile(body: FrostguardProfilePatch) -> dict[str, Any]:
+    from frostguard_workspace import resolve_workspace, set_profile_enabled
+
+    profile_id = str(body.id or body.profileId or "").strip()
+    if not profile_id:
+        raise HTTPException(status_code=400, detail="id or profileId is required")
+    enabled = body.enabled if body.enabled is not None else body.active
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="enabled or active is required")
+    workspace = resolve_workspace(config)
+    result = await asyncio.to_thread(set_profile_enabled, workspace, profile_id, bool(enabled))
+    if not result.get("ok"):
+        raise HTTPException(status_code=404 if "not found" in str(result.get("message") or "").lower() else 500, detail=result.get("message") or "update failed")
+    invalidate_dashboard_cache()
+    return {"ok": True, **result}
+
+
+@app.get("/api/frostguard/tasks")
+async def frostguard_list_tasks() -> dict[str, Any]:
+    from frostguard_workspace import list_tasks, resolve_workspace
+
+    workspace = resolve_workspace(config)
+    tasks = await asyncio.to_thread(list_tasks, workspace)
+    return {"ok": True, "workspace": str(workspace), "tasks": tasks, "count": len(tasks)}
+
+
+@app.patch("/api/frostguard/tasks")
+async def frostguard_patch_task(body: FrostguardTaskPatch) -> dict[str, Any]:
+    from frostguard_workspace import resolve_workspace, set_task_enabled
+
+    task_id = str(body.id or body.taskId or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="id or taskId is required")
+    enabled = body.enabled if body.enabled is not None else body.active
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="enabled or active is required")
+    workspace = resolve_workspace(config)
+    result = await asyncio.to_thread(set_task_enabled, workspace, task_id, bool(enabled))
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=404 if "not found" in str(result.get("message") or "").lower() else 500,
+            detail=result.get("message") or "update failed",
+        )
+    invalidate_dashboard_cache()
+    return {"ok": True, **result}
+
+
+@app.post("/api/frostguard/command")
+async def frostguard_passthrough_command(body: FrostguardCommandRequest) -> dict[str, Any]:
+    text = str(body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    invalidate_dashboard_cache()
+    try:
+        return await _frostguard_bridge_text_command(text)
+    finally:
+        invalidate_dashboard_cache()
+
+
 @app.get("/api/emulator/provider")
 async def get_emulator_provider_api() -> dict[str, Any]:
     backend = get_emulator_backend(config)
@@ -2967,6 +3102,42 @@ async def clear_error_log() -> dict[str, Any]:
 async def reconnect_gnbots_api() -> dict[str, Any]:
     invalidate_dashboard_cache()
     return await asyncio.to_thread(recover_gnbots_api, config)
+
+
+@app.post("/api/bot/reconnect")
+async def reconnect_bot_provider() -> dict[str, Any]:
+    """Re-ping / host-restart for the active bot provider (GnBots keeps recover_gnbots_api)."""
+    invalidate_dashboard_cache()
+    provider = detect_bot_provider(config)
+    try:
+        if provider == "gnbots":
+            result = await asyncio.to_thread(recover_gnbots_api, config)
+            return {**result, "provider": "gnbots"}
+        backend = get_bot_backend(config)
+        # Prefer a soft ping via status; if offline, host restart.
+        try:
+            online = await asyncio.to_thread(backend.is_online, config)
+        except Exception:  # noqa: BLE001
+            online = False
+        if online:
+            summary = await asyncio.to_thread(backend.status_summary, config)
+            return {
+                "ok": True,
+                "provider": provider,
+                "restarted": False,
+                "message": f"{provider} is responding.",
+                "status": summary,
+            }
+        result = await asyncio.to_thread(backend.host_action, config, "restart")
+        return {
+            "ok": bool(result.get("ok")),
+            "provider": provider,
+            "restarted": True,
+            "message": result.get("message") or f"{provider} restart requested.",
+            "result": result,
+        }
+    finally:
+        invalidate_dashboard_cache()
 
 
 @app.get("/api/config")
@@ -3088,6 +3259,16 @@ async def run_global_command(command_id: str) -> dict[str, Any]:
         set_gnbots_user_stop_suppress(120)
 
     try:
+        provider = detect_bot_provider(config)
+        if provider != "gnbots":
+            backend = get_bot_backend(config)
+            result = await asyncio.to_thread(backend.run_global_command, config, resolved_id)
+            if not result.get("ok"):
+                raise HTTPException(
+                    status_code=503,
+                    detail=result.get("message") or f"{provider} command failed: {resolved_id}",
+                )
+            return result
         return await call_gnbots(
             config,
             method=meta["method"],
@@ -3104,8 +3285,57 @@ async def get_session(account_id: str) -> dict[str, Any]:
     return await call_gnbots(config, method="GET", path=f"/sessions/{slot}")
 
 
+def _frostguard_session_exec_response(run_code: str | None = None) -> None:
+    """Frostguard has no GnBots session exec; map reboot allowlist or return 501."""
+    text = str(run_code or "").strip().lower()
+    if text in {"reboot", "/reboot", "restart", "/restart"}:
+        return  # caller may map to bridge command
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Frostguard does not support GnBots session exec. "
+            "Use POST /api/frostguard/command with {\"text\":\"/reboot\"} "
+            "or task/reboot bridge commands."
+        ),
+    )
+
+
+async def _frostguard_bridge_text_command(text: str) -> dict[str, Any]:
+    import frostguard_bridge as bridge
+
+    endpoint = bridge.resolve_bridge_endpoint(config)
+    if not endpoint.get("chatId"):
+        raise HTTPException(
+            status_code=503,
+            detail="Frostguard watcher chatId not found (configure Telegram in Frostguard).",
+        )
+    result = await asyncio.to_thread(
+        bridge.post_command,
+        endpoint["identity"],
+        int(endpoint["port"]),
+        str(endpoint["chatId"]),
+        text,
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=503,
+            detail=result.get("error") or result.get("message") or "Frostguard command failed",
+        )
+    return {"ok": True, "provider": "frostguard", "command": text, "data": result}
+
+
 @app.get("/api/sessions/{account_id}/exec")
 async def get_session_run_codes(account_id: str, code: str | None = None) -> dict[str, Any]:
+    if detect_bot_provider(config) == "frostguard":
+        _frostguard_session_exec_response(code)
+        if code:
+            mapped = "/reboot" if str(code).strip().lower() in {"reboot", "/reboot", "restart", "/restart"} else None
+            if mapped:
+                return await _frostguard_bridge_text_command(mapped)
+        raise HTTPException(
+            status_code=501,
+            detail="Frostguard session exec list is unavailable; use /api/frostguard/command.",
+        )
     slot = await resolve_session_slot(config, account_id)
     params = {"code": code} if code else None
     return await call_gnbots(config, method="GET", path=f"/sessions/{slot}/exec", params=params)
@@ -3115,6 +3345,16 @@ async def get_session_run_codes(account_id: str, code: str | None = None) -> dic
 async def post_session_run_code(account_id: str, body: SessionExecRequest) -> dict[str, Any]:
     invalidate_dashboard_cache()
     try:
+        if detect_bot_provider(config) == "frostguard":
+            _frostguard_session_exec_response(body.run_code)
+            mapped = (
+                "/reboot"
+                if str(body.run_code or "").strip().lower() in {"reboot", "/reboot", "restart", "/restart"}
+                else None
+            )
+            if mapped:
+                return await _frostguard_bridge_text_command(mapped)
+            raise HTTPException(status_code=501, detail="Frostguard session exec unavailable.")
         slot = await resolve_session_slot(config, account_id)
         return await call_gnbots(
             config,
@@ -3133,6 +3373,16 @@ async def run_session_code(account_id: str, run_code: str) -> dict[str, Any]:
 
     invalidate_dashboard_cache()
     try:
+        if detect_bot_provider(config) == "frostguard":
+            _frostguard_session_exec_response(run_code)
+            mapped = (
+                "/reboot"
+                if str(run_code).strip().lower() in {"reboot", "/reboot", "restart", "/restart"}
+                else None
+            )
+            if mapped:
+                return await _frostguard_bridge_text_command(mapped)
+            raise HTTPException(status_code=501, detail="Frostguard session exec unavailable.")
         slot = await resolve_session_slot(config, account_id)
         return await call_gnbots(
             config,
@@ -3805,15 +4055,89 @@ async def restore_account_emulator(account_id: str) -> dict[str, Any]:
     }
 
 
+def _frostguard_profile_instance_index(account_id: str) -> int | None:
+    from frostguard_workspace import list_profiles, resolve_workspace
+
+    want = str(account_id or "").strip().casefold()
+    if not want:
+        return None
+    for row in list_profiles(resolve_workspace(config)):
+        name = str(row.get("name") or "").strip().casefold()
+        rid = str(row.get("id") or "").strip().casefold()
+        if want in {name, rid}:
+            try:
+                idx = int(row.get("instanceId", -1))
+            except (TypeError, ValueError):
+                return None
+            return idx if idx >= 0 else None
+    return None
+
+
+async def _frostguard_screencap_response(account_id: str) -> Response:
+    index = _frostguard_profile_instance_index(account_id)
+    if index is None:
+        raise HTTPException(status_code=404, detail=f"Frostguard profile not found: {account_id}")
+    backend = get_emulator_backend(config)
+
+    def _capture() -> Path | None:
+        return backend.screencap_png(config, index)
+
+    path = await asyncio.to_thread(_capture)
+    if path is None or not Path(path).is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Screenshot unavailable for Frostguard instance {index} (emulator offline?).",
+        )
+    image_bytes = Path(path).read_bytes()
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
 @app.get("/api/screenshots")
 async def list_active_screenshots() -> dict[str, Any]:
-    """List live emulator screenshots for all active GnBots sessions."""
+    """List live emulator screenshots for active sessions (GnBots or Frostguard)."""
+    if detect_bot_provider(config) == "frostguard":
+        from frostguard_dashboard import build_frostguard_dashboard_slice
+
+        slice_payload = await asyncio.to_thread(build_frostguard_dashboard_slice, config)
+        screenshots: list[dict[str, Any]] = []
+        for slot, account in enumerate(slice_payload.get("accounts") or []):
+            if not isinstance(account, dict):
+                continue
+            if not account.get("inSession") and not account.get("isRunning"):
+                continue
+            account_id = str(account.get("id") or "")
+            if not account_id:
+                continue
+            screenshots.append(
+                {
+                    "slot": slot,
+                    "accountId": account_id,
+                    "name": account.get("name") or account_id,
+                    "instanceId": account.get("instanceId"),
+                    "instanceIndex": account.get("instanceIndex"),
+                    "isRunning": bool(account.get("isRunning")),
+                    "isBooting": bool(account.get("isBooting")),
+                    "isPaused": bool(account.get("isPaused")),
+                    "activeAction": account.get("activeAction") or "",
+                    "screenshotUrl": f"/api/sessions/{account_id}/screenshot",
+                }
+            )
+        screenshots.sort(key=lambda row: (row.get("slot", 999), str(row.get("name", "")).lower()))
+        return {"ok": True, "count": len(screenshots), "screenshots": screenshots, "provider": "frostguard"}
+
     result = await call_gnbots(config, method="GET", path="/sessions")
     entries = result.get("data") or []
     if not isinstance(entries, list):
         entries = []
 
-    screenshots: list[dict[str, Any]] = []
+    screenshots = []
     for slot, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
@@ -3845,6 +4169,9 @@ async def list_active_screenshots() -> dict[str, Any]:
 
 @app.get("/api/sessions/{account_id}/screenshot")
 async def get_session_screenshot(account_id: str) -> Response:
+    if detect_bot_provider(config) == "frostguard":
+        return await _frostguard_screencap_response(account_id)
+
     slot = await resolve_session_slot(config, account_id)
     base = resolve_gnbots_api_url(config).rstrip("/")
     last_detail = "Screenshot unavailable."

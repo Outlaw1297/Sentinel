@@ -1474,7 +1474,13 @@ def _restore_worker_body(
                 message=f"Installing Whiteout Survival {apk_info.get('versionName') or ''}…".strip(),
             )
             _append_restore_log(f"[{job_id}] installing apk files: {[path.name for path in apk_paths]}")
-            install_output = install_whiteout_apk(ldconsole, index, apk_paths)
+            package_name = str(apk_info.get("packageName") or "com.gof.global")
+            install_output = install_whiteout_apk(
+                ldconsole,
+                index,
+                apk_paths,
+                package_name=package_name,
+            )
             _append_restore_log(f"[{job_id}] apk install ok: {install_output[:500]}")
             from whiteout_apk import (
                 invalidate_apk_inspect_cache,
@@ -1483,7 +1489,6 @@ def _restore_worker_body(
             )
 
             invalidate_apk_inspect_cache()
-            package_name = str(apk_info.get("packageName") or "com.gof.global")
             installed = read_installed_package_version(ldconsole, index, package_name, run_ldconsole)
             installed_version = (
                 str(installed.get("versionName") or "").strip()
