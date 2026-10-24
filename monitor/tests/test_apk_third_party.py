@@ -20,12 +20,12 @@ from apk_third_party import (
     stage_xapk_into_apk_dir,
     third_party_enabled,
 )
-<<<<<<< HEAD
 from ldplayer_restore import detect_ldplayer_abi, infer_abi_from_ldplayer_path, read_ldplayer_install_info
-from whiteout_apk import check_whiteout_apk_remote, refresh_local_apk_cache_from_disk
-=======
-from whiteout_apk import check_whiteout_apk_remote, ensure_latest_whiteout_apk
->>>>>>> 3a278a9 (Fix third-party APK sync stealing newer GnBots updates.)
+from whiteout_apk import (
+    check_whiteout_apk_remote,
+    ensure_latest_whiteout_apk,
+    refresh_local_apk_cache_from_disk,
+)
 
 
 def _write_tiny_xapk(
