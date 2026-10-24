@@ -1325,15 +1325,28 @@ function renderRestoreSummary(rows) {
   const gameUpdateStuck = Object.values(emulatorApkByIndex).filter((apk) => apk?.gameUpdateRequired).length;
   const cachedVersion =
     remoteApkStatus?.localVersion || rows.find((row) => row.apkVersion)?.apkVersion;
+  const thirdParty = remoteApkStatus?.thirdParty;
+  const thirdPartyLabel =
+    thirdParty?.enabled && thirdParty?.remoteVersion
+      ? `${thirdParty.provider || "3rd party"} ${thirdParty.remoteVersion}${
+          thirdParty.updateAvailable ? " (newer)" : ""
+        }`
+      : thirdParty?.enabled
+        ? thirdParty.error
+          ? `3rd party error`
+          : "3rd party on"
+        : "";
   const remoteApkLabel = remoteApkStatus
     ? remoteApkStatus.localAheadOfRemote
       ? `Local newer (${remoteApkStatus.remoteVersion || "old zip"})`
       : remoteApkStatus.updateAvailable
-        ? "Newer zip available"
+        ? remoteApkStatus.source?.startsWith("third_party")
+          ? `Newer 3rd-party APK (${remoteApkStatus.remoteVersion || "unknown"})`
+          : "Newer zip available"
         : remoteApkStatus.apkReady
           ? remoteApkStatus.remoteVersion && remoteApkStatus.localVersion
-            ? `Zip ${remoteApkStatus.remoteVersion}`
-            : "Cache ready"
+            ? `Cache ${remoteApkStatus.localVersion}${thirdPartyLabel ? ` · ${thirdPartyLabel}` : ""}`
+            : thirdPartyLabel || "Cache ready"
           : "Cache incomplete"
     : "—";
   const troubledWithBackup = rows.filter((row) => row.troubled && row.backupAvailable);
@@ -6146,7 +6159,7 @@ function renderAutomationToggles(status, config) {
     },
     {
       key: "auto_update_apks",
-      label: "Auto-update APKs when newer (bot must be stopped)",
+      label: "Auto-update APKs when newer (GnBots URL and/or third-party; bot must be stopped)",
       checked: Boolean(cfg.auto_update_apks),
     },
   ];

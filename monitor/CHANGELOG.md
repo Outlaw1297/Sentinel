@@ -2,6 +2,10 @@
 
 ## 0.1.11 — 2026-10-15
 
+### APK updates
+- Optional third-party APK catalog (`apk_third_party_provider=apk20`) checks and downloads the latest Whiteout XAPK even when GnBots has not updated its `game.zip`
+- Auto-update APKs and Restore “Check/Download latest APK” use the newer of the GnBots URL or third-party source
+
 ### Stability
 - Keep the dashboard usable across multi-day runs by caching builds when GnBots is offline and skipping overlapping refreshes
 - After Start/Stop, bump the dashboard cache epoch and force fresh burst refreshes so an in-flight rebuild cannot keep showing the pre-change bot state

@@ -137,7 +137,28 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "key": "whiteout_apk_url",
                 "type": "text",
                 "label": "Whiteout Survival APK URL",
-                "hint": "game.zip source used to refresh APKs before restore install.",
+                "hint": "Optional GnBots-style game.zip URL. Leave empty to rely on the third-party catalog below.",
+            },
+            {
+                "key": "apk_third_party_provider",
+                "type": "select",
+                "label": "Third-party APK source",
+                "hint": "off = GnBots URL/local only. apk20 = APK20 Play catalog (downloads XAPK and stages main/arch/pack even when GnBots has not refreshed).",
+                "options": ["off", "apk20"],
+            },
+            {
+                "key": "apk_third_party_package",
+                "type": "text",
+                "label": "Third-party package name",
+                "hint": "Android package to look up (default com.gof.global).",
+                "placeholder": "com.gof.global",
+            },
+            {
+                "key": "apk_third_party_abi",
+                "type": "select",
+                "label": "Third-party APK ABI",
+                "hint": "Match your LDPlayer architecture (arm64-v8a for 64-bit, armeabi-v7a for 32-bit).",
+                "options": ["arm64-v8a", "armeabi-v7a"],
             },
             {
                 "key": "restore_install_apk",
@@ -299,7 +320,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "key": "auto_update_apks",
                 "type": "boolean",
                 "label": "Auto-update APKs when newer",
-                "hint": "When GnBots is stopped, download/update selected instance APKs.",
+                "hint": "When GnBots is stopped, sync from the GnBots URL and/or third-party catalog, then update selected instance APKs.",
             },
             {
                 "key": "auto_update_apks_check_minutes",

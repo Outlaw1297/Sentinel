@@ -34,7 +34,8 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 - Background restore jobs resume after a page refresh
 
 ### Whiteout APK updates
-- Sync from `whiteout_apk_url` (or a local cache) and install / update split APKs on selected emulators
+- Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (`apk_third_party_provider=apk20`) so farms are not stuck waiting for GnBots to refresh the package
+- Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk` and install / update selected emulators
 - **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
 - Choose “instances to update” once; reuse for manual bulk update or automation
 
@@ -189,7 +190,7 @@ First run copies `config.example.json` → `config.json`. Important groups:
 | Group | Keys (examples) | Purpose |
 |-------|-----------------|---------|
 | Paths / API | `gnbots_api_url`, `gnbots_root`, `gnbots_exe`, `ldplayer_backups_dir`, `ldplayer_path` | Find GnBots + LDPlayer |
-| Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
+| Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
 | Dashboard | `dashboard_host`, `dashboard_port`, refresh/cache intervals, screenshot interval | UI polling behavior |
 | Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
 | Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
