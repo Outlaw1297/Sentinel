@@ -172,7 +172,12 @@ class WhiteoutApkTests(unittest.TestCase):
             json.dumps({"version_name": "1.0.0", "package_name": "com.gof.global"}),
             encoding="utf-8",
         )
-        config = {"whiteout_apk_dir": str(apk_dir), "whiteout_apk_url": "https://example.test/game.zip"}
+        config = {
+            "whiteout_apk_dir": str(apk_dir),
+            "whiteout_apk_url": "https://example.test/game.zip",
+            # Keep this unit test offline: apk20 defaults on and would overwrite remoteZipSize.
+            "apk_third_party_provider": "off",
+        }
         with patch("whiteout_apk._remote_game_zip_size", return_value=20):
             result = check_whiteout_apk_remote(config, sync=False)
         self.assertTrue(result["updateAvailable"])

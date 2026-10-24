@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apk_third_party import (
+    _apk20_pick_variant,
     check_third_party_apk_remote,
     ensure_apk_third_party_defaults,
     map_xapk_split_to_cache_name,
@@ -20,27 +21,41 @@ from apk_third_party import (
     third_party_enabled,
 )
 from ldplayer_restore import detect_ldplayer_abi, infer_abi_from_ldplayer_path, read_ldplayer_install_info
-from whiteout_apk import check_whiteout_apk_remote
+from whiteout_apk import check_whiteout_apk_remote, refresh_local_apk_cache_from_disk
 
 
-def _write_tiny_xapk(path: Path, *, version_name: str = "1.34.16", version_code: str = "350") -> None:
+def _write_tiny_xapk(
+    path: Path,
+    *,
+    version_name: str = "1.34.16",
+    version_code: str = "350",
+    extra_splits: list[tuple[str, str, bytes]] | None = None,
+) -> None:
+    splits = [
+        {"file": "com.gof.global.apk", "id": "base"},
+        {"file": "config.arm64_v8a.apk", "id": "config.arm64_v8a"},
+        {"file": "game_asset.apk", "id": "game_asset"},
+    ]
+    files = [
+        ("com.gof.global.apk", b"base-apk"),
+        ("config.arm64_v8a.apk", b"arch-apk"),
+        ("game_asset.apk", b"pack-apk"),
+    ]
+    for file_name, split_id, payload in extra_splits or []:
+        splits.append({"file": file_name, "id": split_id})
+        files.append((file_name, payload))
     manifest = {
         "xapk_version": 2,
         "package_name": "com.gof.global",
         "name": f"Whiteout Survival\n{version_name}",
         "version_code": version_code,
         "version_name": version_name,
-        "split_apks": [
-            {"file": "com.gof.global.apk", "id": "base"},
-            {"file": "config.arm64_v8a.apk", "id": "config.arm64_v8a"},
-            {"file": "game_asset.apk", "id": "game_asset"},
-        ],
+        "split_apks": splits,
     }
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("manifest.json", json.dumps(manifest))
-        archive.writestr("com.gof.global.apk", b"base-apk")
-        archive.writestr("config.arm64_v8a.apk", b"arch-apk")
-        archive.writestr("game_asset.apk", b"pack-apk")
+        for file_name, payload in files:
+            archive.writestr(file_name, payload)
         archive.writestr("icon.png", b"png")
 
 
@@ -111,6 +126,17 @@ def test_map_xapk_split_roles():
     assert map_xapk_split_to_cache_name("com.gof.global.apk", "base") == "main.apk"
     assert map_xapk_split_to_cache_name("config.arm64_v8a.apk", "config.arm64_v8a") == "arch.apk"
     assert map_xapk_split_to_cache_name("game_asset.apk", "game_asset") == "pack.apk"
+    # Density / locale configs must not steal arch.apk.
+    assert map_xapk_split_to_cache_name("config.xxhdpi.apk", "config.xxhdpi") is None
+    assert map_xapk_split_to_cache_name("config.en.apk", "config.en") is None
+    assert (
+        map_xapk_split_to_cache_name(
+            "config.armeabi_v7a.apk",
+            "config.armeabi_v7a",
+            abi="arm64-v8a",
+        )
+        is None
+    )
 
 
 def test_stage_xapk_into_apk_dir(tmp_path: Path):
@@ -128,6 +154,68 @@ def test_stage_xapk_into_apk_dir(tmp_path: Path):
     manifest = json.loads((apk_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["source"] == "third_party_xapk"
     assert set(manifest["files"]) == {"main.apk", "arch.apk", "pack.apk"}
+
+
+def test_stage_xapk_skips_density_and_wrong_abi_configs(tmp_path: Path):
+    xapk = tmp_path / "game.xapk"
+    apk_dir = tmp_path / "cache"
+    _write_tiny_xapk(
+        xapk,
+        extra_splits=[
+            ("config.xxhdpi.apk", "config.xxhdpi", b"density-resources"),
+            ("config.armeabi_v7a.apk", "config.armeabi_v7a", b"wrong-abi"),
+        ],
+    )
+    staged = stage_xapk_into_apk_dir(xapk, apk_dir, abi="arm64-v8a")
+    assert (apk_dir / "arch.apk").read_bytes() == b"arch-apk"
+    assert staged["files"]["arch.apk"] == "config.arm64_v8a.apk"
+
+
+def test_apk20_pick_variant_rejects_concrete_wrong_abi():
+    rows = [
+        {
+            "versionCode": 350,
+            "versionString": "1.34.16",
+            "architecture": "arm64-v8a",
+            "variantId": "default",
+            "fileSize": 100,
+            "isBundle": True,
+        }
+    ]
+    assert _apk20_pick_variant(rows, abi="armeabi-v7a") is None
+    assert _apk20_pick_variant(rows, abi="arm64-v8a") is rows[0]
+
+
+def test_refresh_local_restages_xapk_game_zip(tmp_path: Path):
+    """After APK20 sync, game.zip is an XAPK newer than splits; refresh must restage, not dump names."""
+    import os
+    import time
+
+    apk_dir = tmp_path / "cache"
+    xapk = tmp_path / "game.xapk"
+    _write_tiny_xapk(xapk)
+    stage_xapk_into_apk_dir(xapk, apk_dir, abi="arm64-v8a")
+
+    # Simulate long XAPK copy finishing after split writes, then losing arch.apk.
+    now = time.time()
+    for name in ("main.apk", "pack.apk"):
+        os.utime(apk_dir / name, (now, now))
+    (apk_dir / "arch.apk").unlink()
+    os.utime(apk_dir / "game.zip", (now + 5, now + 5))
+
+    config = {"whiteout_apk_dir": str(apk_dir), "apk_third_party_abi": "arm64-v8a"}
+    with patch("whiteout_apk.read_version_from_main_apk", return_value="1.34.16"):
+        with patch("whiteout_apk.sync_apk_manifest_from_main_apk"):
+            with patch("whiteout_apk.persist_apk_cache_state"):
+                with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={"versionName": "1.34.16"}):
+                    status = refresh_local_apk_cache_from_disk(config)
+
+    assert (apk_dir / "arch.apk").read_bytes() == b"arch-apk"
+    assert status["ready"] is True
+    manifest = json.loads((apk_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source"] == "third_party_xapk"
+    assert manifest["files"]["arch.apk"] == "config.arm64_v8a.apk"
+    assert not (apk_dir / "config.arm64_v8a.apk").exists()
 
 
 def test_check_third_party_reports_update_when_local_older(tmp_path: Path):
