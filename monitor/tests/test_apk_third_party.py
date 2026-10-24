@@ -504,3 +504,93 @@ def test_ensure_latest_skips_third_party_when_gnbots_size_differs(tmp_path: Path
     assert result["downloaded"] is True
     assert result["source"] == "gnbots_url"
     assert (apk_dir / "main.apk").read_bytes() == b"new-main"
+
+
+def _xapk_cache(tmp_path: Path, *, version_name: str = "1.34.16") -> tuple[Path, int, bytes]:
+    apk_dir = tmp_path / "cache"
+    xapk = tmp_path / "game.xapk"
+    _write_tiny_xapk(xapk, version_name=version_name)
+    stage_xapk_into_apk_dir(xapk, apk_dir, abi="arm64-v8a")
+    zip_path = apk_dir / "game.zip"
+    return apk_dir, zip_path.stat().st_size, (apk_dir / "main.apk").read_bytes()
+
+
+def test_ensure_latest_keeps_xapk_when_gnbots_size_differs(tmp_path: Path):
+    """An APK20 XAPK stored as game.zip must not be replaced by the older GnBots zip."""
+    apk_dir, zip_size, main_bytes = _xapk_cache(tmp_path)
+    config = {
+        "whiteout_apk_dir": str(apk_dir),
+        "whiteout_apk_url": "https://example.test/game.zip",
+        "apk_third_party_provider": "apk20",
+        "apk_third_party_abi": "arm64-v8a",
+    }
+    third = {
+        "ok": True,
+        "enabled": True,
+        "provider": "apk20",
+        "packageName": "com.gof.global",
+        "abi": "arm64-v8a",
+        "localVersion": "1.34.16",
+        "remoteVersion": "1.34.16",
+        "remoteVersionCode": 350,
+        "updateAvailable": False,
+        "remoteSize": zip_size,
+        "sourceUrl": "https://example.test/apk20",
+        "title": "Whiteout Survival",
+    }
+
+    with patch("apk_third_party.check_third_party_apk_remote", return_value=third):
+        with patch("apk_third_party.sync_third_party_apk") as sync_mock:
+            with patch("whiteout_apk._remote_game_zip_size", return_value=999):
+                with patch("whiteout_apk._download_game_zip") as download_mock:
+                    with patch("whiteout_apk.read_version_from_main_apk", return_value="1.34.16"):
+                        with patch("whiteout_apk.sync_apk_manifest_from_main_apk"):
+                            with patch("whiteout_apk.persist_apk_cache_state"):
+                                result = ensure_latest_whiteout_apk(config)
+
+    assert not sync_mock.called
+    assert not download_mock.called
+    assert result["downloaded"] is False
+    assert result["source"] == "gnbots_url"
+    assert (apk_dir / "main.apk").read_bytes() == main_bytes
+    assert (apk_dir / "game.zip").stat().st_size == zip_size
+
+
+def test_check_whiteout_xapk_size_mismatch_is_not_a_gnbots_update(tmp_path: Path):
+    """UI/sync must not report a GnBots update just because the XAPK length differs."""
+    apk_dir, zip_size, _main = _xapk_cache(tmp_path)
+    config = {
+        "whiteout_apk_dir": str(apk_dir),
+        "whiteout_apk_url": "https://example.test/game.zip",
+        "apk_third_party_provider": "apk20",
+        "apk_third_party_abi": "arm64-v8a",
+    }
+    third = {
+        "ok": True,
+        "enabled": True,
+        "provider": "apk20",
+        "packageName": "com.gof.global",
+        "abi": "arm64-v8a",
+        "localVersion": "1.34.16",
+        "remoteVersion": "1.34.16",
+        "updateAvailable": False,
+        "remoteSize": zip_size,
+        "sourceUrl": "https://example.test/apk20",
+        "title": "Whiteout Survival",
+    }
+
+    with patch("apk_third_party.check_third_party_apk_remote", return_value=third):
+        with patch("whiteout_apk._remote_game_zip_size", return_value=999):
+            with patch("whiteout_apk.read_version_from_main_apk", return_value="1.34.16"):
+                with patch("whiteout_apk.sync_apk_manifest_from_main_apk"):
+                    with patch("whiteout_apk.persist_apk_cache_state"):
+                        with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={}):
+                            with patch("whiteout_apk.ensure_latest_whiteout_apk") as ensure_mock:
+                                with patch("whiteout_apk._download_game_zip") as download_mock:
+                                    quiet = check_whiteout_apk_remote(config, sync=False)
+                                    synced = check_whiteout_apk_remote(config, sync=True)
+
+    assert quiet["updateAvailable"] is False
+    assert synced["updateAvailable"] is False
+    assert not ensure_mock.called
+    assert not download_mock.called

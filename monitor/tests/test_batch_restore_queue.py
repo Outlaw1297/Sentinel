@@ -167,6 +167,84 @@ class BatchRestoreQueueTests(unittest.TestCase):
         self.assertEqual([row["index"] for row in seen], [1, 2])
         self.assertTrue(all(row["batch"] for row in seen))
 
+    def test_pack_stall_is_batch_only(self) -> None:
+        from whiteout_apk import (
+            RESOURCE_PACK_STALL_SECONDS,
+            run_whiteout_post_install_workflow,
+            wait_for_whiteout_resource_download,
+        )
+
+        with patch(
+            "whiteout_apk.start_whiteout_resource_download",
+            return_value={"completed": True, "downloadPercent": 100},
+        ) as start:
+            with patch(
+                "whiteout_apk.await_whiteout_resource_pack_completion",
+                return_value={"completed": True},
+            ) as done:
+                run_whiteout_post_install_workflow(
+                    Path("ldconsole"),
+                    1,
+                    "com.gof.global",
+                    lambda *_args, **_kwargs: None,
+                    timeout_seconds=1800,
+                    batch=False,
+                )
+                run_whiteout_post_install_workflow(
+                    Path("ldconsole"),
+                    1,
+                    "com.gof.global",
+                    lambda *_args, **_kwargs: None,
+                    timeout_seconds=300,
+                    batch=True,
+                )
+        self.assertIsNone(start.call_args_list[0].kwargs.get("stall_seconds"))
+        self.assertIsNone(done.call_args_list[0].kwargs.get("stall_seconds"))
+        self.assertEqual(start.call_args_list[1].kwargs.get("stall_seconds"), RESOURCE_PACK_STALL_SECONDS)
+        self.assertEqual(done.call_args_list[1].kwargs.get("stall_seconds"), RESOURCE_PACK_STALL_SECONDS)
+
+        clock = {"t": 0.0}
+
+        def monotonic() -> float:
+            clock["t"] += 30.0
+            return clock["t"]
+
+        state = {
+            "active": True,
+            "percent": 40,
+            "screenshotPercent": 40,
+            "xml": "",
+            "screenStage": "optional_download",
+            "unityUi": False,
+            "gameHud": False,
+        }
+        with patch("whiteout_apk.time.monotonic", side_effect=monotonic):
+            with patch("whiteout_apk.time.sleep"):
+                with patch("whiteout_apk._read_display_size", return_value=(540, 960)):
+                    with patch("whiteout_apk._probe_download_state", return_value=state):
+                        clock["t"] = 0.0
+                        restore_wait = wait_for_whiteout_resource_download(
+                            Path("ldconsole"),
+                            1,
+                            lambda *_args, **_kwargs: None,
+                            timeout_seconds=400,
+                            min_complete_seconds=10**9,
+                            stall_seconds=None,
+                        )
+                        clock["t"] = 0.0
+                        batch_wait = wait_for_whiteout_resource_download(
+                            Path("ldconsole"),
+                            1,
+                            lambda *_args, **_kwargs: None,
+                            timeout_seconds=1800,
+                            min_complete_seconds=10**9,
+                            stall_seconds=RESOURCE_PACK_STALL_SECONDS,
+                        )
+        self.assertEqual(restore_wait["reason"], "timeout")
+        self.assertNotEqual(restore_wait["reason"], "stalled")
+        self.assertEqual(batch_wait["reason"], "stalled")
+        self.assertLess(batch_wait["elapsedSeconds"], 1800)
+
 
 if __name__ == "__main__":
     unittest.main()

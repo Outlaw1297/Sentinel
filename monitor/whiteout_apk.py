@@ -1330,6 +1330,7 @@ def update_whiteout_apk_on_instance(
                     run_ldconsole,
                     config=config,
                     timeout_seconds=pack_timeout,
+                    batch=batch,
                 )
             except Exception as exc:  # noqa: BLE001
                 resource_error = str(exc)
@@ -1484,6 +1485,51 @@ def apk_status(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _game_zip_is_third_party_xapk(zip_path: Path) -> bool:
+    """True when game.zip is an APK20 XAPK rather than a GnBots main/arch/pack archive."""
+    if not zip_path.is_file():
+        return False
+    try:
+        from apk_third_party import game_zip_looks_like_xapk
+
+        return game_zip_looks_like_xapk(zip_path)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _gnbots_zip_size_is_update(
+    zip_path: Path,
+    remote_size: int | None,
+    local_size: int | None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Whether a GnBots content-length change should replace the local cache.
+
+    Size mismatch means GnBots refreshed only while ``game.zip`` is that artifact.
+    After a third-party sync the same path holds an XAPK, so its size will not
+    match the GnBots URL. Treating that as an update downloads the older zip and
+    overwrites newer staged APKs. Prefer GnBots on size only for a real GnBots
+    archive (or a missing zip). While the third-party catalog is enabled, keep
+    the XAPK until GnBots is actually the on-disk zip again.
+    """
+    if remote_size is None:
+        return False
+    if not zip_path.is_file():
+        return True
+    if remote_size == local_size:
+        return False
+    if _game_zip_is_third_party_xapk(zip_path):
+        try:
+            from apk_third_party import third_party_enabled
+
+            if third_party_enabled(config or {}):
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+    return True
+
+
 def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> dict[str, Any]:
     """Compare local APK cache with GnBots game.zip and/or a third-party catalog.
 
@@ -1500,7 +1546,12 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
     if zip_path.is_file():
         remote_zip_version = _read_manifest_from_zip(zip_path).get("version_name")
     local_version = local.get("versionName")
-    remote_newer = remote_size is not None and remote_size != local_size
+    remote_newer = _gnbots_zip_size_is_update(
+        zip_path,
+        remote_size,
+        local_size,
+        config=config,
+    )
     missing_zip = bool(url) and not zip_path.is_file()
     local_ahead_of_remote = bool(
         local_version
@@ -1565,13 +1616,13 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
         result["thirdParty"] = {"ok": False, "enabled": True, "error": str(exc)}
 
     if sync and result.get("updateAvailable") and not result.get("localAheadOfRemote"):
-        # Never prefer third-party when GnBots game.zip already signals an update
-        # (size mismatch / missing zip). Otherwise a mid-tier APK20 build can
-        # win over a newer GnBots zip and leave bots on the wrong version.
+        # Never prefer third-party when the on-disk GnBots game.zip changed size
+        # or is missing. An XAPK stored as game.zip does not count: its size will
+        # not match the GnBots URL, and downloading that zip would downgrade.
         gnbots_size_update = bool(
             url
             and (
-                (remote_size is not None and remote_size != local_size)
+                _gnbots_zip_size_is_update(zip_path, remote_size, local_size, config=config)
                 or missing_zip
             )
         )
@@ -1900,12 +1951,12 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
 
     remote_size = _remote_game_zip_size(url) if url else None
     local_size = zip_path.stat().st_size if zip_path.is_file() else None
+    # Missing zip still counts. A size mismatch counts only when game.zip is the
+    # GnBots artifact — an APK20 XAPK is a different file and must not be replaced
+    # just because its length differs from the GnBots URL.
     gnbots_size_update = bool(
         url
-        and (
-            (remote_size is not None and remote_size != local_size)
-            or (not zip_path.is_file() and remote_size is not None)
-        )
+        and _gnbots_zip_size_is_update(zip_path, remote_size, local_size, config=config)
     )
 
     # Prefer third-party only when it is strictly newer than local/cache and GnBots
@@ -1958,7 +2009,7 @@ def ensure_latest_whiteout_apk(config: dict[str, Any]) -> dict[str, Any]:
 
     downloaded = False
 
-    if url and remote_size is not None and remote_size != local_size:
+    if url and _gnbots_zip_size_is_update(zip_path, remote_size, local_size, config=config):
         _download_game_zip(url, zip_path)
         downloaded = True
         local_size = zip_path.stat().st_size
@@ -4006,6 +4057,7 @@ def wait_for_optional_pack_if_running(
     *,
     timeout_seconds: int = 1800,
     on_progress: Any | None = None,
+    stall_seconds: int | None = None,
 ) -> dict[str, Any] | None:
     """If optional pack download is visible, wait until it completes."""
     state = _optional_pack_download_in_progress(ldconsole, index, run_ldconsole)
@@ -4022,6 +4074,7 @@ def wait_for_optional_pack_if_running(
         run_ldconsole,
         timeout_seconds=timeout_seconds,
         on_progress=on_progress,
+        stall_seconds=stall_seconds,
     )
 
 
@@ -4038,7 +4091,9 @@ def wait_for_whiteout_resource_download(
 ) -> dict[str, Any]:
     """Wait until the Whiteout resource pack download reaches 100%."""
     timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
-    stall_limit = RESOURCE_PACK_STALL_SECONDS if stall_seconds is None else max(30, int(stall_seconds))
+    # No-progress stall is opt-in for bulk APK updates. Restore reuses this waiter
+    # with the long budget; a flat percent for a few minutes is normal on large packs.
+    stall_limit = None if stall_seconds is None else max(30, int(stall_seconds))
     width, height = _read_display_size(ldconsole, index, run_ldconsole)
     deadline = time.monotonic() + timeout_seconds
     started = time.monotonic()
@@ -4131,7 +4186,8 @@ def wait_for_whiteout_resource_download(
         samples += 1
 
         if (
-            (saw_active or saw_xml_progress or saw_screenshot_progress)
+            stall_limit is not None
+            and (saw_active or saw_xml_progress or saw_screenshot_progress)
             and peak_percent < 100
             and (time.monotonic() - last_progress_at) >= stall_limit
         ):
@@ -4332,6 +4388,7 @@ def start_whiteout_resource_download(
     download_timeout_seconds: int | None = None,
     on_progress: Any | None = None,
     config: dict[str, Any] | None = None,
+    stall_seconds: int | None = None,
 ) -> dict[str, Any]:
     download_timeout_seconds = resolve_resource_pack_timeout(
         config,
@@ -4474,6 +4531,7 @@ def start_whiteout_resource_download(
         timeout_seconds=download_timeout_seconds,
         on_progress=on_progress,
         config=config,
+        stall_seconds=stall_seconds,
     )
     merged = {**result, **wait_result}
     if not merged.get("completed"):
@@ -4499,6 +4557,7 @@ def await_whiteout_resource_pack_completion(
     on_progress: Any | None = None,
     timeout_seconds: int | None = None,
     log_fn: Any | None = None,
+    stall_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Keep waiting for optional pack + furnace/city HUD, matching restore jobs."""
     timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
@@ -4518,6 +4577,7 @@ def await_whiteout_resource_pack_completion(
             run_ldconsole,
             timeout_seconds=slice_seconds,
             on_progress=on_progress,
+            stall_seconds=stall_seconds,
         )
         if resumed:
             resource_info = {**resource_info, **resumed}
@@ -4560,6 +4620,7 @@ def await_whiteout_resource_pack_completion(
             timeout_seconds=remaining,
             on_progress=on_progress,
             config=config,
+            stall_seconds=stall_seconds,
         )
         resource_info = {**resource_info, **extra}
         if resource_info.get("completed"):
@@ -4606,9 +4667,16 @@ def run_whiteout_post_install_workflow(
     on_progress: Any | None = None,
     log_fn: Any | None = None,
     timeout_seconds: int | None = None,
+    batch: bool = False,
 ) -> dict[str, Any]:
     """Launch game, tap Download Now, wait for pack + furnace/city screen (restore parity)."""
-    pack_timeout = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
+    pack_timeout = resolve_resource_pack_timeout(
+        config,
+        override_seconds=timeout_seconds,
+        batch=batch,
+    )
+    # Stall-and-continue is only for bulk APK updates. Restore keeps the full wait.
+    stall_seconds = RESOURCE_PACK_STALL_SECONDS if batch else None
     resource_info = start_whiteout_resource_download(
         ldconsole,
         index,
@@ -4617,6 +4685,7 @@ def run_whiteout_post_install_workflow(
         on_progress=on_progress,
         config=config,
         download_timeout_seconds=pack_timeout,
+        stall_seconds=stall_seconds,
     )
     if (
         resource_info.get("physicalTap")
@@ -4639,6 +4708,7 @@ def run_whiteout_post_install_workflow(
         on_progress=on_progress,
         timeout_seconds=pack_timeout,
         log_fn=log_fn,
+        stall_seconds=stall_seconds,
     )
 
 
