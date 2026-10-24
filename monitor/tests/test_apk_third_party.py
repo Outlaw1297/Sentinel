@@ -737,3 +737,128 @@ def test_select_apk_source_policy_third_party_overrules_newer_gnbots():
     assert decision["policy"] == "third_party"
     assert decision["shouldSyncThird"] is True
     assert decision["shouldDownloadGnbots"] is False
+
+
+def test_ensure_latest_rethrows_extract_and_recovers_stale_splits(tmp_path: Path):
+    """GnBots download + failed extract must not leave a permanent stale split cache.
+
+    Regression: ensure_latest rewrote manifest to gnbots_url/new version before extract.
+    After extract failed, the next call saw a size-matched zip + existing splits and
+    skipped re-extract — Update/install then pushed the old APKs.
+    """
+    import os
+    import time
+
+    apk_dir = tmp_path / "apk"
+    apk_dir.mkdir()
+    for name, payload in (
+        ("main.apk", b"OLD-MAIN"),
+        ("arch.apk", b"OLD-ARCH"),
+        ("pack.apk", b"OLD-PACK"),
+    ):
+        path = apk_dir / name
+        path.write_bytes(payload)
+        older = time.time() - 120
+        os.utime(path, (older, older))
+
+    xapk_path = apk_dir / "game.zip"
+    _write_tiny_xapk(xapk_path, version_name="1.33.9", version_code="340")
+    (apk_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_name": "com.gof.global",
+                "version_name": "1.33.9",
+                "source": "third_party_xapk",
+                "files": {
+                    "main.apk": "com.gof.global.apk",
+                    "arch.apk": "config.arm64_v8a.apk",
+                    "pack.apk": "game_asset.apk",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = {
+        "whiteout_apk_dir": str(apk_dir),
+        "whiteout_apk_url": "https://example.test/game.zip",
+        "apk_source_policy": "auto",
+        "apk_third_party_provider": "apk20",
+        "headless_mode": True,
+    }
+    third = {
+        "ok": True,
+        "enabled": True,
+        "provider": "apk20",
+        "remoteVersion": "1.33.9",
+        "updateAvailable": False,
+    }
+    remote_size = xapk_path.stat().st_size + 50_000
+
+    def _download_gnbots(_url: str, destination: Path) -> None:
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("main.apk", b"NEW-MAIN")
+            archive.writestr("arch.apk", b"NEW-ARCH")
+            archive.writestr("pack.apk", b"NEW-PACK")
+            archive.writestr(
+                "manifest.json",
+                json.dumps({"package_name": "com.gof.global", "version_name": "1.34.16"}),
+            )
+
+    with patch("whiteout_apk._remote_game_zip_size", return_value=remote_size):
+        with patch("whiteout_apk.probe_gnbots_remote_version", return_value="1.34.16"):
+            with patch("whiteout_apk._download_game_zip", side_effect=_download_gnbots):
+                with patch(
+                    "whiteout_apk._stage_or_extract_game_zip",
+                    side_effect=OSError("disk full during extract"),
+                ):
+                    with patch("whiteout_apk.read_version_from_main_apk", return_value="1.33.9"):
+                        with patch("apk_third_party.check_third_party_apk_remote", return_value=third):
+                            with patch("apk_third_party.third_party_enabled", return_value=True):
+                                with patch("whiteout_apk._persist_gnbots_version_probe"):
+                                    with patch("whiteout_apk.persist_apk_cache_state"):
+                                        with pytest.raises(OSError, match="disk full"):
+                                            ensure_latest_whiteout_apk(config)
+
+    # Manifest must still describe the old third-party cache (not a false GnBots settle).
+    manifest_after_fail = json.loads((apk_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert str(manifest_after_fail.get("source") or "").startswith("third_party")
+    assert manifest_after_fail.get("version_name") == "1.33.9"
+    assert (apk_dir / "main.apk").read_bytes() == b"OLD-MAIN"
+
+    new_size = (apk_dir / "game.zip").stat().st_size
+    extract_calls = {"n": 0}
+
+    def _version_from_main(apk_dir_arg: Path, _config: dict) -> str | None:
+        payload = (apk_dir_arg / "main.apk").read_bytes()
+        if payload == b"NEW-MAIN":
+            return "1.34.16"
+        if payload == b"OLD-MAIN":
+            return "1.33.9"
+        return None
+
+    def _extract_ok(zip_path: Path, dest: Path, config: dict | None = None) -> None:
+        extract_calls["n"] += 1
+        with zipfile.ZipFile(zip_path) as archive:
+            for name in archive.namelist():
+                if name.endswith(".apk") or name.endswith(".json"):
+                    target = dest / Path(name).name
+                    target.write_bytes(archive.read(name))
+
+    with patch("whiteout_apk._remote_game_zip_size", return_value=new_size):
+        with patch("whiteout_apk.read_version_from_main_apk", side_effect=_version_from_main):
+            with patch("apk_third_party.check_third_party_apk_remote", return_value=third):
+                with patch("apk_third_party.third_party_enabled", return_value=True):
+                    with patch("whiteout_apk._stage_or_extract_game_zip", side_effect=_extract_ok):
+                        with patch("whiteout_apk._download_game_zip") as download_mock:
+                            with patch("whiteout_apk._persist_gnbots_version_probe"):
+                                with patch("whiteout_apk.persist_apk_cache_state"):
+                                    recovered = ensure_latest_whiteout_apk(config)
+
+    assert not download_mock.called
+    assert extract_calls["n"] == 1
+    assert recovered["versionName"] == "1.34.16"
+    assert (apk_dir / "main.apk").read_bytes() == b"NEW-MAIN"
+    assert (apk_dir / "arch.apk").read_bytes() == b"NEW-ARCH"
+    assert (apk_dir / "pack.apk").read_bytes() == b"NEW-PACK"
