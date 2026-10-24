@@ -202,6 +202,40 @@ def test_upsert_and_add_profile_for_instance(tmp_path: Path):
     assert by_id["40"]["instanceId"] == 5
 
 
+def test_add_profile_for_instance_refuses_name_rebind(tmp_path: Path):
+    """Provision must not steal an existing profile's emulator by matching name only."""
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Profile ("
+        "id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.execute("INSERT INTO Profile VALUES (1, 'Farm1', 1, 0)")
+    conn.commit()
+    conn.close()
+
+    conflict = add_profile_for_instance(workspace, instance_index=7, name="Farm1")
+    assert conflict["ok"] is False
+    assert "already exists" in str(conflict.get("message") or "")
+    assert "refusing to rebind" in str(conflict.get("message") or "")
+
+    # Existing binding must be untouched.
+    by_name = {row["name"]: row for row in list_profiles(workspace)}
+    assert by_name["Farm1"]["instanceId"] == 0
+    assert len(by_name) == 1
+
+    # Explicit id still allows an intentional update.
+    moved = add_profile_for_instance(
+        workspace, instance_index=7, name="Farm1", profile_id=1
+    )
+    assert moved["ok"] is True
+    assert moved["action"] == "update"
+    by_name = {row["name"]: row for row in list_profiles(workspace)}
+    assert by_name["Farm1"]["instanceId"] == 7
+
+
 def test_list_tasks_when_present(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir()

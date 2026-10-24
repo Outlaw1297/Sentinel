@@ -376,8 +376,21 @@ def start_provision_account(
         template_account_id=template_account_id,
     )
 
+    from bot_backend import detect_bot_provider
+
+    bot_provider = detect_bot_provider(config)
     gnbots_root = resolve_gnbots_root(config)
-    if profile_name_exists(gnbots_root, profile_name, clean_name):
+    if bot_provider == "frostguard":
+        # Uniqueness lives in frostguard.db — GnBots profiles.json is not authoritative.
+        from frostguard_workspace import list_profiles, resolve_workspace
+
+        want = clean_name.casefold()
+        for row in list_profiles(resolve_workspace(config)):
+            if str(row.get("name") or "").strip().casefold() == want:
+                raise ValueError(
+                    f"Frostguard workspace already has a profile named {clean_name!r}."
+                )
+    elif profile_name_exists(gnbots_root, profile_name, clean_name):
         raise ValueError(f"Profile already has an account named {clean_name!r}.")
 
     if source_type == "account":
