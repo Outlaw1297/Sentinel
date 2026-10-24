@@ -1,17 +1,23 @@
 # Changelog
 
-## 0.1.11 — 2026-10-15
+## 0.1.12 — 2026-10-23
 
 ### APK updates
 - Third-party APK catalog defaults to on (`apk_third_party_provider=apk20`) and auto-fills package/ABI from GnBots `LDPath64`/`LDPath32` and the LDPlayer install path
 - Checks/downloads the latest Whiteout XAPK even when GnBots has not updated its `game.zip`
 - Auto-update APKs and Restore “Check/Download latest APK” use the newer of the GnBots URL or third-party source
+- Prefer a newer GnBots `game.zip` size update over a mid-tier third-party catalog build
+- Restage XAPK `game.zip` into `main`/`arch`/`pack` without corrupting the local APK cache
 - Batch restore-all runs one instance at a time so LDPlayer/resource-pack waits no longer stall siblings; Restore UI keeps polling the rest of the queue after the first finishes
 - Bulk APK updates use a shorter resource-pack budget and continue to the next instance if a pack wait stalls
 
 ### Stability
-- Keep the dashboard usable across multi-day runs by caching builds when GnBots is offline and skipping overlapping refreshes
 - After Start/Stop, bump the dashboard cache epoch and force fresh burst refreshes so an in-flight rebuild cannot keep showing the pre-change bot state
+
+## 0.1.11 — 2026-10-15
+
+### Stability
+- Keep the dashboard usable across multi-day runs by caching builds when GnBots is offline and skipping overlapping refreshes
 - Move the Windows service check off the request thread so the page can still load
 - Limit concurrent screenshot downloads and slow the APK probe so the server does not stall
 - Rotate the runtime log instead of letting it grow without a limit
