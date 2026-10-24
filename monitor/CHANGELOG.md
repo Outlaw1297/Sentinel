@@ -2,6 +2,12 @@
 
 ## 0.2.1 — 2026-10-24
 
+### APK updates
+- Download/sync only fills the APK cache; Restore now states that clearly and auto-queues install on selected emulators after a successful download
+- APK install jobs fail if the emulator remains on an older version or still shows the in-game Update dialog
+- APK20 ABI mismatches list available architectures (Whiteout catalog is currently arm64-v8a only)
+- Staging an XAPK clears stale `main`/`arch`/`pack` splits before writing the new cache
+
 ### Frostguard parity progress
 - Global Start/Stop/Stop All/Stop Emulators dispatch through Frostguard bridge + emulator quit when `bot_provider` is frostguard (GnBots Remote API path unchanged)
 - Dashboard accounts from Frostguard SQLite profiles + emulator running indexes; `botActive` via pid/lock/tasks

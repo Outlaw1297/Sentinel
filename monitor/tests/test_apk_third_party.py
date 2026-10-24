@@ -190,6 +190,61 @@ def test_apk20_pick_variant_rejects_concrete_wrong_abi():
     assert _apk20_pick_variant(rows, abi="arm64-v8a") is rows[0]
 
 
+def test_stage_xapk_clears_stale_splits(tmp_path: Path):
+    xapk = tmp_path / "game.xapk"
+    apk_dir = tmp_path / "cache"
+    apk_dir.mkdir()
+    (apk_dir / "main.apk").write_bytes(b"OLD-MAIN")
+    (apk_dir / "arch.apk").write_bytes(b"OLD-ARCH")
+    (apk_dir / "pack.apk").write_bytes(b"OLD-PACK")
+    # XAPK with only base + arch (no pack) must not leave OLD-PACK behind.
+    with zipfile.ZipFile(xapk, "w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "package_name": "com.gof.global",
+                    "version_name": "1.34.16",
+                    "version_code": "350",
+                    "split_apks": [
+                        {"file": "com.gof.global.apk", "id": "base"},
+                        {"file": "config.arm64_v8a.apk", "id": "config.arm64_v8a"},
+                    ],
+                }
+            ),
+        )
+        archive.writestr("com.gof.global.apk", b"new-base")
+        archive.writestr("config.arm64_v8a.apk", b"new-arch")
+    staged = stage_xapk_into_apk_dir(xapk, apk_dir, abi="arm64-v8a")
+    assert (apk_dir / "main.apk").read_bytes() == b"new-base"
+    assert (apk_dir / "arch.apk").read_bytes() == b"new-arch"
+    assert not (apk_dir / "pack.apk").exists()
+    assert staged["files"] == {"main.apk": "com.gof.global.apk", "arch.apk": "config.arm64_v8a.apk"}
+
+
+def test_check_apk20_remote_abi_error_lists_available():
+    from apk_third_party import check_apk20_remote
+
+    detail = {"lastVersion": {"versionString": "1.34.16", "versionCode": 350}}
+    variants = [
+        {
+            "versionCode": 350,
+            "versionString": "1.34.16",
+            "architecture": "arm64-v8a",
+            "variantId": "default",
+            "fileSize": 100,
+        }
+    ]
+    with patch("apk_third_party._http_get_json", side_effect=[detail, variants]):
+        with pytest.raises(RuntimeError, match="Available architectures: arm64-v8a"):
+            check_apk20_remote(
+                {
+                    "apk_third_party_package": "com.gof.global",
+                    "apk_third_party_abi": "armeabi-v7a",
+                }
+            )
+
+
 def test_refresh_local_restages_xapk_game_zip(tmp_path: Path):
     """After APK20 sync, game.zip is an XAPK newer than splits; refresh must restage, not dump names."""
     import os
@@ -323,8 +378,9 @@ def test_check_whiteout_apk_remote_sync_prefers_third_party(tmp_path: Path):
         "downloaded": True,
         "synced": True,
         "updateAvailable": False,
+        "installRequired": True,
         "localVersion": "1.34.16",
-        "message": "downloaded",
+        "message": "Downloaded into cache; install on emulators still required.",
     }
 
     with patch("apk_third_party.check_third_party_apk_remote", return_value=third):
@@ -335,6 +391,7 @@ def test_check_whiteout_apk_remote_sync_prefers_third_party(tmp_path: Path):
 
     assert sync_mock.called
     assert result["downloaded"] is True
+    assert result["installRequired"] is True
     assert result["localVersion"] == "1.34.16"
     assert result["source"].startswith("third_party")
 

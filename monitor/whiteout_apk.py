@@ -1354,6 +1354,35 @@ def update_whiteout_apk_on_instance(
             else:
                 resource_error = f"version read: {exc}"
 
+        # Download/staging alone is not success — refuse to report OK when the
+        # emulator is still on an older build (or still showing the Update dialog).
+        latest_text = str(latest_version or "").strip() or None
+        installed_text = str(installed_version or "").strip() or None
+        if latest_text:
+            if not installed_text:
+                raise RuntimeError(
+                    f"APK install on instance {index} finished but the installed version "
+                    f"could not be confirmed (expected {latest_text}). "
+                    f"Retry with Force update selected."
+                )
+            if version_is_older(installed_text, latest_text):
+                raise RuntimeError(
+                    f"APK install on instance {index} left version {installed_text}; "
+                    f"APK cache has {latest_text}. "
+                    f"Download only updates the cache — retry Force update selected, "
+                    f"and confirm apk_third_party_abi matches the emulator (arm64-v8a on APK20)."
+                )
+            try:
+                prompt = probe_game_update_prompt(ldconsole, index, run_ldconsole)
+            except Exception:  # noqa: BLE001
+                prompt = {}
+            if prompt.get("gameUpdateRequired"):
+                raise RuntimeError(
+                    f"Instance {index} still shows the in-game Update dialog after installing "
+                    f"{installed_text}. The cached build may still be below the live server "
+                    f"requirement — re-check APK sources and Force update selected."
+                )
+
         invalidate_apk_inspect_cache()
         if latest_version or apk_info.get("localSize") is not None:
             persist_apk_cache_state(
@@ -1363,17 +1392,13 @@ def update_whiteout_apk_on_instance(
                 remote_url=resolve_whiteout_apk_url(config),
                 apk_ready=True,
             )
-        version_to_persist = str(installed_version or latest_version or "").strip() or None
-        if version_to_persist:
-            persist_instance_apk_version(
-                index,
-                version_to_persist,
-                source="live" if installed_version else "install",
-            )
+        # Only persist versions we actually read from the device.
+        if installed_text:
+            persist_instance_apk_version(index, installed_text, source="live")
         apk_row = inspect_whiteout_apk_for_index(config, index)
         if resource_pack:
             apk_info = {**apk_info, "resourcePack": resource_pack}
-        message = f"Installed Whiteout Survival {installed_version or latest_version or ''} on instance {index}.".strip()
+        message = f"Installed Whiteout Survival {installed_text or latest_text or ''} on instance {index}.".strip()
         if resource_pack and resource_pack.get("completed"):
             message = f"{message} Optional resource pack complete."
         elif resource_pack and not resource_pack.get("completed"):
@@ -1604,6 +1629,7 @@ def check_whiteout_apk_remote(config: dict[str, Any], *, sync: bool = False) -> 
                         "updateAvailable": False,
                         "downloaded": bool(synced.get("downloaded")),
                         "synced": True,
+                        "installRequired": bool(synced.get("downloaded") or synced.get("installRequired")),
                         "source": f"third_party:{synced.get('provider') or 'apk20'}",
                         "message": synced.get("message"),
                     }
