@@ -76,7 +76,10 @@ Host start/stop/restart of `frostguard_exe` is Windows-only (same `CREATE_NO_WIN
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/frostguard/profiles` | List profiles from user DB |
-| `PATCH /api/frostguard/profiles` | `{"id":…,"enabled":true\|false}` toggle |
+| `PATCH /api/frostguard/profiles` | `{"id":…,"enabled":true\|false}` toggle (writes user DB) |
+| `GET /api/frostguard/tasks` | List tasks from user DB |
+| `PATCH /api/frostguard/tasks` | `{"id":…,"enabled":true\|false}` toggle (writes user DB) |
+| Provision Add Account | When `bot_provider=frostguard`, inserts a profile row into workspace DB (not GnBots JSON) |
 | `GET /api/frostguard/tasks` | RO task list when a Task table exists |
 | `POST /api/frostguard/command` | Bridge passthrough `{"text":"/reboot"}` |
 

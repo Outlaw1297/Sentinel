@@ -646,6 +646,59 @@ def add_profile_for_instance(
     return upsert_profile(workspace, fields)
 
 
+def set_task_enabled(workspace: Path, task_id: str, enabled: bool) -> dict[str, Any]:
+    """Toggle a daily-task / task row enabled flag in user frostguard.db."""
+    want = str(task_id or "").strip()
+    if not want:
+        return {"ok": False, "message": "task_id is required"}
+    try:
+        conn = open_db_readwrite(workspace)
+    except (FileNotFoundError, sqlite3.Error, OSError) as exc:
+        return {"ok": False, "message": str(exc)}
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        table = _pick_table(tables, _TASK_TABLE_CANDIDATES)
+        if not table:
+            return {"ok": False, "message": "No task table found."}
+        columns = {row[1]: row[2] for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+        id_col = _col(columns, "id", "Id", "ID", "taskId", "TaskId")
+        name_col = _col(columns, "name", "Name", "title", "Title", "key", "Key", "type", "Type")
+        enabled_col = _col(columns, "enabled", "Enabled", "active", "Active", "isEnabled", "IsEnabled")
+        if not enabled_col:
+            return {"ok": False, "message": "Task table has no enabled/active column."}
+        if not id_col and not name_col:
+            return {"ok": False, "message": "Task table has no id/name column."}
+        col_type = str(columns.get(enabled_col) or "").upper()
+        value: Any = 1 if enabled else 0
+        if "INT" not in col_type and "BOOL" not in col_type and col_type:
+            value = "true" if enabled else "false"
+        where_parts: list[str] = []
+        params: list[Any] = [value]
+        if id_col:
+            where_parts.append(f'CAST("{id_col}" AS TEXT) = ?')
+            params.append(want)
+        if name_col:
+            where_parts.append(f'CAST("{name_col}" AS TEXT) = ?')
+            params.append(want)
+        cur = conn.execute(
+            f'UPDATE "{table}" SET "{enabled_col}" = ? WHERE {" OR ".join(where_parts)}',
+            params,
+        )
+        conn.commit()
+        if cur.rowcount <= 0:
+            return {"ok": False, "message": f"Task not found: {want}", "updated": 0}
+        return {"ok": True, "taskId": want, "enabled": bool(enabled), "updated": int(cur.rowcount)}
+    except sqlite3.Error as exc:
+        return {"ok": False, "message": str(exc)}
+    finally:
+        conn.close()
+
+
 def workspace_status(workspace: Path, *, channel: str = "stable") -> dict[str, Any]:
     root = Path(workspace).expanduser().resolve()
     channel_name = (channel or "stable").strip().lower() or "stable"

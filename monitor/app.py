@@ -2925,6 +2925,13 @@ class FrostguardProfilePatch(BaseModel):
     active: bool | None = None
 
 
+class FrostguardTaskPatch(BaseModel):
+    id: str | None = None
+    taskId: str | None = None
+    enabled: bool | None = None
+    active: bool | None = None
+
+
 class FrostguardCommandRequest(BaseModel):
     text: str
 
@@ -2963,6 +2970,27 @@ async def frostguard_list_tasks() -> dict[str, Any]:
     workspace = resolve_workspace(config)
     tasks = await asyncio.to_thread(list_tasks, workspace)
     return {"ok": True, "workspace": str(workspace), "tasks": tasks, "count": len(tasks)}
+
+
+@app.patch("/api/frostguard/tasks")
+async def frostguard_patch_task(body: FrostguardTaskPatch) -> dict[str, Any]:
+    from frostguard_workspace import resolve_workspace, set_task_enabled
+
+    task_id = str(body.id or body.taskId or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="id or taskId is required")
+    enabled = body.enabled if body.enabled is not None else body.active
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="enabled or active is required")
+    workspace = resolve_workspace(config)
+    result = await asyncio.to_thread(set_task_enabled, workspace, task_id, bool(enabled))
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=404 if "not found" in str(result.get("message") or "").lower() else 500,
+            detail=result.get("message") or "update failed",
+        )
+    invalidate_dashboard_cache()
+    return {"ok": True, **result}
 
 
 @app.post("/api/frostguard/command")

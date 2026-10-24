@@ -24,6 +24,7 @@ from frostguard_workspace import (
     reset_db_backup_state_for_tests,
     resolve_workspace,
     set_profile_enabled,
+    set_task_enabled,
     tail_log_file,
     upsert_profile,
     workspace_identity,
@@ -218,3 +219,22 @@ def test_list_tasks_when_present(tmp_path: Path):
     by_name = {row["name"]: row for row in tasks}
     assert by_name["Gather"]["executing"] is True
     assert by_name["Idle"]["executing"] is False
+
+
+def test_set_task_enabled_writes_user_db(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Task (id INTEGER PRIMARY KEY, name TEXT, status TEXT, enabled INTEGER)"
+    )
+    conn.execute("INSERT INTO Task VALUES (9, 'Arena', 'idle', 1)")
+    conn.commit()
+    conn.close()
+
+    result = set_task_enabled(workspace, "9", False)
+    assert result["ok"] is True
+    assert result["enabled"] is False
+    tasks = {row["id"]: row for row in list_tasks(workspace)}
+    assert tasks["9"]["enabled"] is False
