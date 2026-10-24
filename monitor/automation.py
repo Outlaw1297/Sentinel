@@ -167,12 +167,22 @@ def _maybe_stop_gnbots_for_trouble(config: dict[str, Any]) -> dict[str, Any] | N
     if not _cooldown_ok(_AUTOMATION_STATE.get("lastStopAt"), cooldown):
         return None
 
+    from bot_backend import detect_bot_provider, get_bot_backend
     from host_status import collect_stack_status
 
-    stack = collect_stack_status(config, force=False)
-    gnbots_exe = stack.get("gnbotsExe") or {}
-    if not gnbots_exe.get("running"):
-        return None
+    provider = detect_bot_provider(config)
+    if provider == "gnbots":
+        stack = collect_stack_status(config, force=False)
+        gnbots_exe = stack.get("gnbotsExe") or {}
+        if not gnbots_exe.get("running"):
+            return None
+    else:
+        backend = get_bot_backend(config)
+        try:
+            if not backend.is_process_running(config) and not backend.automation_active(config):
+                return None
+        except Exception:  # noqa: BLE001
+            return None
 
     signals = _collect_trouble_signals(config)
     # Only auto-stop for severe emulator problems, not routine low-uptime alone.
@@ -197,18 +207,32 @@ def _maybe_stop_gnbots_for_trouble(config: dict[str, Any]) -> dict[str, Any] | N
     if not severe:
         return None
 
-    result = run_gnbots_process_action("Stop")
+    if provider == "frostguard":
+        import frostguard_bridge as bridge
+
+        stop_result = bridge.stop_bot(config)
+        if not stop_result.get("ok"):
+            stop_result = bridge.host_stop(config)
+        result = stop_result
+        action_type = "stop_frostguard_on_trouble"
+        label = "Frostguard"
+    else:
+        result = run_gnbots_process_action("Stop")
+        action_type = "stop_gnbots_on_trouble"
+        label = "GnBots"
+
     action = {
         "at": _utc_now_iso(),
-        "type": "stop_gnbots_on_trouble",
+        "type": action_type,
+        "provider": provider,
         "ok": bool(result.get("ok")),
-        "detail": result.get("message") or result.get("detail") or "",
+        "detail": result.get("message") or result.get("detail") or result.get("error") or "",
         "troubled": severe[:10],
     }
     _AUTOMATION_STATE["lastStopAt"] = action["at"]
     _append_action(action)
     _append_automation_log(
-        f"auto-stop GnBots ({'ok' if action['ok'] else 'failed'}): {len(severe)} troubled signal(s)"
+        f"auto-stop {label} ({'ok' if action['ok'] else 'failed'}): {len(severe)} troubled signal(s)"
     )
     for signal in severe[:5]:
         for reason in signal.get("reasons") or ["emulator trouble"]:

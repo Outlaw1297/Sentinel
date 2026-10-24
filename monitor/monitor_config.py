@@ -17,8 +17,30 @@ OCR_EVENTS_PATH = get_logs_dir() / "account-switch-ocr-events.json"
 OCR_EVENTS_CONFIG_KEY = "account_switch_ocr_events"
 _CONFIG_LOCK = threading.Lock()
 
-PATH_CONFIG_KEYS = frozenset({"gnbots_root", "gnbots_exe", "ldplayer_backups_dir", "ldplayer_path", "whiteout_apk_dir"})
-OPTIONAL_PATH_CONFIG_KEYS = frozenset({"ldplayer_path"})
+PATH_CONFIG_KEYS = frozenset(
+    {
+        "gnbots_root",
+        "gnbots_exe",
+        "ldplayer_backups_dir",
+        "ldplayer_path",
+        "memu_path",
+        "nox_path",
+        "mumu_path",
+        "whiteout_apk_dir",
+        "frostguard_workspace",
+        "frostguard_exe",
+    }
+)
+OPTIONAL_PATH_CONFIG_KEYS = frozenset(
+    {
+        "ldplayer_path",
+        "memu_path",
+        "nox_path",
+        "mumu_path",
+        "frostguard_workspace",
+        "frostguard_exe",
+    }
+)
 
 LD_HEALTH_FLAT_KEYS = frozenset(
     {
@@ -99,9 +121,107 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "bot-provider",
+        "title": "Bot provider",
+        "description": (
+            "Choose GnBots (default) or Frostguard. Auto prefers GnBots when its API/process "
+            "is up, otherwise Frostguard when a workspace lock/db/process is present."
+        ),
+        "restart": "immediate",
+        "fields": [
+            {
+                "key": "bot_provider",
+                "type": "select",
+                "label": "Bot provider",
+                "options": ["gnbots", "frostguard", "auto"],
+                "hint": "Default gnbots keeps existing farms unchanged. Use auto only when both may be installed.",
+            },
+            {
+                "key": "frostguard_workspace",
+                "type": "text",
+                "label": "Frostguard workspace",
+                "hint": "Optional absolute path. Blank uses ~/.frostguard/workspaces/{channel}/default.",
+                "placeholder": "C:\\Users\\You\\.frostguard\\workspaces\\stable\\default",
+            },
+            {
+                "key": "frostguard_exe",
+                "type": "text",
+                "label": "Frostguard.exe path",
+                "hint": "Optional launcher for host start/stop. Leave blank if you only observe via workspace files.",
+                "placeholder": "C:\\Games\\Frostguard\\Frostguard.exe",
+            },
+            {
+                "key": "frostguard_process_name",
+                "type": "text",
+                "label": "Frostguard process name",
+                "hint": "Usually Frostguard (no .exe).",
+            },
+            {
+                "key": "frostguard_channel",
+                "type": "select",
+                "label": "Frostguard channel",
+                "options": ["stable", "nightly"],
+                "hint": "Used for workspace identity and default workspace path.",
+            },
+            {
+                "key": "frostguard_bridge_mode",
+                "type": "select",
+                "label": "Frostguard bridge mode",
+                "options": ["localhost", "disabled"],
+                "hint": "localhost uses Frostguard's Telegram command server (/pid, /command). disabled = observe-only.",
+            },
+        ],
+    },
+    {
+        "id": "emulator-provider",
+        "title": "Emulator provider",
+        "description": (
+            "Which Android emulator CLI Sentinel uses for list/launch/quit/ADB/screenshots. "
+            "LDPlayer keeps full restore (.ldbk). MEmu, Nox, and MuMu support control/ADB; restore stays LD-only."
+        ),
+        "restart": "immediate",
+        "fields": [
+            {
+                "key": "emulator_provider",
+                "type": "select",
+                "label": "Emulator provider",
+                "options": ["auto", "ldplayer", "memu", "nox", "mumu"],
+                "hint": "Auto follows GnBots Emulator/UID and installed console paths; defaults to LDPlayer.",
+            },
+            {
+                "key": "ldplayer_path",
+                "type": "text",
+                "label": "LDPlayer install path",
+                "hint": "Optional Sentinel override. Leave blank to use LDPath64 from GnBots config.json.",
+                "placeholder": "C:\\LDPlayer\\LDPlayer9",
+            },
+            {
+                "key": "memu_path",
+                "type": "text",
+                "label": "MEmu path",
+                "hint": "Folder or memuc.exe path. Leave blank to use GnBots MemuPath or the default install.",
+                "placeholder": "C:\\Program Files\\Microvirt\\MEmu",
+            },
+            {
+                "key": "nox_path",
+                "type": "text",
+                "label": "Nox path",
+                "hint": "Folder or NoxConsole.exe path. Leave blank to use GnBots NoxPath or the default install.",
+                "placeholder": "C:\\Program Files (x86)\\Nox\\bin",
+            },
+            {
+                "key": "mumu_path",
+                "type": "text",
+                "label": "MuMu path",
+                "hint": "Folder or MuMuManager.exe path (Frostguard-recommended emulator).",
+                "placeholder": "C:\\Program Files\\Netease\\MuMuPlayer\\nx_main",
+            },
+        ],
+    },
+    {
         "id": "emulator-backups",
         "title": "Emulator backups",
-        "description": "LDPlayer backup (.ldbk) folder used by Emulator Restore. Saved as an absolute path.",
+        "description": "LDPlayer backup (.ldbk) folder used by Emulator Restore. Saved as an absolute path. LDPlayer-only.",
         "restart": "immediate",
         "fields": [
             {
@@ -110,13 +230,6 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "label": "Backups folder",
                 "hint": "Absolute path to the folder containing .ldbk files (e.g. C:\\Backups\\LDPlayer).",
                 "placeholder": "C:\\Backups\\LDPlayer",
-            },
-            {
-                "key": "ldplayer_path",
-                "type": "text",
-                "label": "LDPlayer install path",
-                "hint": "Optional Sentinel override. Leave blank to use LDPath64 from GnBots config.json.",
-                "placeholder": "C:\\LDPlayer\\LDPlayer9",
             },
         ],
     },
