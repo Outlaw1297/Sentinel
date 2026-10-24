@@ -176,6 +176,50 @@ def test_set_profile_enabled_writes_and_backs_up(tmp_path: Path):
     assert profiles[0]["active"] is False
 
 
+def test_set_profile_enabled_does_not_or_match_name(tmp_path: Path):
+    """Disabling id '1' must not also disable a different profile named '1'."""
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Profile ("
+        "id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.execute("INSERT INTO Profile VALUES (1, 'Alice', 1, 0)")
+    conn.execute("INSERT INTO Profile VALUES (2, '1', 1, 1)")
+    conn.commit()
+    conn.close()
+
+    result = set_profile_enabled(workspace, "1", False)
+    assert result["ok"] is True
+    assert result["updated"] == 1
+    by_id = {row["id"]: row for row in list_profiles(workspace)}
+    assert by_id["1"]["enabled"] is False
+    assert by_id["2"]["enabled"] is True
+
+
+def test_set_task_enabled_does_not_or_match_name(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Task (id INTEGER PRIMARY KEY, name TEXT, status TEXT, enabled INTEGER)"
+    )
+    conn.execute("INSERT INTO Task VALUES (1, 'Gather', 'idle', 1)")
+    conn.execute("INSERT INTO Task VALUES (2, '1', 'idle', 1)")
+    conn.commit()
+    conn.close()
+
+    result = set_task_enabled(workspace, "1", False)
+    assert result["ok"] is True
+    assert result["updated"] == 1
+    by_id = {row["id"]: row for row in list_tasks(workspace)}
+    assert by_id["1"]["enabled"] is False
+    assert by_id["2"]["enabled"] is True
+
+
 def test_upsert_and_add_profile_for_instance(tmp_path: Path):
     reset_db_backup_state_for_tests()
     workspace = tmp_path / "ws"
