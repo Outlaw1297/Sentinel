@@ -711,16 +711,27 @@ def select_apk_update_source(
         and third_version
         and version_is_older(local_version, third_version)
     )
+    # XAPK caches: only replace when GnBots is positively newer (avoids size-oscillation).
+    # Classic game.zip: Content-Length mismatch / missing zip still means fetch — do not
+    # require chosen=="gnbots" or a successful version probe. A failed probe otherwise
+    # leaves bots forever on a stale zip while remote already moved.
+    gnbots_known_older = bool(
+        gnbots_version
+        and local_version
+        and version_is_older(gnbots_version, local_version)
+    )
     should_download_gnbots = bool(
-        chosen == "gnbots"
-        and url
+        url
         and (
-            missing_zip
-            or (size_differs and not local_is_xapk)
-            or (
+            (
                 local_is_xapk
                 and gnbots_version
                 and version_is_older(local_version, gnbots_version)
+            )
+            or (
+                not local_is_xapk
+                and (missing_zip or size_differs)
+                and not gnbots_known_older
             )
         )
     )

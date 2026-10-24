@@ -737,3 +737,105 @@ def test_select_apk_source_policy_third_party_overrules_newer_gnbots():
     assert decision["policy"] == "third_party"
     assert decision["shouldSyncThird"] is True
     assert decision["shouldDownloadGnbots"] is False
+
+
+def test_classic_size_mismatch_downloads_even_when_version_probe_fails():
+    """Classic game.zip Content-Length mismatch must still fetch without a probe version."""
+    from whiteout_apk import select_apk_update_source
+
+    config = {
+        "whiteout_apk_dir": "/tmp/unused",
+        "whiteout_apk_url": "https://example.test/game.zip",
+        "apk_source_policy": "auto",
+        "apk_third_party_provider": "off",
+    }
+    with patch("whiteout_apk.resolve_whiteout_apk_dir", return_value=Path("/tmp/unused-apk")):
+        with patch("whiteout_apk.resolve_local_apk_version", return_value="1.33.0"):
+            with patch("whiteout_apk._remote_game_zip_size", return_value=200):
+                with patch("whiteout_apk._apk_cache_is_third_party_xapk", return_value=False):
+                    with patch("pathlib.Path.is_file", return_value=True):
+                        with patch("pathlib.Path.stat", return_value=type("S", (), {"st_size": 100})()):
+                            with patch(
+                                "whiteout_apk._read_manifest_from_zip",
+                                return_value={"version_name": "1.33.0"},
+                            ):
+                                with patch("apk_third_party.third_party_enabled", return_value=False):
+                                    with patch(
+                                        "whiteout_apk.probe_gnbots_remote_version",
+                                        return_value=None,
+                                    ) as probe:
+                                        decision = select_apk_update_source(config, allow_probe=True)
+                                        decision_no_probe = select_apk_update_source(
+                                            config, allow_probe=False
+                                        )
+    assert probe.called
+    assert decision["localIsXapk"] is False
+    assert decision["gnbotsVersion"] is None
+    assert decision["shouldDownloadGnbots"] is True
+    assert decision_no_probe["shouldDownloadGnbots"] is True
+
+
+def test_classic_size_mismatch_skips_download_when_gnbots_known_older():
+    from whiteout_apk import select_apk_update_source
+
+    config = {
+        "whiteout_apk_dir": "/tmp/unused",
+        "whiteout_apk_url": "https://example.test/game.zip",
+        "apk_source_policy": "auto",
+        "apk_third_party_provider": "off",
+    }
+    with patch("whiteout_apk.resolve_whiteout_apk_dir", return_value=Path("/tmp/unused-apk")):
+        with patch("whiteout_apk.resolve_local_apk_version", return_value="1.34.16"):
+            with patch("whiteout_apk._remote_game_zip_size", return_value=200):
+                with patch("whiteout_apk._apk_cache_is_third_party_xapk", return_value=False):
+                    with patch("pathlib.Path.is_file", return_value=True):
+                        with patch("pathlib.Path.stat", return_value=type("S", (), {"st_size": 100})()):
+                            with patch(
+                                "whiteout_apk._read_manifest_from_zip",
+                                return_value={"version_name": "1.34.16"},
+                            ):
+                                with patch("apk_third_party.third_party_enabled", return_value=False):
+                                    with patch(
+                                        "whiteout_apk.probe_gnbots_remote_version",
+                                        return_value="1.33.0",
+                                    ):
+                                        decision = select_apk_update_source(config, allow_probe=True)
+    assert decision["shouldDownloadGnbots"] is False
+
+
+def test_xapk_size_mismatch_still_skips_download_when_probe_fails():
+    """XAPK vs GnBots size mismatch must not download when version is unknown (oscillation)."""
+    from whiteout_apk import select_apk_update_source
+
+    config = {
+        "whiteout_apk_dir": "/tmp/unused",
+        "whiteout_apk_url": "https://example.test/game.zip",
+        "apk_source_policy": "auto",
+        "apk_third_party_provider": "apk20",
+    }
+    third = {
+        "ok": True,
+        "enabled": True,
+        "remoteVersion": "1.34.16",
+        "updateAvailable": False,
+    }
+    with patch("whiteout_apk.resolve_whiteout_apk_dir", return_value=Path("/tmp/unused-apk")):
+        with patch("whiteout_apk.resolve_local_apk_version", return_value="1.34.16"):
+            with patch("whiteout_apk._remote_game_zip_size", return_value=200):
+                with patch("whiteout_apk._apk_cache_is_third_party_xapk", return_value=True):
+                    with patch("pathlib.Path.is_file", return_value=True):
+                        with patch("pathlib.Path.stat", return_value=type("S", (), {"st_size": 100})()):
+                            with patch(
+                                "whiteout_apk._read_manifest_from_zip",
+                                return_value={"version_name": "1.34.16"},
+                            ):
+                                with patch("apk_third_party.check_third_party_apk_remote", return_value=third):
+                                    with patch("apk_third_party.third_party_enabled", return_value=True):
+                                        with patch(
+                                            "whiteout_apk.probe_gnbots_remote_version",
+                                            return_value=None,
+                                        ):
+                                            decision = select_apk_update_source(config, allow_probe=True)
+    assert decision["localIsXapk"] is True
+    assert decision["shouldDownloadGnbots"] is False
+    assert decision["shouldSyncThird"] is False
