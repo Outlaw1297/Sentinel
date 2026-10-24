@@ -6,6 +6,8 @@
 - Third-party APK catalog defaults to on (`apk_third_party_provider=apk20`) and auto-fills package/ABI from GnBots `LDPath64`/`LDPath32` and the LDPlayer install path
 - Checks/downloads the latest Whiteout XAPK even when GnBots has not updated its `game.zip`
 - Auto-update APKs and Restore “Check/Download latest APK” use the newer of the GnBots URL or third-party source
+- Batch restore-all runs one instance at a time so LDPlayer/resource-pack waits no longer stall siblings; Restore UI keeps polling the rest of the queue after the first finishes
+- Bulk APK updates use a shorter resource-pack budget and continue to the next instance if a pack wait stalls
 
 ### Stability
 - Keep the dashboard usable across multi-day runs by caching builds when GnBots is offline and skipping overlapping refreshes
