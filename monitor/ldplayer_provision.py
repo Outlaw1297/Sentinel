@@ -60,21 +60,31 @@ def _resolve_ldplayer_add_result(
     returncode: int,
     output: str,
 ) -> tuple[int, str] | None:
-    """LDPlayer `add` often returns the new instance index as exit code (not stderr)."""
+    """LDPlayer `add` often returns the new instance index as exit code (not stderr).
+
+    Only indexes that were absent from ``before_indexes`` count as a successful create.
+    Matching a pre-existing name (failed ``add`` / duplicate) must not be treated as success,
+    and concurrent creates must not steal the highest new index when the exit code is known.
+    """
     clean = str(name or "").strip()
-    for row in after_rows:
+    created_rows = [
+        row for row in after_rows if int(row["index"]) not in before_indexes
+    ]
+    for row in created_rows:
         if str(row.get("name") or "").strip().casefold() == clean.casefold():
             index = int(row["index"])
             return index, output or f"Created LDPlayer instance {index}"
 
-    created = sorted(int(row["index"]) for row in after_rows if int(row["index"]) not in before_indexes)
-    if created:
-        index = created[-1]
-        return index, output or f"Created LDPlayer instance {index}"
-
+    created = sorted(int(row["index"]) for row in created_rows)
     rc = int(returncode)
     if rc >= 0 and rc not in before_indexes and any(int(row["index"]) == rc for row in after_rows):
         return rc, output or f"Created LDPlayer instance {rc}"
+
+    # Ambiguous when multiple new indexes appear without a name/exit-code match
+    # (typical under concurrent ldconsole add). Keep polling instead of guessing.
+    if len(created) == 1:
+        index = created[0]
+        return index, output or f"Created LDPlayer instance {index}"
     return None
 
 

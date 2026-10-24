@@ -57,6 +57,59 @@ def test_resolve_ldplayer_add_result_returns_none_when_list_lags_exit_code():
     assert resolved is None
 
 
+def test_resolve_ldplayer_add_result_ignores_preexisting_name_on_failed_add():
+    """Failed add must not treat an already-present same-name instance as created."""
+    before = {0, 5}
+    after = [
+        {"index": 0, "name": "Rick"},
+        {"index": 5, "name": "DupName"},
+    ]
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="DupName",
+        returncode=1,
+        output="name already exists",
+    )
+    assert resolved is None
+
+
+def test_resolve_ldplayer_add_result_prefers_exit_code_over_other_new_indexes():
+    """Concurrent adds can introduce multiple new indexes; trust the exit code."""
+    before = {0, 1}
+    after = [
+        {"index": 0, "name": "Rick"},
+        {"index": 1, "name": "Archer"},
+        {"index": 10, "name": "LDPlayer-10"},
+        {"index": 11, "name": "LDPlayer-11"},
+    ]
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="MyNewFarm",
+        returncode=10,
+        output="",
+    )
+    assert resolved == (10, "Created LDPlayer instance 10")
+
+
+def test_resolve_ldplayer_add_result_waits_when_multiple_new_indexes_ambiguous():
+    before = {0}
+    after = [
+        {"index": 0, "name": "Rick"},
+        {"index": 3, "name": "LDPlayer-3"},
+        {"index": 4, "name": "LDPlayer-4"},
+    ]
+    resolved = _resolve_ldplayer_add_result(
+        before_indexes=before,
+        after_rows=after,
+        name="Ambiguous",
+        returncode=1,
+        output="",
+    )
+    assert resolved is None
+
+
 def test_create_ldplayer_instance_polls_until_instance_visible(monkeypatch):
     before_rows = [{"index": index, "name": f"LDPlayer-{index}"} for index in range(19)]
     after_rows = before_rows + [{"index": 19, "name": "VerifyMatrixE2E"}]
