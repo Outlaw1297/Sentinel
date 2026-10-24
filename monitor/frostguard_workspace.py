@@ -632,7 +632,13 @@ def add_profile_for_instance(
     enabled: bool = True,
     profile_id: str | int | None = None,
 ) -> dict[str, Any]:
-    """Provision-friendly helper: upsert a profile bound to an emulator index."""
+    """Provision-friendly helper: insert a profile bound to an emulator index.
+
+    When ``profile_id`` is omitted, never match an existing row by name alone —
+    that would silently rebind another account's ``emulatorNumber`` to the new
+    instance (and orphan the previous emulator). Duplicate names must fail so
+    callers create a distinct profile instead.
+    """
     fields: dict[str, Any] = {
         "emulatorNumber": int(instance_index),
         "enabled": bool(enabled),
@@ -643,6 +649,25 @@ def add_profile_for_instance(
         fields["name"] = f"Emulator {int(instance_index)}"
     if profile_id is not None:
         fields["id"] = profile_id
+    elif fields.get("name") is not None:
+        want = str(fields["name"]).strip().casefold()
+        if want:
+            for row in list_profiles(workspace):
+                if str(row.get("name") or "").strip().casefold() != want:
+                    continue
+                existing_emu = row.get("instanceId")
+                return {
+                    "ok": False,
+                    "message": (
+                        f"Frostguard profile {fields['name']!r} already exists"
+                        + (
+                            f" on emulator {existing_emu}"
+                            if existing_emu is not None and int(existing_emu) >= 0
+                            else ""
+                        )
+                        + "; refusing to rebind it to a new instance."
+                    ),
+                }
     return upsert_profile(workspace, fields)
 
 

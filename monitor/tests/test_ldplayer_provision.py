@@ -1,3 +1,4 @@
+import sqlite3
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,6 +12,7 @@ from ldplayer_provision import (
     _resolve_clone_source,
     _resolve_ldplayer_add_result,
     create_ldplayer_instance,
+    start_provision_account,
 )
 
 
@@ -121,3 +123,38 @@ def test_resolve_clone_source_legacy_template_account_id():
 def test_resolve_clone_source_requires_value():
     with pytest.raises(ValueError):
         _resolve_clone_source({}, "Main Run 247")
+
+
+def test_start_provision_frostguard_rejects_duplicate_profile_name(tmp_path: Path, monkeypatch):
+    """Frostguard provision must check workspace DB names, not GnBots profiles.json."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Profile ("
+        "id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.execute("INSERT INTO Profile VALUES (1, 'Farm1', 1, 0)")
+    conn.commit()
+    conn.close()
+
+    config = {
+        "bot_provider": "frostguard",
+        "frostguard_workspace": str(workspace),
+        "gnbots_root": str(tmp_path / "gnbots"),
+    }
+    (tmp_path / "gnbots").mkdir()
+
+    monkeypatch.setattr(
+        ldplayer_provision,
+        "_resolve_clone_source",
+        lambda *_args, **_kwargs: ("template", "Main"),
+    )
+
+    with pytest.raises(ValueError, match="Frostguard workspace already has a profile named"):
+        start_provision_account(
+            config,
+            account_name="Farm1",
+            profile_name="Main Run",
+            clone_source="template:Main",
+        )
