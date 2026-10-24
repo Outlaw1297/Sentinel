@@ -413,53 +413,76 @@ def start_apk_update_job(
     source: str = "manual",
 ) -> dict[str, Any]:
     """Queue a background APK update job and return immediately."""
-    active = find_active_apk_update_job()
-    if active:
-        raise RuntimeError(
-            f"APK update already running (job {active.get('id')}, status {active.get('status')})."
-        )
-
     if force:
         only_outdated = False
 
-    targets, meta = _resolve_target_indexes(
-        config,
-        scope=scope,
-        indexes=indexes,
-        only_outdated=only_outdated,
-        force=force,
-        check_game_update=check_game_update,
-    )
-
+    # Reserve the active slot before target resolution. `_resolve_target_indexes`
+    # can boot emulators / take seconds; checking actives only after that left a
+    # TOCTOU window where two jobs both passed and raced ensure_latest / XAPK stage.
     job_id = uuid.uuid4().hex[:12]
     started_at = _utc_now_iso()
-    job = {
-        "id": job_id,
-        "kind": "apk_update",
-        "source": source,
-        "scope": meta.get("scope"),
-        "profileName": meta.get("profileName"),
-        "indexes": list(targets),
-        "total": len(targets),
-        "completedCount": 0,
-        "updated": 0,
-        "failed": 0,
-        "results": [],
-        "failures": [],
-        "status": "queued",
-        "progress": 5,
-        "message": (
-            f"Queued APK update for {len(targets)} instance{'s' if len(targets) != 1 else ''}."
-            if targets
-            else "Queued APK check — no updates needed."
-        ),
-        "startedAt": started_at,
-        "updatedAt": started_at,
-        "force": bool(force),
-        "onlyOutdated": bool(only_outdated),
-    }
     with _APK_JOB_LOCK:
-        _APK_UPDATE_JOBS[job_id] = job
+        for job in _APK_UPDATE_JOBS.values():
+            status = str(job.get("status") or "")
+            if status and status not in {"completed", "failed"}:
+                raise RuntimeError(
+                    f"APK update already running (job {job.get('id')}, status {status})."
+                )
+        placeholder = {
+            "id": job_id,
+            "kind": "apk_update",
+            "source": source,
+            "scope": scope or "indexes",
+            "profileName": None,
+            "indexes": [],
+            "total": 0,
+            "completedCount": 0,
+            "updated": 0,
+            "failed": 0,
+            "results": [],
+            "failures": [],
+            "status": "preparing",
+            "progress": _progress_for_status("preparing"),
+            "message": "Resolving APK update targets…",
+            "startedAt": started_at,
+            "updatedAt": started_at,
+            "force": bool(force),
+            "onlyOutdated": bool(only_outdated),
+        }
+        _APK_UPDATE_JOBS[job_id] = placeholder
+
+    try:
+        targets, meta = _resolve_target_indexes(
+            config,
+            scope=scope,
+            indexes=indexes,
+            only_outdated=only_outdated,
+            force=force,
+            check_game_update=check_game_update,
+        )
+    except Exception:
+        with _APK_JOB_LOCK:
+            _APK_UPDATE_JOBS.pop(job_id, None)
+        raise
+
+    message = (
+        f"Queued APK update for {len(targets)} instance{'s' if len(targets) != 1 else ''}."
+        if targets
+        else "Queued APK check — no updates needed."
+    )
+    job = _set_job(
+        job_id,
+        scope=meta.get("scope"),
+        profileName=meta.get("profileName"),
+        indexes=list(targets),
+        total=len(targets),
+        status="queued",
+        progress=_progress_for_status("queued"),
+        message=message,
+        force=bool(force),
+        onlyOutdated=bool(only_outdated),
+    )
+    with _APK_JOB_LOCK:
         for index in targets:
             _APK_INSTANCE_BUSY[index] = job_id
 

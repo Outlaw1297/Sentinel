@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -74,6 +75,38 @@ class ApkUpdateJobsTests(unittest.TestCase):
                             start_apk_update_job(config, indexes=[2], only_outdated=False, force=True)
                         wait_for_apk_update_job(first["id"], timeout_seconds=5)
 
+    def test_rejects_second_job_during_slow_target_resolve(self) -> None:
+        """Active reservation must happen before target resolve (TOCTOU window)."""
+        config = {}
+        entered = threading.Event()
+        release = threading.Event()
+        first_job: dict = {}
+
+        def slow_resolve(*_args, **_kwargs):
+            entered.set()
+            release.wait(timeout=2.0)
+            return [1], {"scope": "indexes"}
+
+        def start_first() -> None:
+            first_job.update(
+                start_apk_update_job(config, indexes=[1], only_outdated=False, force=True)
+            )
+
+        with patch("apk_update_jobs._resolve_target_indexes", side_effect=slow_resolve):
+            with patch("whiteout_apk.update_whiteout_apk_on_instance", return_value={"index": 1, "apk": {}, "message": "ok"}):
+                with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={}):
+                    with patch("whiteout_apk.save_persisted_apk_update_instance_indexes", return_value=[1]):
+                        starter = threading.Thread(target=start_first, daemon=True)
+                        starter.start()
+                        self.assertTrue(entered.wait(timeout=2.0))
+                        # While the first call is still resolving targets, a second start must fail.
+                        self.assertIsNotNone(find_active_apk_update_job())
+                        with self.assertRaises(RuntimeError):
+                            start_apk_update_job(config, indexes=[2], only_outdated=False, force=True)
+                        release.set()
+                        starter.join(timeout=5.0)
+                        self.assertTrue(first_job.get("id"))
+                        wait_for_apk_update_job(str(first_job["id"]), timeout_seconds=5)
     def test_records_partial_failures(self) -> None:
         config = {}
 
