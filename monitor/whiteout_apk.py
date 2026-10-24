@@ -4463,32 +4463,6 @@ def await_whiteout_resource_pack_completion(
 ) -> dict[str, Any]:
     """Keep waiting for optional pack + furnace/city HUD, matching restore jobs."""
     timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
-    # #region agent log
-    try:
-        import json as _json
-
-        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as _fh:
-            _fh.write(
-                _json.dumps(
-                    {
-                        "hypothesisId": "H3",
-                        "location": "whiteout_apk.py:await_whiteout_resource_pack_completion:entry",
-                        "message": "resource pack await enter",
-                        "data": {
-                            "index": index,
-                            "completed": resource_info.get("completed"),
-                            "reason": resource_info.get("reason"),
-                            "downloadPercent": resource_info.get("downloadPercent"),
-                            "timeoutSeconds": timeout_seconds,
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
     if resource_info.get("completed"):
         return resource_info
 
@@ -4580,32 +4554,6 @@ def await_whiteout_resource_pack_completion(
             "reason": "timeout",
             "downloadPercent": int(resource_info.get("downloadPercent") or 0),
         }
-    # #region agent log
-    try:
-        import json as _json
-
-        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as _fh:
-            _fh.write(
-                _json.dumps(
-                    {
-                        "hypothesisId": "H3",
-                        "location": "whiteout_apk.py:await_whiteout_resource_pack_completion:exit",
-                        "message": "resource pack await exit",
-                        "data": {
-                            "index": index,
-                            "completed": resource_info.get("completed"),
-                            "reason": resource_info.get("reason"),
-                            "downloadPercent": resource_info.get("downloadPercent"),
-                            "pastDeadline": time.monotonic() >= pack_deadline,
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
     return resource_info
 
 

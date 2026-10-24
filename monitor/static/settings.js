@@ -1000,30 +1000,6 @@ async function resumeActiveRestorePolling(rows) {
     let seedRows = rows || restoreRows;
     while (pollToken === activeRestorePollToken) {
       const targets = await resolveBusyTargets(seedRows);
-      // #region agent log
-      try {
-        fetch("/api/debug/agent-log", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            hypothesisId: "H5",
-            location: "settings.js:resumeActiveRestorePolling:loop",
-            message: "UI restore poll loop selecting next job(s)",
-            data: {
-              busyCount: targets.length,
-              busyRows: targets.map((row) => ({
-                index: row.instanceIndex,
-                jobId: row.id,
-              })),
-              selectedJobId: targets[0]?.id || null,
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-      } catch {
-        // ignore
-      }
-      // #endregion
       if (!targets.length) break;
 
       const active = targets[0];
@@ -1862,29 +1838,6 @@ async function loadEmulatorHealthForIndex(index) {
 }
 
 async function refreshRestoreTabAfterJob() {
-  // #region agent log
-  try {
-    const remainingBusy = (restoreRows || [])
-      .filter((row) => row.restoreBusy && row.restoreJobId)
-      .map((row) => ({ index: row.index, jobId: row.restoreJobId }));
-    fetch("/api/debug/agent-log", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        hypothesisId: "H5",
-        location: "settings.js:refreshRestoreTabAfterJob:enter",
-        message: "refresh after restore job; poll loop continues if busy remain",
-        data: {
-          remainingBusyBeforeRefresh: remainingBusy,
-          pollLoopActive: restorePollLoopActive,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  } catch {
-    // ignore
-  }
-  // #endregion
   try {
     const [emulatorsResponse, activityResponse] = await Promise.all([
       fetch("/api/emulators", { cache: "no-store" }),

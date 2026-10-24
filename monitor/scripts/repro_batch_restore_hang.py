@@ -5,6 +5,7 @@ Scenarios:
 1) restore-all serialization: second worker body waits for serial lock until first finishes.
 2) APK batch: first hangs in update; second must not start until first returns
    (still sequential), but resource timeout override is batch-aware.
+3) resource-pack await respects explicit timeout overrides and exits on stall.
 
 Usage (from monitor/):
   ./venv/bin/python scripts/repro_batch_restore_hang.py
@@ -75,16 +76,9 @@ def scenario_restore_all_serialized() -> dict:
     def fake_body(job_id, config, index, backup_path, **kwargs):
         with body_order_lock:
             body_entered.append(index)
-        lr._agent_debug_log(
-            "H1",
-            "repro:fake_restore_body:entry",
-            "mocked restore body entry (after serial lock)",
-            {"jobId": job_id, "index": index, "bodyEntered": list(body_entered)},
-        )
         lr._set_job(job_id, status="restoring", message=f"mock restore {index}")
         if index == 1:
             first_hold.set()
-            # Hold serial lock while "resource pack" runs.
             lr._set_job(job_id, status="resource-pack", message="mock pack", progress=85)
             if not release_first.wait(timeout=5.0):
                 raise TimeoutError("first restore hold timed out")
@@ -96,7 +90,6 @@ def scenario_restore_all_serialized() -> dict:
             )
             return
 
-        # If serialization works, we only get here after first released the lock.
         if first_hold.is_set() and not release_first.is_set():
             second_entered_while_first_held.set()
         lr._set_job(
@@ -122,18 +115,6 @@ def scenario_restore_all_serialized() -> dict:
                             result = lr.start_restore_all(config, indexes=[1, 2])
                             assert first_hold.wait(timeout=2.0)
                             time.sleep(0.25)
-                            mid_busy = dict(lr._INSTANCE_BUSY)
-                            overlap = second_entered_while_first_held.is_set()
-                            lr._agent_debug_log(
-                                "H1",
-                                "repro:restore_all:mid_serial",
-                                "mid-batch while first holds serial lock",
-                                {
-                                    "bodyEntered": list(body_entered),
-                                    "busy": mid_busy,
-                                    "secondOverlapped": overlap,
-                                },
-                            )
                             release_first.set()
                             deadline = time.time() + 3
                             while time.time() < deadline:
@@ -159,7 +140,6 @@ def scenario_apk_batch_blocks_on_first() -> dict:
         reset_apk_update_jobs_for_tests,
         start_apk_update_job,
         wait_for_apk_update_job,
-        _agent_debug_log,
         get_apk_update_job,
     )
     from whiteout_apk import resolve_resource_pack_timeout
@@ -174,12 +154,6 @@ def scenario_apk_batch_blocks_on_first() -> dict:
     def slow_then_ok(_config, index, **kwargs):
         call_order.append(index)
         seen_batch_flags.append(bool(kwargs.get("batch")))
-        _agent_debug_log(
-            "H4",
-            "repro:fake_apk_update:entry",
-            "mocked apk update entry",
-            {"index": index, "callOrder": list(call_order), "batch": kwargs.get("batch")},
-        )
         if index == 1:
             first_started.set()
             if not release_first.wait(timeout=5.0):
@@ -202,20 +176,6 @@ def scenario_apk_batch_blocks_on_first() -> dict:
                     first_started.wait(timeout=2.0)
                     time.sleep(0.4)
                     mid = get_apk_update_job(job["id"]) or {}
-                    _agent_debug_log(
-                        "H4",
-                        "repro:apk_batch:mid_hang",
-                        "apk batch mid-state while first hangs",
-                        {
-                            "jobId": job["id"],
-                            "status": mid.get("status"),
-                            "currentIndex": mid.get("currentIndex"),
-                            "completedCount": mid.get("completedCount"),
-                            "callOrder": list(call_order),
-                            "secondStarted": second_started.is_set(),
-                            "batchTimeout": batch_timeout,
-                        },
-                    )
                     second_blocked = first_started.is_set() and not second_started.is_set()
                     release_first.set()
                     finished = wait_for_apk_update_job(job["id"], timeout_seconds=5)
@@ -226,6 +186,7 @@ def scenario_apk_batch_blocks_on_first() -> dict:
         "secondBlockedWhileFirstHung": second_blocked,
         "usedBatchFlag": all(seen_batch_flags) and len(seen_batch_flags) == 2,
         "batchResourceTimeout": batch_timeout,
+        "midCurrentIndex": mid.get("currentIndex"),
         "finalStatus": (finished or {}).get("status"),
         "updated": (finished or {}).get("updated"),
     }
@@ -250,12 +211,15 @@ def scenario_resource_timeout_override() -> dict:
 
     with patch("whiteout_apk.wait_for_optional_pack_if_running", side_effect=fake_wait):
         with patch("whiteout_apk._resource_pack_should_wait", return_value=True):
-            # Should exit on stalled without looping forever past override.
             result = await_whiteout_resource_pack_completion(
                 Path("/tmp/ld"),
                 3,
                 lambda *a, **k: None,
-                {"completed": False, "requiredAssets": {"optionalPromptReady": True}, "physicalTap": True},
+                {
+                    "completed": False,
+                    "requiredAssets": {"optionalPromptReady": True},
+                    "physicalTap": True,
+                },
                 config=cfg,
                 timeout_seconds=45,
             )
@@ -268,7 +232,6 @@ def scenario_resource_timeout_override() -> dict:
 
 
 def main() -> int:
-    Path("/opt/cursor/logs").mkdir(parents=True, exist_ok=True)
     print("Running mocked batch restore hang repro…")
     restore_result = scenario_restore_all_serialized()
     print("restore_all:", restore_result)
@@ -278,7 +241,6 @@ def main() -> int:
     print("Running resource timeout override check…")
     timeout_result = scenario_resource_timeout_override()
     print("resource_timeout:", timeout_result)
-    print("Wrote instrumentation to /opt/cursor/logs/debug.log")
     ok = (
         restore_result.get("serialized")
         and apk_result.get("secondBlockedWhileFirstHung")
