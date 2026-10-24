@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -220,6 +221,33 @@ def test_stage_xapk_clears_stale_splits(tmp_path: Path):
     assert (apk_dir / "arch.apk").read_bytes() == b"new-arch"
     assert not (apk_dir / "pack.apk").exists()
     assert staged["files"] == {"main.apk": "com.gof.global.apk", "arch.apk": "config.arm64_v8a.apk"}
+
+
+def test_stage_xapk_preserves_cache_when_extract_fails(tmp_path: Path):
+    """A mid-stage failure must not wipe a previously good split cache."""
+    xapk = tmp_path / "game.xapk"
+    apk_dir = tmp_path / "cache"
+    apk_dir.mkdir()
+    (apk_dir / "main.apk").write_bytes(b"GOOD-MAIN")
+    (apk_dir / "arch.apk").write_bytes(b"GOOD-ARCH")
+    (apk_dir / "pack.apk").write_bytes(b"GOOD-PACK")
+    _write_tiny_xapk(xapk)
+
+    real_copy2 = shutil.copy2
+
+    def boom(src, dst, *args, **kwargs):
+        # Fail while committing the first live split after temp extract.
+        if Path(dst).parent == apk_dir and Path(dst).name == "main.apk":
+            raise OSError("disk full")
+        return real_copy2(src, dst, *args, **kwargs)
+
+    with patch("apk_third_party.shutil.copy2", side_effect=boom):
+        with pytest.raises(OSError, match="disk full"):
+            stage_xapk_into_apk_dir(xapk, apk_dir, abi="arm64-v8a")
+
+    assert (apk_dir / "main.apk").read_bytes() == b"GOOD-MAIN"
+    assert (apk_dir / "arch.apk").read_bytes() == b"GOOD-ARCH"
+    assert (apk_dir / "pack.apk").read_bytes() == b"GOOD-PACK"
 
 
 def test_check_apk20_remote_abi_error_lists_available():
