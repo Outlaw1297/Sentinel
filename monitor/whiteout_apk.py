@@ -1318,8 +1318,58 @@ def update_whiteout_apk_on_instance(
 
     try:
         wait_for_android_boot(ldconsole, index)
-        install_output = install_whiteout_apk(ldconsole, index, apk_paths)
-        time.sleep(5.0)
+        latest_text = str(latest_version or "").strip() or None
+        install_attempts: list[str] = []
+        installed_text: str | None = None
+
+        for attempt in range(1, 3):
+            install_output = install_whiteout_apk(
+                ldconsole,
+                index,
+                apk_paths,
+                package_name=package_name,
+            )
+            install_attempts.append(install_output or f"attempt {attempt}")
+            time.sleep(5.0)
+
+            try:
+                installed = read_installed_package_version(
+                    ldconsole,
+                    index,
+                    package_name,
+                    run_ldconsole,
+                    config=config,
+                )
+                installed_version = installed.get("versionName")
+            except Exception as exc:  # noqa: BLE001
+                installed_version = None
+                if resource_error:
+                    resource_error = f"{resource_error}; version read: {exc}"
+                else:
+                    resource_error = f"version read: {exc}"
+
+            installed_text = str(installed_version or "").strip() or None
+            # Confirm the new build before launching the game / resource pack.
+            if not latest_text:
+                break
+            if installed_text and not version_is_older(installed_text, latest_text):
+                break
+            if attempt < 2:
+                # First account in a batch often still has Whiteout running; retry once.
+                continue
+            if not installed_text:
+                raise RuntimeError(
+                    f"APK install on instance {index} finished but the installed version "
+                    f"could not be confirmed (expected {latest_text}). "
+                    f"Retry with Force update selected."
+                )
+            raise RuntimeError(
+                f"APK install on instance {index} left version {installed_text}; "
+                f"APK cache has {latest_text}. "
+                f"The first emulator in a batch can keep the old build when uninstall is blocked — "
+                f"retry Force update selected on this instance "
+                f"(apk_third_party_abi should be arm64-v8a for APK20)."
+            )
 
         if wait_for_resource_pack:
             try:
@@ -1339,39 +1389,7 @@ def update_whiteout_apk_on_instance(
                     "error": resource_error,
                 }
 
-        try:
-            installed = read_installed_package_version(
-                ldconsole,
-                index,
-                package_name,
-                run_ldconsole,
-                config=config,
-            )
-            installed_version = installed.get("versionName")
-        except Exception as exc:  # noqa: BLE001
-            if resource_error:
-                resource_error = f"{resource_error}; version read: {exc}"
-            else:
-                resource_error = f"version read: {exc}"
-
-        # Download/staging alone is not success — refuse to report OK when the
-        # emulator is still on an older build (or still showing the Update dialog).
-        latest_text = str(latest_version or "").strip() or None
-        installed_text = str(installed_version or "").strip() or None
-        if latest_text:
-            if not installed_text:
-                raise RuntimeError(
-                    f"APK install on instance {index} finished but the installed version "
-                    f"could not be confirmed (expected {latest_text}). "
-                    f"Retry with Force update selected."
-                )
-            if version_is_older(installed_text, latest_text):
-                raise RuntimeError(
-                    f"APK install on instance {index} left version {installed_text}; "
-                    f"APK cache has {latest_text}. "
-                    f"Download only updates the cache — retry Force update selected, "
-                    f"and confirm apk_third_party_abi matches the emulator (arm64-v8a on APK20)."
-                )
+        if latest_text and installed_text:
             try:
                 prompt = probe_game_update_prompt(ldconsole, index, run_ldconsole)
             except Exception:  # noqa: BLE001
@@ -1399,6 +1417,8 @@ def update_whiteout_apk_on_instance(
         if resource_pack:
             apk_info = {**apk_info, "resourcePack": resource_pack}
         message = f"Installed Whiteout Survival {installed_text or latest_text or ''} on instance {index}.".strip()
+        if len(install_attempts) > 1:
+            message = f"{message} (reinstalled after first attempt left an older build)"
         if resource_pack and resource_pack.get("completed"):
             message = f"{message} Optional resource pack complete."
         elif resource_pack and not resource_pack.get("completed"):
@@ -1414,8 +1434,9 @@ def update_whiteout_apk_on_instance(
             "apkInfo": apk_info,
             "resourcePack": resource_pack,
             "message": message,
-            "output": install_output,
+            "output": " | ".join(part for part in install_attempts if part),
             "warning": resource_error,
+            "installAttempts": len(install_attempts),
         }
     finally:
         if apk_update_stops_emulator(config):
@@ -4690,6 +4711,23 @@ def _stage_apks_for_install(apk_paths: list[Path]) -> tuple[list[Path], Path | N
     return staged, stage_root
 
 
+def _force_stop_package(
+    ldconsole: Path,
+    index: int,
+    run_ldconsole,
+    package_name: str,
+) -> None:
+    run_ldconsole(
+        ldconsole,
+        "adb",
+        "--index",
+        str(index),
+        "--command",
+        f"shell am force-stop {package_name}",
+        timeout=60,
+    )
+
+
 def _uninstall_keep_data_for_reinstall(
     ldconsole: Path,
     index: int,
@@ -4698,6 +4736,9 @@ def _uninstall_keep_data_for_reinstall(
     package_name: str = DEFAULT_PACKAGE_NAME,
 ) -> dict[str, Any]:
     """Clear the installed package (keep app data) so split APK upgrades do not hang."""
+    # Running Whiteout often blocks uninstall on the first instance in a batch.
+    _force_stop_package(ldconsole, index, run_ldconsole, package_name)
+    time.sleep(1.0)
     result = run_ldconsole(
         ldconsole,
         "adb",
@@ -4709,17 +4750,51 @@ def _uninstall_keep_data_for_reinstall(
     )
     output = (result.stdout or result.stderr or "").strip()
     ok = result.returncode == 0 and "success" in output.lower()
+    if not ok:
+        # Second chance after another force-stop (common when the first account was in-game).
+        _force_stop_package(ldconsole, index, run_ldconsole, package_name)
+        time.sleep(2.0)
+        result = run_ldconsole(
+            ldconsole,
+            "adb",
+            "--index",
+            str(index),
+            "--command",
+            f"shell pm uninstall -k {package_name}",
+            timeout=120,
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        ok = result.returncode == 0 and "success" in output.lower()
+    # "Unknown package" means nothing to remove — treat as ready for fresh install.
+    if not ok and "unknown package" in output.lower():
+        ok = True
     return {"ok": ok, "output": output, "returncode": result.returncode}
 
 
-def install_whiteout_apk(ldconsole: Path, index: int, apk_paths: list[Path]) -> str:
+def install_whiteout_apk(
+    ldconsole: Path,
+    index: int,
+    apk_paths: list[Path],
+    *,
+    package_name: str = DEFAULT_PACKAGE_NAME,
+) -> str:
     from ldplayer_restore import run_ldconsole
 
     staged_paths, stage_root = _stage_apks_for_install(apk_paths)
     try:
         # Split APK -r upgrades often hang forever on LDPlayer; uninstall -k then fresh install.
         if len(staged_paths) > 1:
-            _uninstall_keep_data_for_reinstall(ldconsole, index, run_ldconsole)
+            uninstall = _uninstall_keep_data_for_reinstall(
+                ldconsole,
+                index,
+                run_ldconsole,
+                package_name=package_name,
+            )
+            if not uninstall.get("ok"):
+                raise RuntimeError(
+                    f"Could not uninstall {package_name} before split install on instance {index}: "
+                    f"{uninstall.get('output') or 'pm uninstall failed'}"
+                )
 
         if len(staged_paths) == 1:
             result = run_ldconsole(
