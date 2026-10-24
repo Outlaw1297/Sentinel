@@ -1,4 +1,4 @@
-"""Unit tests for Frostguard read-only workspace helpers."""
+"""Unit tests for Frostguard workspace helpers (RO + optional user-DB writers)."""
 
 from __future__ import annotations
 
@@ -12,15 +12,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from frostguard_workspace import (
+    add_profile_for_instance,
     default_local_port,
     default_workspace_root,
     list_incidents,
     list_profiles,
+    list_tasks,
     open_db_readonly,
     read_watcher_props,
     recent_log_paths,
+    reset_db_backup_state_for_tests,
     resolve_workspace,
+    set_profile_enabled,
     tail_log_file,
+    upsert_profile,
     workspace_identity,
     workspace_status,
 )
@@ -144,3 +149,72 @@ def test_recent_log_paths_and_tail(tmp_path: Path):
     path.write_text("line1\nline2\nline3\n", encoding="utf-8")
     assert recent_log_paths(workspace) == [path]
     assert tail_log_file(path, max_lines=2) == ["line2", "line3"]
+
+
+def test_set_profile_enabled_writes_and_backs_up(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    db_path = workspace / "frostguard.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE Profile ("
+        "id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.execute("INSERT INTO Profile VALUES (1, 'Rick', 1, 0)")
+    conn.commit()
+    conn.close()
+
+    result = set_profile_enabled(workspace, "1", False)
+    assert result["ok"] is True
+    assert result["enabled"] is False
+    assert (workspace / "frostguard.db.bak").is_file()
+
+    profiles = list_profiles(workspace)
+    assert profiles[0]["enabled"] is False
+    assert profiles[0]["active"] is False
+
+
+def test_upsert_and_add_profile_for_instance(tmp_path: Path):
+    reset_db_backup_state_for_tests()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Profile ("
+        "id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, emulatorNumber INTEGER)"
+    )
+    conn.commit()
+    conn.close()
+
+    inserted = add_profile_for_instance(workspace, instance_index=4, name="Delta", profile_id=40)
+    assert inserted["ok"] is True
+    assert inserted["action"] == "insert"
+
+    updated = upsert_profile(workspace, {"id": 40, "enabled": False, "emulatorNumber": 5})
+    assert updated["ok"] is True
+    assert updated["action"] == "update"
+
+    by_id = {row["id"]: row for row in list_profiles(workspace)}
+    assert by_id["40"]["name"] == "Delta"
+    assert by_id["40"]["enabled"] is False
+    assert by_id["40"]["instanceId"] == 5
+
+
+def test_list_tasks_when_present(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE Task (id INTEGER PRIMARY KEY, name TEXT, status TEXT, enabled INTEGER)"
+    )
+    conn.execute("INSERT INTO Task VALUES (1, 'Gather', 'executing', 1)")
+    conn.execute("INSERT INTO Task VALUES (2, 'Idle', 'idle', 1)")
+    conn.commit()
+    conn.close()
+
+    tasks = list_tasks(workspace)
+    assert len(tasks) == 2
+    by_name = {row["name"]: row for row in tasks}
+    assert by_name["Gather"]["executing"] is True
+    assert by_name["Idle"]["executing"] is False
