@@ -31,6 +31,11 @@ APK_UPDATE_STATUS_PROGRESS = {
 # Wall-clock cap for one emulator in a batch. Without this, a hung ldconsole/adb
 # install can leave the dashboard on "Updating…" for hours with no new log lines.
 DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS = 900
+# After the instance timeout the worker still stops the emulator. runninglist is
+# 30s (+ optional list2 30s) and ldconsole quit is 90s; the best-effort loop can
+# issue a second quit before it notices its deadline. Polls must not fail the job
+# during that stop (quit alone can sit on the timeout the whole time).
+APK_POST_TIMEOUT_STOP_GRACE_SECONDS = 30 + 30 + 90 + 90
 # Fail active jobs that have not heartbeated / advanced for this long (crashed worker).
 APK_JOB_STALE_SECONDS = 1200
 _HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -82,6 +87,11 @@ def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
         updates["progress"] = _progress_for_status(str(updates["status"]))
     with _APK_JOB_LOCK:
         job = _APK_UPDATE_JOBS.setdefault(job_id, {})
+        # Reap and operator cancel finalize under this lock. A worker still inside
+        # the timeout/stop path, or between its cancel check and the next write,
+        # must not put the job back to "updating" and lock the dashboard again.
+        if str(job.get("status") or "") in _terminal_statuses():
+            return dict(job)
         if "progress" in updates and updates.get("status") not in _terminal_statuses():
             previous = job.get("progress")
             new_progress = int(updates["progress"])
@@ -124,9 +134,31 @@ def _fail_job_stalled(job_id: str, *, reason: str) -> dict[str, Any] | None:
         )
         job["updatedAt"] = _utc_now_iso()
         snapshot = dict(job)
-    _APK_JOB_CANCEL.discard(job_id)
+        # Same signal as operator cancel so the worker breaks instead of
+        # continuing the batch and writing over this failed snapshot.
+        _APK_JOB_CANCEL.add(job_id)
     _append_apk_job_log(f"[{job_id}] stalled: {reason}")
     return snapshot
+
+
+def _instance_stall_limit_seconds(job: dict[str, Any], override: float | None) -> float:
+    """Age of instanceStartedAt after which a status poll may fail the job.
+
+    An explicit override is the full cap (tests). Otherwise use this job's
+    configured instance timeout plus the post-timeout ldconsole stop budget.
+    """
+    if override is not None:
+        return float(override)
+    timeout = float(DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS)
+    raw = job.get("instanceTimeoutSeconds")
+    if raw is not None:
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError):
+            parsed = 0
+        if parsed >= 1:
+            timeout = parsed
+    return timeout + float(APK_POST_TIMEOUT_STOP_GRACE_SECONDS)
 
 
 def reap_stale_apk_update_jobs(
@@ -136,11 +168,6 @@ def reap_stale_apk_update_jobs(
 ) -> list[dict[str, Any]]:
     """Mark hung active jobs failed so the UI cannot sit on Updating forever."""
     idle_limit = float(APK_JOB_STALE_SECONDS if max_idle_seconds is None else max_idle_seconds)
-    instance_limit = float(
-        DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS + 120
-        if instance_timeout_seconds is None
-        else instance_timeout_seconds
-    )
     now = time.time()
     reaped: list[dict[str, Any]] = []
     with _APK_JOB_LOCK:
@@ -154,6 +181,7 @@ def reap_stale_apk_update_jobs(
         if not job_id:
             continue
         instance_started = _parse_iso_to_epoch(str(job.get("instanceStartedAt") or ""))
+        instance_limit = _instance_stall_limit_seconds(job, instance_timeout_seconds)
         if instance_started is not None and (now - instance_started) > instance_limit:
             index = job.get("currentIndex")
             reason = (
@@ -551,6 +579,11 @@ def _apk_update_worker(
             )
             hb_thread.start()
             try:
+                # Re-check after the status write. A poll may have reaped this job, or
+                # the operator may have cancelled, between the loop check and here.
+                if _job_cancelled(job_id):
+                    _append_apk_job_log(f"[{job_id}] cancelled before index={index}")
+                    break
                 # Batch: shorter pack budget + hard wall-clock so one hung emulator
                 # cannot block the rest of the queue (or leave the UI spinning for hours).
                 result = _run_with_timeout(
