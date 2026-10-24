@@ -1,8 +1,8 @@
 {
-    "appVersion": "0.2.0",
-    "commit": "316d8c0ab27f5ba84dbcc83b279d27d13ff40a37",
-    "commitShort": "316d8c0",
-    "branch": "main",
-    "builtAt": "2026-10-24T05:28:54Z",
+    "appVersion": "0.2.1",
+    "commit": "cffb46bcc88568583c936034cbe6eb621723f151",
+    "commitShort": "cffb46b",
+    "branch": "cursor/frostguard-parity-9a49",
+    "builtAt": "2026-10-24T05:43:44Z",
     "repo": "Outlaw1297/Sentinel"
 }
