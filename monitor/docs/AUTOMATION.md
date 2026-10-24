@@ -43,16 +43,55 @@ When enabled (`auto_update_apks`) and **GnBots is stopped**, Sentinel periodical
    - Optional **third-party catalog** (`apk_third_party_provider`, for example `apk20`) so updates are not blocked when GnBots has not refreshed its package yet
 2. Updates the instances selected under **Emulator Restore → Instances to update**
 
-Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk` returns a job immediately; poll `/api/emulators/apk/jobs/{id}`). Use **Check for newer APK** / **Download latest APK** on the Restore tab to sync either source into the **local APK cache** — that does not by itself change what is installed on emulators. After a successful download, Restore auto-queues **Update selected instances** when the bot is stopped and instances are selected; otherwise use **Update selected/all** or **Force update selected**. Install jobs now fail if the emulator stays on an older `versionName` or still shows the in-game Update dialog.
+> Scheduled auto-APK skips the tick while the **GnBots host process** is running (`collect_stack_status` → `gnbotsExe.running`). Manual Restore lock uses dashboard `botActive`.
+
+Manual bulk APK actions use the same job system (`POST /api/emulators/update-apk` returns a job immediately; poll `/api/emulators/apk/jobs/{id}`).
+
+#### Cache sync vs install (Restore tab)
+
+| Action | What it does | Does it change emulators? |
+|--------|--------------|---------------------------|
+| **Check for newer APK** | Compares local cache to GnBots URL + third-party catalog | No |
+| **Download latest APK** | Writes the chosen package into `whiteout_apk_dir` as `game.zip` + staged `main.apk` / `arch.apk` / `pack.apk` | No by itself |
+| **Update selected / all** | Background job installs the cache onto target LDPlayer indexes | Yes |
+| **Force update selected** | Same job path, but skips “only outdated” filtering | Yes |
+
+After a successful **Download**, Restore **auto-queues Update selected** when the bot is stopped and instances are selected. If the bot is still running or nothing is selected, the UI warns that the download filled the cache only.
+
+Codepaths: `settings.js` (`checkRemoteApk` → `queueSelectedApkUpdate`) → `POST /api/emulators/update-apk` → `apk_update_jobs` → `whiteout_apk.update_whiteout_apk_on_instance` / `ensure_latest_whiteout_apk`.
+
+#### Source selection (`apk_source_policy`)
+
+Default **`auto`** picks whichever of local / GnBots / third-party has the newer Whiteout `versionName` (`select_apk_update_source`). Operators can force a source from **Settings → Automation** or `config.json`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Newer `versionName` wins. GnBots zip version is learned via a **size-keyed probe cache** (download `game.zip.gnbots-probe` only when Content-Length changes), not by treating size mismatch alone as “newer”. |
+| `gnbots` | Prefer the GnBots `whiteout_apk_url` package when available |
+| `third_party` | Prefer the APK20 (or other) catalog when available |
+
+**Mid-batch pitfall (fixed in 0.1.13):** APK20 stages an XAPK as `game.zip`. That file’s size almost never matches the GnBots zip Content-Length. Older builds treated every mismatch as “download GnBots again,” so a 3-instance batch could alternate new → new → **older** across `ensure_latest` calls. Sentinel now skips GnBots size-only updates when the cache is already a third-party XAPK (`gnbots_zip_size_signals_update`), and `auto` compares versions instead.
+
+#### Install verification (no false success)
+
+Per-instance install is no longer “ADB returned OK.” Before counting success:
+
+1. **Force-stop** Whiteout, then `pm uninstall -k` (retry once if uninstall is blocked — common on the first in-game instance)
+2. Split install (`install-multiple`), then **read device `versionName`** before launching the game / resource pack
+3. If the device is still older than the cache, **reinstall once**; otherwise fail that index
+4. If the in-game **Update** dialog is still present after install, fail that index
+5. Soft-success guard in `apk_update_jobs`: a result that still reports `updateAvailable` / `gameUpdateRequired` is recorded as a **failure**, with per-index errors in the job message / `failures[]`
+
+Partial batches still continue to later indexes. Job status can be `completed` with some failures listed (e.g. `Updated 2 (#0, #1); 1 failed (#2: …)`).
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `auto_update_apks` | `false` | Master toggle |
 | `auto_update_apks_check_minutes` | `30` | How often to check |
-| `apk_source_policy` | `auto` | `auto` = keep whichever of GnBots/`apk20` has the newer `versionName`; `gnbots` or `third_party` forces that source |
+| `apk_source_policy` | `auto` | `auto` / `gnbots` / `third_party` — see table above |
 | `apk_third_party_provider` | `apk20` | Defaults on; set `off` to use only the GnBots URL/local cache |
 | `apk_third_party_package` | auto (`com.gof.global`) | Auto-filled from the Whiteout APK cache when blank |
-| `apk_third_party_abi` | auto from LDPlayer | Auto-filled from GnBots `LDPath64`/`LDPath32` (or install path); override only if needed |
+| `apk_third_party_abi` | auto from LDPlayer | Auto-filled from GnBots `LDPath64`/`LDPath32` (or install path); override only if needed. Whiteout on APK20 is currently **arm64-v8a** only — ABI mismatches list available architectures in the error |
 
 ### 3. Stuck-screen learning (same-screen timeouts)
 
@@ -208,10 +247,18 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 | Same event never re-fixed | Event id already in `autoFixedEventIds` | Expected once-per-event; wait for a new timeout log |
 | Fixes feel spammy | Cooldown too low | Raise `cooldownSeconds` (30–3600) on the rule |
 | Linux / Cloud Agent | Remediations that need LDPlayer fail gracefully | Dashboard + learning still work; expect warn fallback / offline GnBots |
+| Download says OK but emulators stay old | Cache sync ≠ install | Confirm instances selected + bot stopped; watch the auto-queued Update job (or click **Update selected**) |
+| Batch leaves mixed versions (new / old / new) | Pre-0.1.13: XAPK `game.zip` size ≠ GnBots Content-Length re-downloaded mid-batch | Upgrade to ≥0.1.13; Force update any leftover old indexes; check `logs/apk-update-jobs.log` |
+| Job “completed” but some indexes failed | Soft-success / version verify rejected those installs | Read per-index text in the job message / `failures[]`; Force update the failed indexes |
+| First instance keeps old build | Uninstall blocked while Whiteout was running | 0.1.13 force-stops + retries once; if it still fails, Force update that index alone |
+| APK20 error lists architectures | ABI mismatch (`apk_third_party_abi`) | Set `arm64-v8a` for current Whiteout on APK20, or `off` the third-party provider |
+| In-game Update dialog after install | Cache still below live server requirement | Re-run Check/Download, confirm `apk_source_policy=auto` (or force the newer source), then Force update |
 
 ## Safety notes
 
 - Auto APK updates **never** run while GnBots is running (same lock as manual updates).
+- Cache download alone does **not** mutate emulators; install jobs must run (auto-queued after download when unlocked + selected).
+- Install success requires a verified device `versionName` (and no lingering Update dialog); soft “ADB OK” results that still need an update count as failures.
 - Stuck-screen **auto-fix is off by default**; learning can still propose rules safely.
 - Learned/manual rules are **disabled until you enable them**; only the seed event→Back rule ships enabled.
 - Press Back / restart emulator require Windows + LDPlayer ADB; if the instance cannot be resolved, Sentinel falls back to warning you.
