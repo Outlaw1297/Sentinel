@@ -2623,6 +2623,33 @@ async def ping() -> dict[str, Any]:
     }
 
 
+# #region agent log
+@app.post("/api/debug/agent-log")
+async def debug_agent_log(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """Temporary debug sink for browser instrumentation (batch restore hang)."""
+    try:
+        Path("/opt/cursor/logs").mkdir(parents=True, exist_ok=True)
+        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "hypothesisId": payload.get("hypothesisId") or "H5",
+                        "location": payload.get("location") or "browser",
+                        "message": payload.get("message") or "",
+                        "data": payload.get("data") or {},
+                        "timestamp": int(payload.get("timestamp") or time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:  # noqa: BLE001
+        return {"ok": False}
+    return {"ok": True}
+
+
+# #endregion
+
+
 @app.get("/setup")
 async def setup_page() -> HTMLResponse:
     html = (STATIC_DIR / "setup.html").read_text(encoding="utf-8")

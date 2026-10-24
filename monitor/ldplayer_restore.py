@@ -52,8 +52,34 @@ BACKUP_ALIASES: dict[str, str] = {
 }
 
 _RESTORE_LOCK = threading.Lock()
+# Only one restore body runs at a time — parallel ldconsole restore/APK/resource
+# waits contend on LDPlayer and leave later batch jobs stuck.
+_RESTORE_RUN_LOCK = threading.Lock()
 _RESTORE_JOBS: dict[str, dict[str, Any]] = {}
 _INSTANCE_BUSY: dict[int, str] = {}
+
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
+    # #region agent log
+    try:
+        import json as _json
+
+        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as _fh:
+            _fh.write(
+                _json.dumps(
+                    {
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data or {},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
 
 
 def _normalize_name(value: str) -> str:
@@ -1216,45 +1242,92 @@ def _restore_worker(
 ) -> None:
     from gnbots_emulator_health import read_selected_profile
 
-    gnbots_root = resolve_gnbots_root(config)
-    profile_name = profile_name or read_selected_profile(gnbots_root)
-    index_hints = load_index_name_hints(gnbots_root)
+    # #region agent log
+    _agent_debug_log(
+        "H1",
+        "ldplayer_restore.py:_restore_worker:entry",
+        "restore worker thread waiting for serial slot",
+        {
+            "jobId": job_id,
+            "index": index,
+            "thread": threading.current_thread().name,
+            "busySnapshot": dict(_INSTANCE_BUSY),
+        },
+    )
+    # #endregion
 
-    ldconsole = resolve_ldconsole(config)
-    ld_name = ""
-    try:
-        for row in list_ld_instances(config):
-            if int(row["index"]) == index:
-                ld_name = str(row.get("name") or "")
-                break
-    except Exception:  # noqa: BLE001
-        pass
+    # Serialize restore bodies so batch restore-all does not pile concurrent
+    # ldconsole/APK/resource-pack work onto LDPlayer (siblings hang/timeout).
+    with _RESTORE_RUN_LOCK:
+        # #region agent log
+        _agent_debug_log(
+            "H1",
+            "ldplayer_restore.py:_restore_worker:acquired",
+            "restore worker acquired serial lock",
+            {"jobId": job_id, "index": index, "busySnapshot": dict(_INSTANCE_BUSY)},
+        )
+        # #endregion
+        gnbots_root = resolve_gnbots_root(config)
+        profile_name = profile_name or read_selected_profile(gnbots_root)
+        index_hints = load_index_name_hints(gnbots_root)
 
-    try:
-        _restore_worker_body(
-            job_id,
-            config,
-            index,
-            backup_path,
-            ldconsole=ldconsole,
-            ld_name=ld_name,
-            target_name=target_name,
-            profile_name=profile_name,
-            index_hints=index_hints,
-            gnbots_root=gnbots_root,
-        )
-    except Exception as exc:  # noqa: BLE001
-        finished_at = datetime.now(timezone.utc).isoformat()
-        job = _set_job(
-            job_id,
-            status="failed",
-            message=str(exc) or "Emulator restore failed.",
-            finishedAt=finished_at,
-        )
-        _append_restore_log(f"[{job_id}] failed unexpectedly: {exc}")
-        _notify_restore_push(job, config)
-    finally:
-        _clear_instance_busy(index, job_id)
+        ldconsole = resolve_ldconsole(config)
+        ld_name = ""
+        try:
+            for row in list_ld_instances(config):
+                if int(row["index"]) == index:
+                    ld_name = str(row.get("name") or "")
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            _restore_worker_body(
+                job_id,
+                config,
+                index,
+                backup_path,
+                ldconsole=ldconsole,
+                ld_name=ld_name,
+                target_name=target_name,
+                profile_name=profile_name,
+                index_hints=index_hints,
+                gnbots_root=gnbots_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            finished_at = datetime.now(timezone.utc).isoformat()
+            job = _set_job(
+                job_id,
+                status="failed",
+                message=str(exc) or "Emulator restore failed.",
+                finishedAt=finished_at,
+            )
+            _append_restore_log(f"[{job_id}] failed unexpectedly: {exc}")
+            _notify_restore_push(job, config)
+        finally:
+            job_snap = get_restore_job(job_id) or {}
+            # #region agent log
+            _agent_debug_log(
+                "H1",
+                "ldplayer_restore.py:_restore_worker:finally",
+                "restore worker finishing; clearing busy",
+                {
+                    "jobId": job_id,
+                    "index": index,
+                    "status": job_snap.get("status"),
+                    "busyBeforeClear": dict(_INSTANCE_BUSY),
+                },
+            )
+            # #endregion
+            _clear_instance_busy(index, job_id)
+            # #region agent log
+            _agent_debug_log(
+                "H2",
+                "ldplayer_restore.py:_restore_worker:busy_cleared",
+                "instance busy cleared",
+                {"jobId": job_id, "index": index, "busyAfterClear": dict(_INSTANCE_BUSY)},
+            )
+            # #endregion
 
 
 def _await_optional_resource_pack_completion(
@@ -1749,6 +1822,20 @@ def _restore_worker_body(
                     progress=progress,
                 )
 
+            # #region agent log
+            _agent_debug_log(
+                "H3",
+                "ldplayer_restore.py:_restore_worker_body:resource_wait_enter",
+                "entering final optional resource-pack wait",
+                {
+                    "jobId": job_id,
+                    "index": index,
+                    "downloadPercent": resource_info.get("downloadPercent"),
+                    "reason": resource_info.get("reason"),
+                    "completed": resource_info.get("completed"),
+                },
+            )
+            # #endregion
             resource_info = _await_optional_resource_pack_completion(
                 ldconsole,
                 index,
@@ -1758,6 +1845,20 @@ def _restore_worker_body(
                 config=config,
                 on_progress=_resource_progress_final,
             )
+            # #region agent log
+            _agent_debug_log(
+                "H3",
+                "ldplayer_restore.py:_restore_worker_body:resource_wait_exit",
+                "exited final optional resource-pack wait",
+                {
+                    "jobId": job_id,
+                    "index": index,
+                    "downloadPercent": resource_info.get("downloadPercent"),
+                    "reason": resource_info.get("reason"),
+                    "completed": resource_info.get("completed"),
+                },
+            )
+            # #endregion
             if apk_info:
                 apk_info = {**apk_info, "resourcePack": resource_info}
             if resource_info.get("completed"):
@@ -1863,6 +1964,19 @@ def start_restore(
         busy = _INSTANCE_BUSY.get(index)
         if busy:
             job = _RESTORE_JOBS.get(busy) or {}
+            # #region agent log
+            _agent_debug_log(
+                "H2",
+                "ldplayer_restore.py:start_restore:busy_reject",
+                "rejecting start_restore; instance busy",
+                {
+                    "index": index,
+                    "busyJobId": busy,
+                    "busyStatus": job.get("status"),
+                    "busySnapshot": dict(_INSTANCE_BUSY),
+                },
+            )
+            # #endregion
             raise RuntimeError(
                 f"Restore already running for instance {index} (job {busy}, status {job.get('status')})"
             )
@@ -1931,6 +2045,20 @@ def start_restore(
         daemon=True,
     )
     thread.start()
+    # #region agent log
+    _agent_debug_log(
+        "H1",
+        "ldplayer_restore.py:start_restore:queued",
+        "restore job thread started",
+        {
+            "jobId": job_id,
+            "index": index,
+            "threadAlive": thread.is_alive(),
+            "busySnapshot": dict(_INSTANCE_BUSY),
+            "activeJobCount": len(_INSTANCE_BUSY),
+        },
+    )
+    # #endregion
     _append_restore_log(f"[{job_id}] queued index={index} backup={backup_path.name}")
     return dict(job)
 
@@ -1947,13 +2075,42 @@ def start_restore_all(
         wanted = {int(index) for index in indexes}
         eligible = [row for row in eligible if int(row["index"]) in wanted]
 
+    # #region agent log
+    _agent_debug_log(
+        "H1",
+        "ldplayer_restore.py:start_restore_all:begin",
+        "batch restore queue begin",
+        {
+            "eligibleIndexes": [int(row["index"]) for row in eligible],
+            "requestedIndexes": indexes,
+            "busySnapshot": dict(_INSTANCE_BUSY),
+        },
+    )
+    # #endregion
+
     jobs: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for row in eligible:
         index = int(row["index"])
         try:
+            # #region agent log
+            _agent_debug_log(
+                "H1",
+                "ldplayer_restore.py:start_restore_all:before_start",
+                "about to start_restore for batch index",
+                {"index": index, "busySnapshot": dict(_INSTANCE_BUSY)},
+            )
+            # #endregion
             jobs.append(start_restore(config, index, target_name=str(row.get("name") or "")))
         except Exception as exc:  # noqa: BLE001
+            # #region agent log
+            _agent_debug_log(
+                "H2",
+                "ldplayer_restore.py:start_restore_all:start_failed",
+                "start_restore failed in batch",
+                {"index": index, "error": str(exc)},
+            )
+            # #endregion
             failures.append({"index": index, "error": str(exc)})
 
     queued = len(jobs)
@@ -1966,6 +2123,20 @@ def start_restore_all(
         message = f"Queued restore for {queued} instance{'s' if queued != 1 else ''}; {failed} failed."
     else:
         message = f"Queued restore for {queued} instance{'s' if queued != 1 else ''}."
+    # #region agent log
+    _agent_debug_log(
+        "H1",
+        "ldplayer_restore.py:start_restore_all:end",
+        "batch restore queue end",
+        {
+            "queued": queued,
+            "failed": failed,
+            "jobIds": [job.get("id") for job in jobs],
+            "failures": failures,
+            "busySnapshot": dict(_INSTANCE_BUSY),
+        },
+    )
+    # #endregion
     return {
         "queued": queued,
         "failed": failed,

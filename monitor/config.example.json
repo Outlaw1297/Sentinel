@@ -48,6 +48,7 @@
   "restore_probe_interval_fast": 2,
   "restore_probe_interval_slow": 20,
   "restore_whiteout_resource_download_timeout": 1800,
+  "apk_update_resource_download_timeout": 300,
   "gnbots_process_name": "GnBots",
   "watcher_poll_seconds": 60,
   "watcher_poll_slow_seconds": 120,

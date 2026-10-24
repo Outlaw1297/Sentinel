@@ -41,6 +41,29 @@ def _append_apk_job_log(message: str) -> None:
         pass
 
 
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
+    # #region agent log
+    try:
+        import json as _json
+
+        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as _fh:
+            _fh.write(
+                _json.dumps(
+                    {
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data or {},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
+
+
 def _progress_for_status(status: str) -> int:
     return APK_UPDATE_STATUS_PROGRESS.get(str(status or ""), 15)
 
@@ -276,13 +299,63 @@ def _apk_update_worker(
                 message=f"Updating Whiteout Survival on instance {index} ({position + 1}/{total})…",
             )
             _append_apk_job_log(f"[{job_id}] updating index={index} ({position + 1}/{total})")
+            # #region agent log
+            _agent_debug_log(
+                "H4",
+                "apk_update_jobs.py:_apk_update_worker:index_begin",
+                "apk batch advancing to next index",
+                {
+                    "jobId": job_id,
+                    "index": index,
+                    "position": position,
+                    "total": total,
+                    "completedSoFar": len(results),
+                    "failedSoFar": len(failures),
+                },
+            )
+            # #endregion
             try:
-                result = update_whiteout_apk_on_instance(config, index)
+                # Batch installs use a shorter resource-pack budget so a hung optional
+                # download on one instance cannot block the rest of the queue.
+                result = update_whiteout_apk_on_instance(config, index, batch=True)
                 results.append(result)
-                _append_apk_job_log(f"[{job_id}] ok index={index}")
+                pack = result.get("resourcePack") or {}
+                if pack and not pack.get("completed") and pack.get("reason") in {
+                    "timeout",
+                    "stalled",
+                    "workflow_error",
+                }:
+                    _append_apk_job_log(
+                        f"[{job_id}] ok index={index} (resource pack {pack.get('reason')}; continuing batch)"
+                    )
+                else:
+                    _append_apk_job_log(f"[{job_id}] ok index={index}")
+                # #region agent log
+                _agent_debug_log(
+                    "H4",
+                    "apk_update_jobs.py:_apk_update_worker:index_ok",
+                    "apk batch index finished ok",
+                    {
+                        "jobId": job_id,
+                        "index": index,
+                        "position": position,
+                        "resourceCompleted": pack.get("completed"),
+                        "resourceReason": pack.get("reason"),
+                        "batch": True,
+                    },
+                )
+                # #endregion
             except Exception as exc:  # noqa: BLE001
                 failures.append({"index": index, "error": str(exc)})
                 _append_apk_job_log(f"[{job_id}] failed index={index}: {exc}")
+                # #region agent log
+                _agent_debug_log(
+                    "H4",
+                    "apk_update_jobs.py:_apk_update_worker:index_failed",
+                    "apk batch index failed",
+                    {"jobId": job_id, "index": index, "position": position, "error": str(exc)},
+                )
+                # #endregion
             finally:
                 _clear_instance_busy(index, job_id)
 

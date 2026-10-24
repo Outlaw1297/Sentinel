@@ -32,7 +32,7 @@ class ApkUpdateJobsTests(unittest.TestCase):
     def test_queues_job_and_completes(self) -> None:
         config = {"gnbots_root": "C:\\Games\\GnBots"}
 
-        def fake_update(_config, index):
+        def fake_update(_config, index, **_kwargs):
             return {
                 "index": index,
                 "installedVersion": "1.32.0",
@@ -60,7 +60,7 @@ class ApkUpdateJobsTests(unittest.TestCase):
     def test_rejects_second_active_job(self) -> None:
         config = {}
 
-        def slow_update(_config, index):
+        def slow_update(_config, index, **_kwargs):
             time.sleep(0.3)
             return {"index": index, "apk": {}, "message": "ok"}
 
@@ -77,7 +77,7 @@ class ApkUpdateJobsTests(unittest.TestCase):
     def test_records_partial_failures(self) -> None:
         config = {}
 
-        def flaky(_config, index):
+        def flaky(_config, index, **_kwargs):
             if index == 2:
                 raise RuntimeError("adb offline")
             return {"index": index, "apk": {"index": index}, "message": "ok"}

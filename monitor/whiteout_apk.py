@@ -566,6 +566,31 @@ def restore_starts_resource_download(config: dict[str, Any]) -> bool:
     return bool(value)
 
 
+DEFAULT_RESOURCE_PACK_TIMEOUT_SECONDS = 1800
+DEFAULT_APK_BATCH_RESOURCE_TIMEOUT_SECONDS = 300
+RESOURCE_PACK_STALL_SECONDS = 180
+
+
+def resolve_resource_pack_timeout(
+    config: dict[str, Any] | None,
+    *,
+    override_seconds: int | None = None,
+    batch: bool = False,
+) -> int:
+    """Resolve resource-pack wait budget. Explicit override wins over config."""
+    if override_seconds is not None:
+        # Allow sub-30 slices when a caller is draining a hard deadline.
+        return max(1, int(override_seconds))
+    if batch:
+        # Batch APK updates must not inherit the long single-restore timeout.
+        if config is not None and config.get("apk_update_resource_download_timeout") is not None:
+            return max(30, int(config["apk_update_resource_download_timeout"]))
+        return DEFAULT_APK_BATCH_RESOURCE_TIMEOUT_SECONDS
+    if config is not None and config.get("restore_whiteout_resource_download_timeout") is not None:
+        return max(30, int(config["restore_whiteout_resource_download_timeout"]))
+    return DEFAULT_RESOURCE_PACK_TIMEOUT_SECONDS
+
+
 def apk_update_stops_emulator(config: dict[str, Any]) -> bool:
     value = config.get("apk_update_stop_emulator")
     if value is None:
@@ -1233,6 +1258,8 @@ def update_whiteout_apk_on_instance(
     *,
     sync_latest: bool = True,
     wait_for_resource_pack: bool | None = None,
+    resource_timeout_seconds: int | None = None,
+    batch: bool = False,
 ) -> dict[str, Any]:
     from ldplayer_restore import (
         list_running_ld_indexes,
@@ -1262,6 +1289,11 @@ def update_whiteout_apk_on_instance(
     resource_error: str | None = None
     installed_version: str | None = None
     latest_version = apk_info.get("versionName")
+    pack_timeout = resolve_resource_pack_timeout(
+        config,
+        override_seconds=resource_timeout_seconds,
+        batch=batch,
+    )
 
     try:
         wait_for_android_boot(ldconsole, index)
@@ -1276,6 +1308,7 @@ def update_whiteout_apk_on_instance(
                     package_name,
                     run_ldconsole,
                     config=config,
+                    timeout_seconds=pack_timeout,
                 )
             except Exception as exc:  # noqa: BLE001
                 resource_error = str(exc)
@@ -3958,14 +3991,15 @@ def wait_for_whiteout_resource_download(
     index: int,
     run_ldconsole,
     *,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int | None = None,
     on_progress: Any | None = None,
     min_complete_seconds: float = 30.0,
     config: dict[str, Any] | None = None,
+    stall_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Wait until the Whiteout resource pack download reaches 100%."""
-    if config and config.get("restore_whiteout_resource_download_timeout") is not None:
-        timeout_seconds = int(config["restore_whiteout_resource_download_timeout"])
+    timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
+    stall_limit = RESOURCE_PACK_STALL_SECONDS if stall_seconds is None else max(30, int(stall_seconds))
     width, height = _read_display_size(ldconsole, index, run_ldconsole)
     deadline = time.monotonic() + timeout_seconds
     started = time.monotonic()
@@ -3978,6 +4012,7 @@ def wait_for_whiteout_resource_download(
     saw_optional_download = False
     stable_complete_reads = 0
     last_enter_now_tap = 0.0
+    last_progress_at = started
 
     saw_xml_progress = False
     saw_screenshot_progress = False
@@ -4046,11 +4081,33 @@ def wait_for_whiteout_resource_download(
         elif pack_pct >= 98 and enter_now and _pack_percent_trustworthy(state):
             last_percent = max(last_percent, pack_pct)
 
-        peak_percent = max(peak_percent, last_percent)
+        if last_percent > peak_percent:
+            peak_percent = last_percent
+            last_progress_at = time.monotonic()
+        else:
+            peak_percent = max(peak_percent, last_percent)
         if state.get("active"):
             saw_active = True
             saw_optional_download = True
         samples += 1
+
+        if (
+            (saw_active or saw_xml_progress or saw_screenshot_progress)
+            and peak_percent < 100
+            and (time.monotonic() - last_progress_at) >= stall_limit
+        ):
+            if on_progress:
+                on_progress(
+                    f"Optional resource pack stalled at {peak_percent}% — continuing.",
+                    90,
+                )
+            return {
+                "completed": False,
+                "downloadPercent": last_percent,
+                "elapsedSeconds": round(time.monotonic() - started, 1),
+                "samples": samples,
+                "reason": "stalled",
+            }
 
         if (
             enter_now
@@ -4209,6 +4266,11 @@ def _resource_pack_should_wait(
         "pack_not_required",
         "game_ready",
         "already_in_game",
+        "timeout",
+        "stalled",
+        "download_now_still_visible",
+        "dialog_closed",
+        "workflow_error",
     }:
         return False
     if not required.get("optionalPromptReady"):
@@ -4228,10 +4290,14 @@ def start_whiteout_resource_download(
     run_ldconsole,
     *,
     launch_wait_seconds: float = 35.0,
-    download_timeout_seconds: int = 1800,
+    download_timeout_seconds: int | None = None,
     on_progress: Any | None = None,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    download_timeout_seconds = resolve_resource_pack_timeout(
+        config,
+        override_seconds=download_timeout_seconds,
+    )
     if on_progress:
         on_progress("Launching Whiteout Survival…", 83)
     launch_output = launch_whiteout_app(ldconsole, index, package_name, run_ldconsole)
@@ -4392,31 +4458,64 @@ def await_whiteout_resource_pack_completion(
     *,
     config: dict[str, Any] | None = None,
     on_progress: Any | None = None,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int | None = None,
     log_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Keep waiting for optional pack + furnace/city HUD, matching restore jobs."""
+    timeout_seconds = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
+    # #region agent log
+    try:
+        import json as _json
+
+        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as _fh:
+            _fh.write(
+                _json.dumps(
+                    {
+                        "hypothesisId": "H3",
+                        "location": "whiteout_apk.py:await_whiteout_resource_pack_completion:entry",
+                        "message": "resource pack await enter",
+                        "data": {
+                            "index": index,
+                            "completed": resource_info.get("completed"),
+                            "reason": resource_info.get("reason"),
+                            "downloadPercent": resource_info.get("downloadPercent"),
+                            "timeoutSeconds": timeout_seconds,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
     if resource_info.get("completed"):
         return resource_info
 
-    if config and config.get("restore_whiteout_resource_download_timeout") is not None:
-        timeout_seconds = int(config["restore_whiteout_resource_download_timeout"])
-
     pack_deadline = time.monotonic() + timeout_seconds
     while not resource_info.get("completed") and time.monotonic() < pack_deadline:
-        remaining = max(60, int(pack_deadline - time.monotonic()))
+        # Never extend past the hard deadline (previously max(60, remaining) overran it).
+        remaining = int(pack_deadline - time.monotonic())
+        if remaining <= 0:
+            break
+        slice_seconds = max(1, min(60, remaining))
         resumed = wait_for_optional_pack_if_running(
             ldconsole,
             index,
             run_ldconsole,
-            timeout_seconds=remaining,
+            timeout_seconds=slice_seconds,
             on_progress=on_progress,
         )
         if resumed:
             resource_info = {**resource_info, **resumed}
             if resource_info.get("completed"):
                 break
+            if resource_info.get("reason") in {"timeout", "stalled"}:
+                break
         if not _resource_pack_should_wait(resource_info, ldconsole, index, run_ldconsole):
+            break
+        remaining = int(pack_deadline - time.monotonic())
+        if remaining <= 0:
             break
         width, height = _read_display_size(ldconsole, index, run_ldconsole)
         probe_state = _probe_download_state(
@@ -4438,6 +4537,9 @@ def await_whiteout_resource_pack_completion(
             resource_info = {**resource_info, **cont, "packNotRequired": True}
             if cont.get("completed"):
                 break
+        remaining = int(pack_deadline - time.monotonic())
+        if remaining <= 0:
+            break
         extra = wait_for_whiteout_resource_download(
             ldconsole,
             index,
@@ -4448,6 +4550,8 @@ def await_whiteout_resource_pack_completion(
         )
         resource_info = {**resource_info, **extra}
         if resource_info.get("completed"):
+            break
+        if resource_info.get("reason") in {"timeout", "stalled", "download_now_still_visible", "dialog_closed"}:
             break
         probe = probe_whiteout_optional_pack_finished(ldconsole, index, run_ldconsole)
         probe_pct = int(
@@ -4470,6 +4574,38 @@ def await_whiteout_resource_pack_completion(
             if on_progress:
                 on_progress("Optional resource pack complete.", 98)
             break
+    if not resource_info.get("completed") and not resource_info.get("reason"):
+        resource_info = {
+            **resource_info,
+            "reason": "timeout",
+            "downloadPercent": int(resource_info.get("downloadPercent") or 0),
+        }
+    # #region agent log
+    try:
+        import json as _json
+
+        with open("/opt/cursor/logs/debug.log", "a", encoding="utf-8") as _fh:
+            _fh.write(
+                _json.dumps(
+                    {
+                        "hypothesisId": "H3",
+                        "location": "whiteout_apk.py:await_whiteout_resource_pack_completion:exit",
+                        "message": "resource pack await exit",
+                        "data": {
+                            "index": index,
+                            "completed": resource_info.get("completed"),
+                            "reason": resource_info.get("reason"),
+                            "downloadPercent": resource_info.get("downloadPercent"),
+                            "pastDeadline": time.monotonic() >= pack_deadline,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
     return resource_info
 
 
@@ -4482,8 +4618,10 @@ def run_whiteout_post_install_workflow(
     config: dict[str, Any] | None = None,
     on_progress: Any | None = None,
     log_fn: Any | None = None,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Launch game, tap Download Now, wait for pack + furnace/city screen (restore parity)."""
+    pack_timeout = resolve_resource_pack_timeout(config, override_seconds=timeout_seconds)
     resource_info = start_whiteout_resource_download(
         ldconsole,
         index,
@@ -4491,6 +4629,7 @@ def run_whiteout_post_install_workflow(
         run_ldconsole,
         on_progress=on_progress,
         config=config,
+        download_timeout_seconds=pack_timeout,
     )
     if (
         resource_info.get("physicalTap")
@@ -4511,6 +4650,7 @@ def run_whiteout_post_install_workflow(
         resource_info,
         config=config,
         on_progress=on_progress,
+        timeout_seconds=pack_timeout,
         log_fn=log_fn,
     )
 

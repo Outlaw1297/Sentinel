@@ -209,21 +209,33 @@ async function pollRestoreJob(jobId, options = {}) {
   throw new Error("Timed out waiting for emulator restore to finish.");
 }
 
-async function findActiveRestoreJob() {
+async function findActiveRestoreJobs() {
   try {
     const response = await fetch("/api/emulators/restore/jobs", { cache: "no-store" });
-    if (!response.ok) return null;
+    if (!response.ok) return [];
     const payload = await response.json();
     const jobs = payload.jobs || [];
-    return (
-      jobs.find((job) => {
+    return jobs
+      .filter((job) => {
         const status = String(job.status || "");
         return status && status !== "completed" && status !== "failed";
-      }) || null
-    );
+      })
+      .map((job) => ({
+        id: job.id,
+        instanceIndex: job.instanceIndex,
+        instanceName: job.instanceName || job.targetName,
+        status: job.status,
+        startedAt: job.startedAt,
+      }))
+      .sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")));
   } catch {
-    return null;
+    return [];
   }
+}
+
+async function findActiveRestoreJob() {
+  const jobs = await findActiveRestoreJobs();
+  return jobs[0] || null;
 }
 
 async function resumeRestoreJobPolling(options = {}) {
@@ -383,6 +395,7 @@ window.GnBotsRestore = {
   formatRestoreJobStatus,
   pollRestoreJob,
   findActiveRestoreJob,
+  findActiveRestoreJobs,
   resumeRestoreJobPolling,
   startInstanceRestore,
   formatApkUpdateJobStatus,
