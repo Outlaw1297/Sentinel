@@ -17,8 +17,19 @@ OCR_EVENTS_PATH = get_logs_dir() / "account-switch-ocr-events.json"
 OCR_EVENTS_CONFIG_KEY = "account_switch_ocr_events"
 _CONFIG_LOCK = threading.Lock()
 
-PATH_CONFIG_KEYS = frozenset({"gnbots_root", "gnbots_exe", "ldplayer_backups_dir", "ldplayer_path", "whiteout_apk_dir"})
-OPTIONAL_PATH_CONFIG_KEYS = frozenset({"ldplayer_path"})
+PATH_CONFIG_KEYS = frozenset(
+    {
+        "gnbots_root",
+        "gnbots_exe",
+        "ldplayer_backups_dir",
+        "ldplayer_path",
+        "memu_path",
+        "nox_path",
+        "mumu_path",
+        "whiteout_apk_dir",
+    }
+)
+OPTIONAL_PATH_CONFIG_KEYS = frozenset({"ldplayer_path", "memu_path", "nox_path", "mumu_path"})
 
 LD_HEALTH_FLAT_KEYS = frozenset(
     {
