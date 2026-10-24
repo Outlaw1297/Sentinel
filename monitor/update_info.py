@@ -86,3 +86,37 @@ def update_available(local: str | None, remote: str | None) -> bool:
     left = normalize_commit(local)
     right = normalize_commit(remote)
     return bool(right) and left != right
+
+
+def normalize_version_string(value: str | None) -> str:
+    """Strip a leading ``v``/``V`` and surrounding whitespace from a version/tag."""
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] in {"v", "V"} and text[1].isdigit():
+        return text[1:]
+    return text
+
+
+def parse_app_version(value: str | None) -> tuple[int, ...]:
+    """Parse a dotted app version (e.g. ``0.1.13`` / ``v0.2.2``) into comparable ints."""
+    text = normalize_version_string(value)
+    if not text:
+        return ()
+    parts: list[int] = []
+    for piece in text.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if digits:
+            parts.append(int(digits))
+        elif parts:
+            break
+    return tuple(parts)
+
+
+def version_is_older(local: str | None, remote: str | None) -> bool:
+    """True when ``local`` is a lower app version than ``remote``."""
+    right = parse_app_version(remote)
+    if not right:
+        return False
+    left = parse_app_version(local)
+    if not left:
+        return True
+    return left < right

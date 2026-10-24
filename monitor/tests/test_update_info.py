@@ -17,8 +17,11 @@ from update_info import (
     is_git_install,
     is_portable_install,
     normalize_commit,
+    normalize_version_string,
+    parse_app_version,
     read_local_version_info,
     update_available,
+    version_is_older,
     version_json_path,
 )
 
@@ -40,6 +43,16 @@ def test_update_available():
     assert update_available("abc1234", "abc1234") is False
     assert update_available("", "abc1234") is True
     assert update_available("abc1234", "") is False
+
+
+def test_parse_app_version_and_compare():
+    assert normalize_version_string("v0.2.2") == "0.2.2"
+    assert parse_app_version("v0.1.13") == (0, 1, 13)
+    assert parse_app_version("0.2.2") == (0, 2, 2)
+    assert version_is_older("0.1.13", "0.2.2") is True
+    assert version_is_older("0.2.2", "0.1.13") is False
+    assert version_is_older("0.2.2", "0.2.2") is False
+    assert version_is_older("0.1.13", "0.1.13") is False
 
 
 def test_read_local_version_info_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

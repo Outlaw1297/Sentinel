@@ -6141,7 +6141,8 @@ async function loadUpdateStatus(force = false) {
     if (!response.ok) throw new Error(body.detail || "Update check failed.");
     const versionLabel = body.localVersion ? `v${body.localVersion}` : "";
     const local = [versionLabel, body.localCommitShort].filter(Boolean).join(" ") || "unknown";
-    const remote = body.remoteCommitShort || "unknown";
+    const remoteVersionLabel = body.remoteVersion ? `v${body.remoteVersion}` : "";
+    const remote = [remoteVersionLabel, body.remoteCommitShort].filter(Boolean).join(" ") || "unknown";
     summary.textContent = body.updateAvailable
       ? `Update available: ${local} → ${remote}${body.remoteMessage ? ` — ${body.remoteMessage}` : ""}`
       : `Up to date (${local}) via ${body.updateMode || "release"}.`;

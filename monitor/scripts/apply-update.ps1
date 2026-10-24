@@ -261,19 +261,80 @@ function Copy-ReleaseTree([string]$Source, [string]$Dest) {
     }
 }
 
+function ConvertTo-VersionTuple([string]$Value) {
+    $text = ([string]$Value).Trim()
+    if ($text.Length -ge 2 -and ($text[0] -eq 'v' -or $text[0] -eq 'V') -and [char]::IsDigit($text[1])) {
+        $text = $text.Substring(1)
+    }
+    $parts = New-Object System.Collections.Generic.List[int]
+    foreach ($piece in $text.Split('.')) {
+        $digits = ($piece -replace '[^\d]', '')
+        if ($digits) {
+            [void]$parts.Add([int]$digits)
+        } elseif ($parts.Count -gt 0) {
+            break
+        }
+    }
+    return ,$parts.ToArray()
+}
+
+function Compare-VersionTuple([int[]]$Left, [int[]]$Right) {
+    $len = [Math]::Max($Left.Length, $Right.Length)
+    for ($i = 0; $i -lt $len; $i++) {
+        $l = if ($i -lt $Left.Length) { $Left[$i] } else { 0 }
+        $r = if ($i -lt $Right.Length) { $Right[$i] } else { 0 }
+        if ($l -lt $r) { return -1 }
+        if ($l -gt $r) { return 1 }
+    }
+    return 0
+}
+
+function Get-HighestGithubRelease([string]$Repo, $Headers) {
+    $releaseUrl = "https://api.github.com/repos/$Repo/releases?per_page=50"
+    $releases = @(Invoke-RestMethod -Uri $releaseUrl -Headers $Headers -TimeoutSec 60)
+    $best = $null
+    $bestTuple = @()
+    foreach ($entry in $releases) {
+        if ($entry.draft -or $entry.prerelease) { continue }
+        $tag = [string]$entry.tag_name
+        $tuple = ConvertTo-VersionTuple $tag
+        if ($tuple.Length -eq 0) { continue }
+        if ($null -eq $best -or (Compare-VersionTuple $tuple $bestTuple) -gt 0) {
+            $best = $entry
+            $bestTuple = $tuple
+        }
+    }
+    if ($null -eq $best) { throw "No published GitHub releases found for $Repo" }
+    return $best
+}
+
 function Invoke-ReleaseUpdate([string]$Repo, [string]$Branch, [string]$Channel) {
     $apiUrl = "https://api.github.com/repos/$Repo/commits/$Branch"
     $headers = @{ Accept = "application/vnd.github+json"; "User-Agent" = "gnbot-monitor" }
-    $commit = (Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 60).sha
-    $short = $commit.Substring(0, 7)
-    $assetName = if ($Channel -eq "main") { "Sentinel-$short.zip" } else { "Sentinel.zip" }
-    $releaseUrl = "https://api.github.com/repos/$Repo/releases/latest"
-    $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -TimeoutSec 60
-    $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
-    if (-not $asset) {
-        $asset = $release.assets | Where-Object { $_.name -like "Sentinel*.zip" -or $_.name -like "GnBotsMonitor*.zip" } | Select-Object -First 1
+    $channelName = ([string]$Channel).Trim().ToLowerInvariant()
+    if (-not $channelName) { $channelName = "stable" }
+
+    if ($channelName -eq "main") {
+        $commit = (Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 60).sha
+        $short = $commit.Substring(0, 7)
+        $assetName = "Sentinel-$short.zip"
+        # Prefer a commit-named zip when present; otherwise fall back to highest release zip.
+        $release = Get-HighestGithubRelease -Repo $Repo -Headers $headers
+        $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+        if (-not $asset) {
+            $asset = $release.assets | Where-Object { $_.name -like "Sentinel*.zip" -or $_.name -like "GnBotsMonitor*.zip" } | Select-Object -First 1
+        }
+        if (-not $asset) { throw "No release zip asset found for $assetName" }
+    } else {
+        # stable: highest semver release (not /releases/latest, which follows publish order)
+        $release = Get-HighestGithubRelease -Repo $Repo -Headers $headers
+        Write-UpdateLog "Stable channel: selected release $($release.tag_name)"
+        $asset = $release.assets | Where-Object { $_.name -eq "Sentinel.zip" } | Select-Object -First 1
+        if (-not $asset) {
+            $asset = $release.assets | Where-Object { $_.name -like "Sentinel*.zip" -or $_.name -like "GnBotsMonitor*.zip" } | Select-Object -First 1
+        }
+        if (-not $asset) { throw "No release zip asset found for $($release.tag_name)" }
     }
-    if (-not $asset) { throw "No release zip asset found for $assetName" }
 
     $staging = Join-Path $env:TEMP ("gnbu-" + [guid]::NewGuid().ToString("n").Substring(0, 8))
     $zipPath = Join-Path $staging "r.zip"
