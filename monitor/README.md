@@ -39,6 +39,30 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 - **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
 - Choose “instances to update” once; reuse for manual bulk update or automation
 
+### Sentinel self-updates (`/settings?tab=sentinel`)
+
+Packaged installs (Setup / zip) use **Check** / **Apply** against GitHub. Dev checkouts with a `.git` root use `git fetch` for Check and `git pull --ff-only` for Apply (`updateMode=git`), ignoring the channel table below.
+
+| `update_channel` (packaged) | Check (`GET /api/update/status`) | Apply (`scripts/apply-update.ps1`) |
+|-----------------------------|----------------------------------|-------------------------------------|
+| `stable` (default) | Compares local `version.json` **appVersion** to the **highest semver** among non-draft, non-prerelease releases (`update_check.pick_highest_release`). Same version → **Up to date** even if `main` has new commits. | Downloads that same highest-version release zip (`Sentinel.zip`) |
+| `main` | Compares commit SHA to `update_branch` tip | Prefers a commit-named zip when present; otherwise falls back to a release zip |
+
+**Intent (stable):** pick by **version**, not publish order. Do not treat GitHub `/releases/latest` as the source of truth for “newest” — that endpoint follows publish order. Check never uses it; Apply only falls back to it if the semver scan finds zero usable tags (rare).
+
+**Apply reliability (≥0.2.5):** `apply-update.ps1` forces TLS 1.2+, parses `application/vnd.github+json` with `Invoke-WebRequest` + `ConvertFrom-Json` (PS 5.1-safe), and surfaces rate-limit / HTTP errors instead of misreading an error object as “zero releases.” Progress UI needs `-STA` (dashboard Apply already launches that way).
+
+Preserves `config.json` + `logs` across zip Apply. Codepaths: `update_check.check_for_updates` → Check; `POST /api/update/apply` → TEMP copy of `apply-update.ps1` → `Get-HighestGithubRelease`.
+
+#### Troubleshooting Apply / Check
+
+| Symptom | Likely cause | What to do |
+|---------|--------------|------------|
+| `No published GitHub releases found…` when releases exist | Pre-0.2.5: API error/rate-limit body or PS JSON mishandled as empty list | Upgrade to ≥0.2.5, or install manually from the [releases page](https://github.com/Outlaw1297/Sentinel/releases) |
+| `GitHub API HTTP 403: API rate limit exceeded…` (or similar) | Anonymous GitHub API quota | Wait / retry; Check caches ~15 minutes (`update_check` cache) |
+| Check shows `error` but Apply seemed to work | Check has no `/releases/latest` fallback; Apply does if semver pick is empty | Prefer the Check `error` text; confirm `update_repo` and that releases are non-draft |
+| Apply window never appears / page hangs | Expected briefly while monitor restarts after zip replace | Watch the Sentinel update window; refresh after restart |
+
 ### Accounts & bot configuration (`/settings`)
 | Tab | What you do |
 |-----|-------------|
@@ -65,7 +89,11 @@ Details and config keys: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 - Headless watcher keeps the dashboard alive and can auto-start GnBots
 - System tray icon for quick open / status
 - Capability matrix (`GET /api/capabilities`) explains what is blocked by elevation vs “bot is running”
-- First-run setup wizard (`/setup`) and a minimal `/status` page for elevation / LDRemote diagnostics
+- First-run **Setup Wizard** (`Setup Wizard.bat`, `/setup`, or `SentinelSetup.exe`) and a minimal `/status` page for elevation / LDRemote diagnostics
+
+#### Setup Wizard path Browse (≥0.2.5)
+
+Folder/file dialogs need a PowerShell **STA** apartment. `Setup Wizard.bat` and the dashboard launcher pass `-STA`; `setup-wizard.ps1` also re-launches itself with `-STA` if started from an MTA host (for example a bare `powershell -File` without `-STA`). Browse click handlers keep the path text box via `GetNewClosure()` and show a dialog on UI errors instead of exiting under `$ErrorActionPreference = Stop`. Logs: `logs/setup-wizard.log`.
 
 ---
 
@@ -167,6 +195,15 @@ Expect GnBots offline and screenshot **503**s — that is normal without Windows
 
 Full toggle reference: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 
+### Apply a Sentinel program update (packaged install)
+
+1. Open **Settings → Sentinel**
+2. Click **Check for updates** (`GET /api/update/status`) — stable channel compares **app versions**, not `main` SHA
+3. If an update is available, click **Apply update** (`POST /api/update/apply`) — watch the Sentinel update window; the dashboard may disconnect until restart
+4. If Apply fails with a false “no releases” message on an older build, install `Sentinel-Setup.exe` / `Sentinel.zip` from the GitHub release page manually, then retry Check after ≥0.2.5
+
+Git checkouts: Apply is `git pull --ff-only` on `update_branch` (no zip download).
+
 ### Reach the dashboard remotely
 
 Run Tailscale, Cloudflare Tunnel, nginx, or any reverse proxy on a machine that can reach the bot PC, and forward to `http://<bot-pc>:8787`. Nothing tunnel-specific is configured inside Sentinel.
@@ -195,7 +232,7 @@ First run copies `config.example.json` → `config.json`. Important groups:
 | Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
 | Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
 | Push / tray | `push_*`, `tray_*` | Web push + Windows tray |
-| Updates | `update_repo`, `update_branch`, `update_channel` | Self-update Check / Apply |
+| Updates | `update_repo`, `update_branch`, `update_channel` (`stable` / `main`) | Self-update Check / Apply — see **Sentinel self-updates** above |
 
 Emulator health defaults used by **Fix settings** can be overridden under **Settings → Sentinel → Emulator health settings** (or `ldplayer_health_settings` in JSON).
 
@@ -259,7 +296,8 @@ Artifacts: portable **Sentinel.zip** / `gnbot-monitor.exe`, **Sentinel-Setup.exe
 
 ## Version & changelog
 
-Current app version: **0.1.10** — see [`CHANGELOG.md`](CHANGELOG.md).
+Current app version: **0.2.5** — see [`CHANGELOG.md`](CHANGELOG.md).
 
-Highlights in 0.1.10: stuck-screen learning (event page → Back / restart / warn).  
-0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
+Highlights in 0.2.5: Apply update GitHub client reliability (TLS / JSON / rate-limit errors) + Setup Wizard Browse STA fix.  
+0.2.4: batch APK hang timeout / Abort, Restart Sentinel from phone, job-start push, periodic update banner.  
+0.2.3: stable self-update compares release **versions**, not `main` tip SHA.

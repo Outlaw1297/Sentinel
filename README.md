@@ -7,7 +7,7 @@ Windows monitor and control stack for **GnBots** — live dashboard, LDPlayer re
 | **Dashboard** | http://localhost:8787 |
 | **Primary OS** | Windows bot PC (GnBots + LDPlayer) |
 | **Dev / CI** | Python FastAPI app + pytest also run on Linux (GnBots/LDPlayer offline) |
-| **Current version** | 0.1.10 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
+| **Current version** | 0.2.5 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
 
 Full feature list, compatibility matrix, and how-to: **[`monitor/README.md`](monitor/README.md)**.
 
@@ -30,9 +30,9 @@ Tagged releases publish:
 ## Quick start (release build)
 
 1. Run `Sentinel-Setup.exe` or extract `Sentinel.zip`
-2. Complete first-run setup with **SentinelSetup.exe**
+2. Complete first-run setup with **SentinelSetup.exe** (or `Setup Wizard.bat` — Browse needs PowerShell `-STA`; ≥0.2.5 relaunches itself if needed)
 3. Start the stack with **Sentinel.exe**
-4. Open **http://localhost:8787**
+4. Open **http://localhost:8787** — Settings → Sentinel for Check / Apply self-updates (stable = highest semver release; see `monitor/README.md`)
 
 ## Development
 
