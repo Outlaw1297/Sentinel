@@ -15,6 +15,9 @@ _APK_JOB_LOCK = threading.RLock()
 _APK_UPDATE_JOBS: dict[str, dict[str, Any]] = {}
 _APK_INSTANCE_BUSY: dict[int, str] = {}
 _APK_JOB_CANCEL: set[str] = set()
+# Daemon install threads that outlived their wall-clock timeout. Python cannot kill
+# them; overlapping ensure_latest / installapp on the shared APK cache corrupts it.
+_APK_LIVE_WORK_THREADS: set[threading.Thread] = set()
 _APK_UPDATE_LOG = get_logs_dir() / "apk-update-jobs.log"
 
 APK_UPDATE_STATUS_PROGRESS = {
@@ -291,16 +294,32 @@ def _job_cancelled(job_id: str) -> bool:
     return job_id in _APK_JOB_CANCEL
 
 
+def _prune_live_work_threads_locked() -> None:
+    for thread in [item for item in _APK_LIVE_WORK_THREADS if not item.is_alive()]:
+        _APK_LIVE_WORK_THREADS.discard(thread)
+
+
+def apk_update_has_inflight_work() -> bool:
+    """True while a timed-out (or still running) instance install thread is alive."""
+    with _APK_JOB_LOCK:
+        _prune_live_work_threads_locked()
+        return bool(_APK_LIVE_WORK_THREADS)
+
+
 def _run_with_timeout(
     fn: Callable[[], Any],
     *,
     timeout_seconds: float,
     label: str,
+    on_timeout: Callable[[], None] | None = None,
+    post_timeout_join_seconds: float | None = None,
 ) -> Any:
     """Run ``fn`` in a daemon thread; raise TimeoutError if it exceeds the wall clock.
 
-    The underlying thread cannot be force-killed in Python; callers should best-effort
-    stop the emulator so a wedged ldconsole/adb eventually unwinds.
+    The underlying thread cannot be force-killed in Python. On timeout we invoke
+    ``on_timeout`` (typically stop the emulator) and wait briefly for the work
+    thread to unwind before returning, so the batch does not start another
+    ``ensure_latest`` / install against the shared cache while this one is alive.
     """
     box: dict[str, Any] = {}
 
@@ -311,16 +330,34 @@ def _run_with_timeout(
             box["error"] = exc
 
     thread = threading.Thread(target=runner, name=f"apk-instance-{label}", daemon=True)
+    with _APK_JOB_LOCK:
+        _APK_LIVE_WORK_THREADS.add(thread)
     thread.start()
-    thread.join(timeout=max(1.0, float(timeout_seconds)))
-    if thread.is_alive():
-        raise TimeoutError(
-            f"{label} exceeded {int(timeout_seconds)}s wall-clock limit "
-            f"(likely hung ldconsole/adb install or resource-pack wait)."
-        )
-    if "error" in box:
-        raise box["error"]
-    return box.get("result")
+    try:
+        thread.join(timeout=max(1.0, float(timeout_seconds)))
+        if thread.is_alive():
+            if on_timeout is not None:
+                try:
+                    on_timeout()
+                except Exception:  # noqa: BLE001
+                    pass
+            grace = float(
+                APK_POST_TIMEOUT_STOP_GRACE_SECONDS
+                if post_timeout_join_seconds is None
+                else post_timeout_join_seconds
+            )
+            thread.join(timeout=max(0.0, grace))
+            raise TimeoutError(
+                f"{label} exceeded {int(timeout_seconds)}s wall-clock limit "
+                f"(likely hung ldconsole/adb install or resource-pack wait)."
+            )
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+    finally:
+        with _APK_JOB_LOCK:
+            if not thread.is_alive():
+                _APK_LIVE_WORK_THREADS.discard(thread)
 
 
 def _clear_instance_busy(index: int, job_id: str) -> None:
@@ -595,6 +632,7 @@ def _apk_update_worker(
                     ),
                     timeout_seconds=instance_timeout,
                     label=f"instance {index}",
+                    on_timeout=lambda idx=index: _best_effort_stop_instance(config, idx),
                 )
                 # Soft-success guard: never count an instance that still needs an update.
                 apk_row = result.get("apk") if isinstance(result.get("apk"), dict) else {}
@@ -625,7 +663,24 @@ def _apk_update_worker(
             except TimeoutError as exc:
                 failures.append({"index": index, "error": str(exc)})
                 _append_apk_job_log(f"[{job_id}] timeout index={index}: {exc}")
-                _best_effort_stop_instance(config, index)
+                # Stop already ran inside _run_with_timeout. If the install thread is
+                # still alive, advancing would overlap ensure_latest / installapp on
+                # the shared cache — skip the rest of the batch instead.
+                if apk_update_has_inflight_work():
+                    for skipped in indexes[position + 1 :]:
+                        failures.append(
+                            {
+                                "index": skipped,
+                                "error": (
+                                    "Skipped: prior instance install still hung after timeout; "
+                                    "continuing would race the shared APK cache."
+                                ),
+                            }
+                        )
+                    _append_apk_job_log(
+                        f"[{job_id}] aborting remaining targets after hung index={index}"
+                    )
+                    break
             except Exception as exc:  # noqa: BLE001
                 failures.append({"index": index, "error": str(exc)})
                 _append_apk_job_log(f"[{job_id}] failed index={index}: {exc}")
@@ -760,6 +815,11 @@ def start_apk_update_job(
         raise RuntimeError(
             f"APK update already running (job {active.get('id')}, status {active.get('status')})."
         )
+    if apk_update_has_inflight_work():
+        raise RuntimeError(
+            "APK update still finishing a timed-out or cancelled instance install; "
+            "wait for it to unwind before starting another job."
+        )
 
     if force:
         only_outdated = False
@@ -838,3 +898,4 @@ def reset_apk_update_jobs_for_tests() -> None:
         _APK_UPDATE_JOBS.clear()
         _APK_INSTANCE_BUSY.clear()
         _APK_JOB_CANCEL.clear()
+        _APK_LIVE_WORK_THREADS.clear()

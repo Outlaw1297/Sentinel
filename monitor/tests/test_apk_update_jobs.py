@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from apk_update_jobs import (
+    apk_update_has_inflight_work,
     cancel_apk_update_job,
     find_active_apk_update_job,
     get_apk_update_job,
@@ -134,12 +135,13 @@ class ApkUpdateJobsTests(unittest.TestCase):
                         self.assertEqual(finished["failed"], 1)
                         self.assertIn("still needs an APK update", finished["failures"][0]["error"])
 
-    def test_instance_timeout_continues_batch(self) -> None:
+    def test_instance_timeout_continues_batch_after_hung_install_unwinds(self) -> None:
+        """If the timed-out thread dies during the post-timeout join, the batch may continue."""
         config = {"apk_update_instance_timeout": 1}
 
         def hang_then_ok(_config, index, **_kwargs):
             if index == 1:
-                time.sleep(3.0)
+                time.sleep(1.5)
                 return {"index": index, "apk": {}, "message": "late"}
             return {
                 "index": index,
@@ -148,20 +150,80 @@ class ApkUpdateJobsTests(unittest.TestCase):
                 "message": "ok",
             }
 
-        with patch("apk_update_jobs._resolve_target_indexes", return_value=([1, 2], {"scope": "indexes"})):
-            with patch("whiteout_apk.update_whiteout_apk_on_instance", side_effect=hang_then_ok):
-                with patch("apk_update_jobs._best_effort_stop_instance"):
-                    with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={}):
-                        with patch("whiteout_apk.save_persisted_apk_update_instance_indexes", return_value=[1, 2]):
-                            job = start_apk_update_job(config, indexes=[1, 2], only_outdated=False, force=True)
-                            finished = wait_for_apk_update_job(job["id"], timeout_seconds=8)
-                            assert finished is not None
-                            self.assertEqual(finished["status"], "completed")
-                            self.assertEqual(finished["updated"], 1)
-                            self.assertEqual(finished["failed"], 1)
-                            self.assertEqual(finished["failures"][0]["index"], 1)
-                            self.assertIn("wall-clock", finished["failures"][0]["error"])
-                            self.assertIsNone(find_active_apk_update_job())
+        with patch("apk_update_jobs.APK_POST_TIMEOUT_STOP_GRACE_SECONDS", 2.0):
+            with patch("apk_update_jobs._resolve_target_indexes", return_value=([1, 2], {"scope": "indexes"})):
+                with patch("whiteout_apk.update_whiteout_apk_on_instance", side_effect=hang_then_ok):
+                    with patch("apk_update_jobs._best_effort_stop_instance"):
+                        with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={}):
+                            with patch(
+                                "whiteout_apk.save_persisted_apk_update_instance_indexes",
+                                return_value=[1, 2],
+                            ):
+                                job = start_apk_update_job(
+                                    config, indexes=[1, 2], only_outdated=False, force=True
+                                )
+                                finished = wait_for_apk_update_job(job["id"], timeout_seconds=8)
+                                assert finished is not None
+                                self.assertEqual(finished["status"], "completed")
+                                self.assertEqual(finished["updated"], 1)
+                                self.assertEqual(finished["failed"], 1)
+                                self.assertEqual(finished["failures"][0]["index"], 1)
+                                self.assertIn("wall-clock", finished["failures"][0]["error"])
+                                self.assertIsNone(find_active_apk_update_job())
+                                self.assertFalse(apk_update_has_inflight_work())
+
+    def test_instance_timeout_aborts_batch_while_install_still_hung(self) -> None:
+        """Do not start the next instance while a timed-out install thread is still alive."""
+        config = {"apk_update_instance_timeout": 1}
+        release = threading.Event()
+        seen: list[int] = []
+
+        def hang_until_released(_config, index, **_kwargs):
+            seen.append(index)
+            if index == 1:
+                release.wait(10)
+                return {"index": index, "apk": {}, "message": "late"}
+            return {
+                "index": index,
+                "installedVersion": "1.34.16",
+                "apk": {"index": index, "updateAvailable": False},
+                "message": "ok",
+            }
+
+        with patch("apk_update_jobs.APK_POST_TIMEOUT_STOP_GRACE_SECONDS", 0.05):
+            with patch("apk_update_jobs._resolve_target_indexes", return_value=([1, 2], {"scope": "indexes"})):
+                with patch(
+                    "whiteout_apk.update_whiteout_apk_on_instance",
+                    side_effect=hang_until_released,
+                ):
+                    with patch("apk_update_jobs._best_effort_stop_instance"):
+                        with patch("whiteout_apk.get_persisted_apk_cache_state", return_value={}):
+                            with patch(
+                                "whiteout_apk.save_persisted_apk_update_instance_indexes",
+                                return_value=[1, 2],
+                            ):
+                                job = start_apk_update_job(
+                                    config, indexes=[1, 2], only_outdated=False, force=True
+                                )
+                                finished = wait_for_apk_update_job(job["id"], timeout_seconds=8)
+                                assert finished is not None
+                                self.assertEqual(seen, [1])
+                                self.assertEqual(finished["updated"], 0)
+                                self.assertEqual(finished["failed"], 2)
+                                self.assertEqual(finished["failures"][0]["index"], 1)
+                                self.assertEqual(finished["failures"][1]["index"], 2)
+                                self.assertIn("shared APK cache", finished["failures"][1]["error"])
+                                self.assertTrue(apk_update_has_inflight_work())
+                                with self.assertRaises(RuntimeError) as ctx:
+                                    start_apk_update_job(
+                                        config, indexes=[3], only_outdated=False, force=True
+                                    )
+                                self.assertIn("still finishing", str(ctx.exception))
+                                release.set()
+                                deadline = time.time() + 5
+                                while time.time() < deadline and apk_update_has_inflight_work():
+                                    time.sleep(0.05)
+                                self.assertFalse(apk_update_has_inflight_work())
 
     def test_reap_stale_active_job_unlocks_dashboard(self) -> None:
         with apk_update_jobs._APK_JOB_LOCK:
