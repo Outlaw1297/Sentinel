@@ -2,6 +2,9 @@
 
 ## 0.2.5 — 2026-10-24
 
+### Setup wizard
+- Browse for GnBots.exe / LDPlayer / backup folders no longer crashes the wizard (STA thread + click handlers that keep the text box)
+
 ### Apply update reliability
 - Force TLS 1.2+ and parse GitHub release JSON explicitly in `apply-update.ps1` (avoids empty “No published GitHub releases” when the API returns a rate-limit/error object or PS 5.1 mishandles `vnd.github+json`)
 - Clearer GitHub API errors (rate limit / HTTP status) and `/releases/latest` fallback if semver pick is empty

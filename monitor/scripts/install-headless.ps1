@@ -77,7 +77,7 @@ if ($LaunchWizard) {
     $wizard = Join-Path $ScriptsDir "setup-wizard.ps1"
     if ((Test-Path $wizard) -and -not (Test-SetupComplete)) {
         Write-Host "Launching desktop Setup Wizard ..."
-        & $wizard
+        & powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File $wizard
     } elseif (Test-SetupComplete) {
         Write-Host "Setup already complete — skipping wizard."
     }

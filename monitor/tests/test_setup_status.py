@@ -103,3 +103,14 @@ def test_apply_setup_sets_complete_flag(tmp_path: Path, monkeypatch: pytest.Monk
     assert status["setupComplete"] is True
     assert saved.get("setup_complete") is True
     assert saved.get("gnbots_exe") == str(exe)
+
+
+def test_setup_wizard_browse_is_sta_safe():
+    """Browse used to crash: MTA thread + click handler losing the text box."""
+    script = (ROOT / "scripts" / "setup-wizard.ps1").read_text(encoding="utf-8")
+    assert "ApartmentState]::STA" in script
+    assert "GetNewClosure()" in script
+    assert "Add-PathBrowseButton" in script
+    assert "SetUnhandledExceptionMode" in script
+    bat = (ROOT / "Setup Wizard.bat").read_text(encoding="utf-8")
+    assert "-STA" in bat

@@ -2727,7 +2727,7 @@ async def setup_launch_wizard_route() -> dict[str, Any]:
     import subprocess
     import sys
 
-    from host_status import _hidden_windows_subprocess_kwargs, _powershell_hidden_args
+    from host_status import _hidden_windows_subprocess_kwargs
     from paths import get_install_root, get_scripts_dir
 
     if sys.platform != "win32":
@@ -2748,9 +2748,16 @@ async def setup_launch_wizard_route() -> dict[str, Any]:
     if not script.is_file():
         raise HTTPException(status_code=503, detail="SentinelSetup.exe and setup-wizard.ps1 not found in install folder.")
     subprocess.Popen(
-        _powershell_hidden_args("-File", str(script)),
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-STA",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+        ],
         cwd=str(install_root),
-        **hidden,
     )
     return {"ok": True, "message": "Desktop Setup Wizard launched."}
 
