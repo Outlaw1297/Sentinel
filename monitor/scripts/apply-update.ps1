@@ -261,54 +261,148 @@ function Copy-ReleaseTree([string]$Source, [string]$Dest) {
     }
 }
 
+function Enable-GithubTls {
+    # GitHub requires TLS 1.2+; older Windows PowerShell defaults can fail or return opaque errors.
+    try {
+        $current = [Net.ServicePointManager]::SecurityProtocol
+        $flags = [Net.SecurityProtocolType]::Tls12
+        if ([enum]::GetNames([Net.SecurityProtocolType]) -contains "Tls13") {
+            $flags = $flags -bor [Net.SecurityProtocolType]::Tls13
+        }
+        [Net.ServicePointManager]::SecurityProtocol = $current -bor $flags
+    } catch {
+        # Best-effort; continue with system defaults.
+    }
+}
+
 function ConvertTo-VersionTuple([string]$Value) {
     $text = ([string]$Value).Trim()
-    if ($text.Length -ge 2 -and ($text[0] -eq 'v' -or $text[0] -eq 'V') -and [char]::IsDigit($text[1])) {
+    if ($text.Length -ge 2 -and ($text[0] -eq "v" -or $text[0] -eq "V") -and [char]::IsDigit($text[1])) {
         $text = $text.Substring(1)
     }
     $parts = New-Object System.Collections.Generic.List[int]
-    foreach ($piece in $text.Split('.')) {
-        $digits = ($piece -replace '[^\d]', '')
+    foreach ($piece in $text.Split(".")) {
+        $digits = ($piece -replace "[^\d]", "")
         if ($digits) {
             [void]$parts.Add([int]$digits)
         } elseif ($parts.Count -gt 0) {
             break
         }
     }
-    return ,$parts.ToArray()
+    # Unary comma prevents PowerShell from unrolling a single-element int[] into a scalar.
+    , $parts.ToArray()
 }
 
 function Compare-VersionTuple([int[]]$Left, [int[]]$Right) {
-    $len = [Math]::Max($Left.Length, $Right.Length)
+    $leftArr = @($Left)
+    $rightArr = @($Right)
+    $len = [Math]::Max($leftArr.Length, $rightArr.Length)
     for ($i = 0; $i -lt $len; $i++) {
-        $l = if ($i -lt $Left.Length) { $Left[$i] } else { 0 }
-        $r = if ($i -lt $Right.Length) { $Right[$i] } else { 0 }
+        $l = if ($i -lt $leftArr.Length) { [int]$leftArr[$i] } else { 0 }
+        $r = if ($i -lt $rightArr.Length) { [int]$rightArr[$i] } else { 0 }
         if ($l -lt $r) { return -1 }
         if ($l -gt $r) { return 1 }
     }
     return 0
 }
 
+function Invoke-GithubJson([string]$Url, $Headers) {
+    Enable-GithubTls
+    try {
+        # Use WebRequest + ConvertFrom-Json so application/vnd.github+json always parses on PS 5.1.
+        $response = Invoke-WebRequest -Uri $Url -Headers $Headers -TimeoutSec 60 -UseBasicParsing
+    } catch {
+        $msg = $_.Exception.Message
+        $body = $null
+        try { $body = $_.ErrorDetails.Message } catch {}
+        if (-not $body) {
+            try { $body = $_.Exception.Response.GetResponseStream() } catch {}
+        }
+        if ($body) {
+            try {
+                $err = $body | ConvertFrom-Json
+                if ($err.message) { $msg = [string]$err.message }
+            } catch {}
+        }
+        throw "GitHub API request failed: $msg"
+    }
+    $raw = [string]$response.Content
+    if (-not $raw.Trim()) {
+        throw "GitHub API returned an empty body"
+    }
+    try {
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        throw "GitHub API returned non-JSON (check proxy / TLS)"
+    }
+}
+
 function Get-HighestGithubRelease([string]$Repo, $Headers) {
     $releaseUrl = "https://api.github.com/repos/$Repo/releases?per_page=50"
-    $releases = @(Invoke-RestMethod -Uri $releaseUrl -Headers $Headers -TimeoutSec 60)
+    $payload = Invoke-GithubJson -Url $releaseUrl -Headers $Headers
+
+    # Rate-limit / Not Found bodies are objects with .message, not release arrays.
+    if ($null -eq $payload) {
+        throw "GitHub releases list for $Repo was empty"
+    }
+    $messageProp = $null
+    try { $messageProp = [string]$payload.message } catch {}
+    $isArray = $payload -is [System.Array]
+    if (-not $isArray) {
+        # Single release object (unusual) vs error object.
+        if ($payload.PSObject.Properties.Name -contains "tag_name") {
+            $payload = @($payload)
+            $isArray = $true
+        } elseif ($messageProp) {
+            throw "GitHub releases list failed for ${Repo}: $messageProp"
+        } else {
+            throw "GitHub releases list for $Repo was not an array (check network / rate limit)."
+        }
+    }
+
+    $releases = @($payload)
     $best = $null
-    $bestTuple = @()
+    $bestTuple = [int[]]@()
     foreach ($entry in $releases) {
-        if ($entry.draft -or $entry.prerelease) { continue }
-        $tag = [string]$entry.tag_name
-        $tuple = ConvertTo-VersionTuple $tag
-        if ($tuple.Length -eq 0) { continue }
+        if ($null -eq $entry) { continue }
+        $isDraft = $false
+        $isPre = $false
+        try { $isDraft = [bool]$entry.draft } catch {}
+        try { $isPre = [bool]$entry.prerelease } catch {}
+        if ($isDraft -or $isPre) { continue }
+        $tag = ""
+        try { $tag = [string]$entry.tag_name } catch {}
+        if (-not $tag) { continue }
+        $tuple = @(ConvertTo-VersionTuple $tag)
+        if ($tuple.Count -eq 0) { continue }
+        $tuple = [int[]]$tuple
         if ($null -eq $best -or (Compare-VersionTuple $tuple $bestTuple) -gt 0) {
             $best = $entry
             $bestTuple = $tuple
         }
     }
-    if ($null -eq $best) { throw "No published GitHub releases found for $Repo" }
-    return $best
+
+    if ($null -ne $best) {
+        return $best
+    }
+
+    # Fallback: publish-order latest (still better than failing when semver pick is empty).
+    try {
+        $latestUrl = "https://api.github.com/repos/$Repo/releases/latest"
+        $latest = Invoke-GithubJson -Url $latestUrl -Headers $Headers
+        if ($latest -and $latest.tag_name -and -not [bool]$latest.draft) {
+            Write-UpdateLog "Highest-semver pick empty among $($releases.Count) row(s); falling back to $($latest.tag_name)"
+            return $latest
+        }
+    } catch {
+        Write-UpdateLog "releases/latest fallback failed: $($_.Exception.Message)"
+    }
+
+    throw "No published GitHub releases found for $Repo (listed $($releases.Count) API row(s))."
 }
 
 function Invoke-ReleaseUpdate([string]$Repo, [string]$Branch, [string]$Channel) {
+    Enable-GithubTls
     $apiUrl = "https://api.github.com/repos/$Repo/commits/$Branch"
     $headers = @{ Accept = "application/vnd.github+json"; "User-Agent" = "gnbot-monitor" }
     $channelName = ([string]$Channel).Trim().ToLowerInvariant()

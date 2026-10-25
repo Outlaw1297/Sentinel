@@ -191,3 +191,32 @@ def test_same_sha_not_available_and_cache_hit():
 
         third = update_check.check_for_updates(force=True)
         assert highest.call_count == 2
+
+
+def test_github_json_surfaces_rate_limit_message(monkeypatch):
+    import io
+    import urllib.error
+
+    body = b'{"message":"API rate limit exceeded for 1.2.3.4."}'
+
+    def _raise(_req, timeout=30):
+        raise urllib.error.HTTPError(
+            url="https://api.github.com/repos/x/y/releases",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(update_check.urllib.request, "urlopen", _raise)
+    with pytest.raises(RuntimeError, match="rate limit exceeded"):
+        update_check._github_json("https://api.github.com/repos/x/y/releases")
+
+
+def test_github_highest_release_rejects_error_object():
+    with patch(
+        "update_check._github_json",
+        return_value={"message": "API rate limit exceeded", "documentation_url": "https://example"},
+    ):
+        with pytest.raises(RuntimeError, match="rate limit exceeded"):
+            update_check._github_highest_release("Outlaw1297/Sentinel")
