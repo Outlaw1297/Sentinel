@@ -3,8 +3,23 @@
 param()
 
 $ErrorActionPreference = "Stop"
+
+# Folder/file dialogs require an STA thread. setup.bat and some launchers start
+# powershell without -STA, and Browse then throws and kills the wizard.
+if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
+    $self = $MyInvocation.MyCommand.Path
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", $self
+    ) -PassThru -Wait
+    exit $(if ($null -ne $proc) { $proc.ExitCode } else { 1 })
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# Catch dialog/UI exceptions instead of letting ErrorAction Stop tear the process down.
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode(
+    [System.Windows.Forms.UnhandledExceptionMode]::CatchException
+)
 
 $ScriptsDir = $PSScriptRoot
 $MonitorRoot = Split-Path -Parent $ScriptsDir
@@ -62,6 +77,84 @@ function New-TextBox([string]$Value, [int]$Top, [int]$Width = 500) {
     $box.Width = $Width
     return $box
 }
+
+function Write-SetupLog([string]$Message) {
+    try {
+        $dir = Join-Path $MonitorRoot "logs"
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+        Add-Content -LiteralPath (Join-Path $dir "setup-wizard.log") -Value $line -Encoding UTF8
+    } catch {
+        # Logging must not take down the wizard.
+    }
+}
+
+function Show-SetupError([string]$Message) {
+    Write-SetupLog "error: $Message"
+    [System.Windows.Forms.MessageBox]::Show(
+        $Message,
+        "Sentinel Setup",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error
+    ) | Out-Null
+}
+
+function Add-PathBrowseButton {
+    param(
+        [System.Windows.Forms.TextBox]$Box,
+        [int]$Top,
+        [ValidateSet("file", "folder")]
+        [string]$Kind
+    )
+    $browse = New-Object System.Windows.Forms.Button
+    $browse.Text = "Browse…"
+    $browse.Location = New-Object System.Drawing.Point 450, $Top
+    $browse.Width = 90
+    # GetNewClosure captures $Box/$form. A bare scriptblock looks them up later,
+    # after Show-Step returns, and with ErrorAction Stop that exception exits the wizard.
+    $browse.Add_Click({
+        try {
+            if ($Kind -eq "file") {
+                $dlg = New-Object System.Windows.Forms.OpenFileDialog
+                $dlg.Filter = "GnBots.exe|GnBots.exe|Executables (*.exe)|*.exe"
+                $dlg.Title = "Select GnBots.exe"
+                $current = [string]$Box.Text
+                if ($current -and (Test-Path -LiteralPath $current)) {
+                    $dlg.InitialDirectory = Split-Path -Parent $current
+                    $dlg.FileName = Split-Path -Leaf $current
+                }
+                if ($dlg.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
+                    $Box.Text = $dlg.FileName
+                    $script:gnbotsExe = $dlg.FileName
+                    $script:gnbotsRoot = Split-Path -Parent $dlg.FileName
+                }
+            } else {
+                $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+                $dlg.ShowNewFolderButton = $true
+                $dlg.Description = "Select a folder"
+                $current = [string]$Box.Text
+                if ($current -and (Test-Path -LiteralPath $current)) {
+                    $dlg.SelectedPath = $current
+                }
+                if ($dlg.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
+                    $Box.Text = $dlg.SelectedPath
+                }
+            }
+        } catch {
+            Show-SetupError $_.Exception.Message
+        }
+    }.GetNewClosure())
+    return $browse
+}
+
+[System.Windows.Forms.Application]::add_ThreadException({
+    param($sender, $eventArgs)
+    $message = "Setup hit an unexpected error."
+    try { $message = [string]$eventArgs.Exception.Message } catch {}
+    Show-SetupError $message
+})
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Sentinel Setup Wizard"
@@ -134,48 +227,23 @@ function Show-Step {
         }
         3 {
             $controls.Add((New-Label "Select GnBots.exe" 24))
-            $exeBox = New-TextBox $script:gnbotsExe 56 420
+            $exeBox = New-TextBox $script:gnbotsExe 56 410
             $controls.Add($exeBox)
-            $browse = New-Object System.Windows.Forms.Button
-            $browse.Text = "Browse…"
-            $browse.Location = New-Object System.Drawing.Point 450, 78
-            $browse.Add_Click({
-                $dlg = New-Object System.Windows.Forms.OpenFileDialog
-                $dlg.Filter = "GnBots.exe|GnBots.exe|Executables (*.exe)|*.exe"
-                if ($dlg.ShowDialog() -eq "OK") {
-                    $exeBox.Text = $dlg.FileName
-                    $script:gnbotsRoot = Split-Path -Parent $dlg.FileName
-                }
-            })
-            $controls.Add($browse)
+            $controls.Add((Add-PathBrowseButton -Box $exeBox -Top 78 -Kind file))
             $btnNext.Text = "Next"
         }
         4 {
             $controls.Add((New-Label "LDPlayer install (optional — leave blank to use GnBots config)" 24))
-            $ldBox = New-TextBox $script:ldPath 56 420
+            $ldBox = New-TextBox $script:ldPath 56 410
             $controls.Add($ldBox)
-            $browse = New-Object System.Windows.Forms.Button
-            $browse.Text = "Browse…"
-            $browse.Location = New-Object System.Drawing.Point 450, 78
-            $browse.Add_Click({
-                $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-                if ($dlg.ShowDialog() -eq "OK") { $ldBox.Text = $dlg.SelectedPath }
-            })
-            $controls.Add($browse)
+            $controls.Add((Add-PathBrowseButton -Box $ldBox -Top 78 -Kind folder))
             $btnNext.Text = "Next"
         }
         5 {
             $controls.Add((New-Label "LDPlayer backup folder (.ldbk) — optional" 24))
-            $bakBox = New-TextBox $script:backupsDir 56 420
+            $bakBox = New-TextBox $script:backupsDir 56 410
             $controls.Add($bakBox)
-            $browse = New-Object System.Windows.Forms.Button
-            $browse.Text = "Browse…"
-            $browse.Location = New-Object System.Drawing.Point 450, 78
-            $browse.Add_Click({
-                $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-                if ($dlg.ShowDialog() -eq "OK") { $bakBox.Text = $dlg.SelectedPath }
-            })
-            $controls.Add($browse)
+            $controls.Add((Add-PathBrowseButton -Box $bakBox -Top 78 -Kind folder))
             $btnNext.Text = "Next"
         }
         6 {

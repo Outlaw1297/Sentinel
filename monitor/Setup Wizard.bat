@@ -15,5 +15,5 @@ if exist "%~dp0SentinelSetup.exe" (
     exit /b %ERRORLEVEL%
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup-wizard.ps1"
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0scripts\setup-wizard.ps1"
 exit /b %ERRORLEVEL%

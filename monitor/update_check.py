@@ -52,8 +52,23 @@ def _github_json(url: str) -> Any:
         url,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "gnbot-monitor"},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+            payload = json.loads(body) if body else {}
+            if isinstance(payload, dict):
+                detail = str(payload.get("message") or "").strip()
+        except Exception:  # noqa: BLE001
+            detail = ""
+        if detail:
+            raise RuntimeError(f"GitHub API HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"GitHub API HTTP {exc.code} for {url}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"GitHub API network error: {exc.reason}") from exc
 
 
 def _github_commit(repo: str, branch: str) -> dict[str, Any]:
@@ -131,11 +146,13 @@ def pick_highest_release(releases: list[dict[str, Any]]) -> dict[str, Any] | Non
 
 def _github_highest_release(repo: str) -> dict[str, Any]:
     payload = _github_json(f"https://api.github.com/repos/{repo}/releases?per_page=50")
+    if isinstance(payload, dict) and payload.get("message"):
+        raise RuntimeError(f"GitHub releases list failed for {repo}: {payload.get('message')}")
     if not isinstance(payload, list):
-        raise RuntimeError("GitHub releases response was not a list")
+        raise RuntimeError(f"GitHub releases response for {repo} was not a list")
     best = pick_highest_release(payload)
     if best is None:
-        raise RuntimeError("No published GitHub releases found")
+        raise RuntimeError(f"No published GitHub releases found for {repo}")
     sha = _github_tag_commit(repo, str(best.get("tag") or ""))
     if not sha:
         # Fall back to branch tip only for commit display; version compare still wins.

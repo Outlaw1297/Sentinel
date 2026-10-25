@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.5 — 2026-10-24
+
+### Installer repair
+- If the chosen folder already contains Sentinel, setup repairs program files and keeps `config.json` and `logs`
+- Looks for an existing install (previous setup path, Program Files, LocalAppData) and does not run the first-run wizard over saved settings
+
+### Setup wizard
+- Browse for GnBots.exe / LDPlayer / backup folders no longer crashes the wizard (STA thread + click handlers that keep the text box)
+
+### Apply update reliability
+- Force TLS 1.2+ and parse GitHub release JSON explicitly in `apply-update.ps1` (avoids empty “No published GitHub releases” when the API returns a rate-limit/error object or PS 5.1 mishandles `vnd.github+json`)
+- Clearer GitHub API errors (rate limit / HTTP status) and `/releases/latest` fallback if semver pick is empty
+
 ## 0.2.4 — 2026-10-24
 
 ### Phone dashboard + push
