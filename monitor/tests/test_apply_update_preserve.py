@@ -20,6 +20,14 @@ def test_preserve_names_match_apply_update_script():
     assert RELEASE_UPDATE_PRESERVE == frozenset({"config.json", "logs"})
 
 
+def test_apply_update_version_tuple_not_double_wrapped():
+    """@(ConvertTo-VersionTuple) + [int[]]$tuple nests int[] and breaks release pick."""
+    text = (ROOT / "scripts" / "apply-update.ps1").read_text(encoding="utf-8")
+    assert "$tuple = @(ConvertTo-VersionTuple" not in text
+    assert "$tuple = ConvertTo-VersionTuple $tag" in text
+    assert "Do NOT wrap with @()" in text
+
+
 def test_overlay_replaces_binaries_keeps_config_and_logs(tmp_path: Path):
     install = tmp_path / "install"
     extract = tmp_path / "extract"

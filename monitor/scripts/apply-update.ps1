@@ -373,12 +373,14 @@ function Get-HighestGithubRelease([string]$Repo, $Headers) {
         $tag = ""
         try { $tag = [string]$entry.tag_name } catch {}
         if (-not $tag) { continue }
-        $tuple = @(ConvertTo-VersionTuple $tag)
-        if ($tuple.Count -eq 0) { continue }
-        $tuple = [int[]]$tuple
-        if ($null -eq $best -or (Compare-VersionTuple $tuple $bestTuple) -gt 0) {
+        # ConvertTo-VersionTuple already returns a single int[] via unary comma.
+        # Do NOT wrap with @() then cast to [int[]] — that nests int[] inside Object[]
+        # and "[int[]]$tuple" throws, aborting Apply Update before any release is chosen.
+        $tuple = ConvertTo-VersionTuple $tag
+        if ($null -eq $tuple -or @($tuple).Length -eq 0) { continue }
+        if ($null -eq $best -or (Compare-VersionTuple ([int[]]$tuple) $bestTuple) -gt 0) {
             $best = $entry
-            $bestTuple = $tuple
+            $bestTuple = [int[]]$tuple
         }
     }
 
