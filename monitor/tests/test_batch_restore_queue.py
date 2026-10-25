@@ -167,6 +167,55 @@ class BatchRestoreQueueTests(unittest.TestCase):
         self.assertEqual([row["index"] for row in seen], [1, 2])
         self.assertTrue(all(row["batch"] for row in seen))
 
+    def test_reap_stale_restore_clears_busy_via_instance_index(self) -> None:
+        import ldplayer_restore as lr
+        from datetime import datetime, timedelta, timezone
+
+        job_id = "restore-stale-1"
+        stale_at = (datetime.now(timezone.utc) - timedelta(seconds=9000)).isoformat()
+        with lr._RESTORE_LOCK:
+            lr._RESTORE_JOBS[job_id] = {
+                "id": job_id,
+                "instanceIndex": 7,
+                "status": "restoring",
+                "message": "hung",
+                "startedAt": stale_at,
+                "updatedAt": stale_at,
+            }
+            lr._INSTANCE_BUSY[7] = job_id
+
+        reaped = lr.reap_stale_restore_jobs(max_idle_seconds=60)
+        self.assertEqual(len(reaped), 1)
+        self.assertEqual(reaped[0]["status"], "failed")
+        self.assertIn("index=7", reaped[0]["message"])
+        with lr._RESTORE_LOCK:
+            self.assertNotIn(7, lr._INSTANCE_BUSY)
+            self.assertEqual(lr._RESTORE_JOBS[job_id]["status"], "failed")
+
+    def test_set_job_does_not_resurrect_failed_restore(self) -> None:
+        import ldplayer_restore as lr
+
+        job_id = "restore-terminal-1"
+        with lr._RESTORE_LOCK:
+            lr._RESTORE_JOBS[job_id] = {
+                "id": job_id,
+                "instanceIndex": 3,
+                "status": "failed",
+                "message": "reaped",
+                "stalled": True,
+            }
+
+        revived = lr._set_job(
+            job_id,
+            status="installing-apk",
+            message="still installing after reap",
+            progress=70,
+        )
+        self.assertEqual(revived["status"], "failed")
+        self.assertEqual(revived["message"], "reaped")
+        with lr._RESTORE_LOCK:
+            self.assertEqual(lr._RESTORE_JOBS[job_id]["status"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()
