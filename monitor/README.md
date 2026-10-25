@@ -24,19 +24,22 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 - Live account table with sort, filter, per-account actions, and session screenshots
 - Host resource pills, stack status, issue-focused and recent logs
 - Restore-recommended banner when backups or health checks say work is needed
-- Browser web-push notifications (bell) for long-running job completion
+- Browser web-push notifications (bell) when long-running APK/restore jobs **start** and finish
+- **Restart Sentinel** host control (phone/PWA) restarts the Windows headless monitor stack
+- Dashboard banner when a newer Sentinel build or Whiteout APK is available (notify only)
 
 ### Emulator restore & health (`/settings?tab=restore`)
 - Point at an LDPlayer `.ldbk` backup folder and see per-instance health / trouble reasons
 - Restore one instance, restore all recommended, or restore by account
 - **Fix settings** applies recommended LDPlayer CPU / RAM / resolution / DPI / FPS / model (Windows Administrator required to commit)
 - Optional post-restore APK install and health checks
-- Background restore jobs resume after a page refresh
+- Background restore jobs resume after a page refresh; silent jobs are auto-failed after ~2.1h so the UI cannot stay locked forever
 
 ### Whiteout APK updates
 - Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (defaults to `apk20`, ABI/package auto-filled from LDPlayer) so farms are not stuck waiting for GnBots to refresh the package
 - Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk` and install / update selected emulators
 - **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
+- Per-instance **15-minute** wall-clock timeout, 30s heartbeats, stale-job reap (with post-timeout stop grace), **Abort stuck APK update**, and immutable terminal job status so a late worker write cannot revive a cancelled/reaped batch
 - Choose “instances to update” once; reuse for manual bulk update or automation
 
 ### Accounts & bot configuration (`/settings`)
@@ -154,8 +157,16 @@ Expect GnBots offline and screenshot **503**s — that is normal without Windows
 
 1. Stop GnBots
 2. On **Emulator Restore**, select instances (or use your saved “instances to update”)
-3. Click **Update APK** — a background job starts immediately
+3. Click **Update APK** — a background job starts immediately (push notifies on start when enabled)
 4. Watch progress on the same tab; refresh is safe; the UI reconnects to the job
+5. If one instance hangs: wait for the per-instance timeout (default **15 min**) so the batch continues, or click **Abort stuck APK update** (terminal status stays failed/cancelled even if the worker is still quitting LDPlayer)
+6. Check `logs/apk-update-jobs.log` for heartbeats / timeout / cancel / stalled lines
+
+Details: [`docs/AUTOMATION.md`](docs/AUTOMATION.md) (batch hang protection).
+
+### Restart Sentinel from phone / PWA
+
+On the live dashboard, use **Restart Sentinel** (`POST /api/host/monitor/restart`). Windows only — spawns `scripts/restart-headless.ps1`, 45s cooldown, dashboard disconnects briefly; refresh after ~30s. Use this when the UI or an in-memory job is wedged and Abort is not enough.
 
 ### Turn on automation
 
@@ -190,12 +201,12 @@ First run copies `config.example.json` → `config.json`. Important groups:
 | Group | Keys (examples) | Purpose |
 |-------|-----------------|---------|
 | Paths / API | `gnbots_api_url`, `gnbots_root`, `gnbots_exe`, `ldplayer_backups_dir`, `ldplayer_path` | Find GnBots + LDPlayer |
-| Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
+| Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, optional `apk_update_instance_timeout`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
 | Dashboard | `dashboard_host`, `dashboard_port`, refresh/cache intervals, screenshot interval | UI polling behavior |
 | Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
 | Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
 | Push / tray | `push_*`, `tray_*` | Web push + Windows tray |
-| Updates | `update_repo`, `update_branch`, `update_channel` | Self-update Check / Apply |
+| Updates | `update_repo`, `update_branch`, `update_channel`, `update_notify_*`, `apk_update_notify_*` | Self-update Check / Apply + availability banner / push |
 
 Emulator health defaults used by **Fix settings** can be overridden under **Settings → Sentinel → Emulator health settings** (or `ldplayer_health_settings` in JSON).
 
@@ -259,7 +270,7 @@ Artifacts: portable **Sentinel.zip** / `gnbot-monitor.exe`, **Sentinel-Setup.exe
 
 ## Version & changelog
 
-Current app version: **0.1.10** — see [`CHANGELOG.md`](CHANGELOG.md).
+Current app version: **0.2.4** — see [`CHANGELOG.md`](CHANGELOG.md).
 
-Highlights in 0.1.10: stuck-screen learning (event page → Back / restart / warn).  
-0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
+Highlights in 0.2.4: batch APK hang timeout / Abort, Restart Sentinel from phone, job-start push, periodic update banner.  
+0.2.3: stable self-update version compare. Earlier: dual providers, verified APK install, stuck-screen learning, background bulk APK jobs.
