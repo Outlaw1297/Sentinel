@@ -2,6 +2,10 @@
 
 ## 0.2.5 — 2026-10-24
 
+### Installer repair
+- If the chosen folder already contains Sentinel, setup repairs program files and keeps `config.json` and `logs`
+- Looks for an existing install (previous setup path, Program Files, LocalAppData) and does not run the first-run wizard over saved settings
+
 ### Setup wizard
 - Browse for GnBots.exe / LDPlayer / backup folders no longer crashes the wizard (STA thread + click handlers that keep the text box)
 
