@@ -61,16 +61,17 @@ When push is enabled, Sentinel notifies on APK job **start** and **finish** (sam
 
 #### Batch hang protection (v0.2.4+)
 
-Codepaths: `apk_update_jobs` (timeout / heartbeat / cancel / stale reap) → `whiteout_apk.update_whiteout_apk_on_instance` (batch `installapp` budget **600s**, was 1800s) → Restore UI (`Abort stuck APK update`) → `POST /api/emulators/apk/jobs/{id}/cancel`.
+Codepaths: `apk_update_jobs` (timeout / heartbeat / cancel / stale reap / terminal immutability) → `whiteout_apk.update_whiteout_apk_on_instance` (batch `installapp` budget **600s**, was 1800s) → Restore UI (`Abort stuck APK update`) → `POST /api/emulators/apk/jobs/{id}/cancel`.
 
 | Guard | Default | Behavior |
 |-------|---------|----------|
 | Per-instance wall clock | **900s** (`apk_update_instance_timeout`) | Timed-out index is failed; batch **continues** with remaining indexes. Worker best-effort quits the emulator so a wedged `ldconsole`/`adb` can unwind (Python cannot force-kill the worker thread). |
 | Heartbeat | every **30s** | Updates job `message` / `updatedAt` and appends to `logs/apk-update-jobs.log` while an instance is working. |
-| Stale job reap | **1200s** idle, or instance past timeout+**120s** | `get`/`list`/`find_active` / cancel poll calls `reap_stale_apk_update_jobs()` and marks hung jobs `failed` (`stalled=true`) so Restore unlocks even after a crashed worker. |
+| Stale job reap | **1200s** idle, or instance past timeout+**240s** | `get`/`list`/`find_active` / cancel poll calls `reap_stale_apk_update_jobs()` and marks hung jobs `failed` (`stalled=true`) so Restore unlocks even after a crashed worker. The **+240s** grace (`APK_POST_TIMEOUT_STOP_GRACE_SECONDS`) covers post-timeout `runninglist`/`list2` + two `ldconsole quit` budgets so polls do not fail the job while the worker is still stopping a hung emulator. |
 | Operator abort | UI + cancel API | Sets status `cancelled`, clears instance busy locks, unlocks Restore immediately. |
+| Terminal immutability | `completed` / `failed` / `cancelled` | Once a job is terminal (Abort or reap), later worker `_set_job` writes are ignored. Reap also adds the job to the cancel set so the worker breaks instead of continuing the batch and flipping status back to `updating`. |
 
-**Constraint:** cancel / timeout mark the **job** terminal, but an already-wedged install thread may keep running until `ldconsole` returns. Prefer Abort (or Restart Sentinel on Windows) rather than queueing a second overlapping batch on the same indexes.
+**Constraint:** cancel / timeout / reap mark the **job** terminal, but an already-wedged install thread may keep running until `ldconsole` returns. Prefer Abort (or Restart Sentinel on Windows) rather than queueing a second overlapping batch on the same indexes.
 
 Restore jobs stamp `updatedAt` on every progress write and are reaped if silent for **~7800s** (`RESTORE_JOB_STALE_SECONDS` in `ldplayer_restore`) — longer than the 7200s `ldconsole` restore budget so legitimate long restores are not killed early.
 
@@ -240,6 +241,7 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 |---------|--------------|---------------|
 | Restore stuck on **Updating…** for hours | Pre-0.2.4 hang, or wedged worker with no heartbeat | Upgrade to **0.2.4+**; use **Abort stuck APK update**; check `logs/apk-update-jobs.log` heartbeats; on older builds restart the monitor process |
 | One index fails with wall-clock timeout, others continue | Per-instance cap fired (default 15 min) | Expected; inspect that LDPlayer index / ADB; optionally raise `apk_update_instance_timeout` |
+| Job flips back to **Updating…** after Abort / stale fail | Pre-tip race: worker wrote status after reap/cancel | Tip of v0.2.4 keeps terminal snapshots immutable and signals cancel on reap; upgrade / pull that fix |
 | Abort clicked but install still running in LDPlayer | Cancel ends the **job**; Python cannot kill the install thread | Wait for `ldconsole` to unwind, or quit that emulator; avoid starting another batch on the same indexes immediately |
 | No update banner / push for newer APK or Sentinel | Notify toggles off, cooldown, or push disabled | `update_notify_*` / `apk_update_notify_*`; `push_enabled`; `GET /api/updates/available` |
 | **Restart Sentinel** returns 503 | Not Windows, missing `restart-headless.ps1`, or 45s cooldown | Bot PC Windows install; `scripts/restart-headless.ps1`; wait and retry |

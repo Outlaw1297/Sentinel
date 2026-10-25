@@ -39,7 +39,7 @@ Tunnel setup lives on your edge/server machine, not in this repo. See [`tunnel/R
 - Sync from `whiteout_apk_url` (GnBots `game.zip`) and/or a **third-party catalog** (defaults to `apk20`, ABI/package auto-filled from LDPlayer) so farms are not stuck waiting for GnBots to refresh the package
 - Downloads stage split APKs as `main.apk` / `arch.apk` / `pack.apk` and install / update selected emulators
 - **Bulk updates run as background jobs** — the API returns immediately; the Restore tab polls progress and resumes after refresh (no reverse-proxy **HTTP 502** blank page while installs continue)
-- Per-instance **15-minute** wall-clock timeout, 30s heartbeats, stale-job reap, and **Abort stuck APK update** so one hung `ldconsole`/`adb` cannot leave Restore on “Updating…” for hours
+- Per-instance **15-minute** wall-clock timeout, 30s heartbeats, stale-job reap (with post-timeout stop grace), **Abort stuck APK update**, and immutable terminal job status so a late worker write cannot revive a cancelled/reaped batch
 - Choose “instances to update” once; reuse for manual bulk update or automation
 
 ### Accounts & bot configuration (`/settings`)
@@ -159,8 +159,8 @@ Expect GnBots offline and screenshot **503**s — that is normal without Windows
 2. On **Emulator Restore**, select instances (or use your saved “instances to update”)
 3. Click **Update APK** — a background job starts immediately (push notifies on start when enabled)
 4. Watch progress on the same tab; refresh is safe; the UI reconnects to the job
-5. If one instance hangs: wait for the per-instance timeout (default **15 min**) so the batch continues, or click **Abort stuck APK update**
-6. Check `logs/apk-update-jobs.log` for heartbeats / timeout / cancel lines
+5. If one instance hangs: wait for the per-instance timeout (default **15 min**) so the batch continues, or click **Abort stuck APK update** (terminal status stays failed/cancelled even if the worker is still quitting LDPlayer)
+6. Check `logs/apk-update-jobs.log` for heartbeats / timeout / cancel / stalled lines
 
 Details: [`docs/AUTOMATION.md`](docs/AUTOMATION.md) (batch hang protection).
 
