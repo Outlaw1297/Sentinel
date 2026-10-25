@@ -68,8 +68,16 @@ const els = {
   restoreRecommendText: document.getElementById("restore-recommend-text"),
   restoreRecommendOpen: document.getElementById("restore-recommend-open"),
   restoreRecommendDismiss: document.getElementById("restore-recommend-dismiss"),
+  updateAvailableBanner: document.getElementById("update-available-banner"),
+  updateAvailableText: document.getElementById("update-available-text"),
+  updateAvailableProgram: document.getElementById("update-available-program"),
+  updateAvailableApk: document.getElementById("update-available-apk"),
+  updateAvailableDismiss: document.getElementById("update-available-dismiss"),
+  restartSentinelBtn: document.getElementById("restart-sentinel-btn"),
   addAccountOpen: document.getElementById("add-account-open"),
 };
+
+const UPDATE_BANNER_DISMISS_KEY = "sentinelUpdateBannerDismissed";
 
 if (els.shutdownCountdown?.dataset?.shutdownMinutes) {
   shutdownAfterMinutesConfig = Number(els.shutdownCountdown.dataset.shutdownMinutes || 0);
@@ -425,7 +433,71 @@ function restoreRecommendDismissedToday() {
   return stored === today;
 }
 
+function updateBannerFingerprint(available) {
+  const program = available?.program || {};
+  const apk = available?.apk || {};
+  const parts = [];
+  if (program.updateAvailable) {
+    parts.push(`program:${program.remoteVersion || ""}:${program.remoteCommitShort || ""}`);
+  }
+  if (apk.updateAvailable) {
+    parts.push(`apk:${apk.remoteVersion || apk.message || ""}`);
+  }
+  return parts.join("|");
+}
+
+function updateBannerDismissedFor(fingerprint) {
+  if (!fingerprint) return false;
+  return localStorage.getItem(UPDATE_BANNER_DISMISS_KEY) === fingerprint;
+}
+
+function renderAvailableUpdates(available) {
+  const banner = els.updateAvailableBanner;
+  if (!banner || !els.updateAvailableText) return;
+
+  const program = available?.program || {};
+  const apk = available?.apk || {};
+  const programReady = Boolean(program.updateAvailable) && !program.lastError;
+  const apkReady = Boolean(apk.updateAvailable) && !apk.lastError;
+  const fingerprint = updateBannerFingerprint(available);
+
+  if ((!programReady && !apkReady) || updateBannerDismissedFor(fingerprint)) {
+    banner.classList.add("hidden");
+    return;
+  }
+
+  const bits = [];
+  if (programReady) {
+    const local = String(program.localVersion || "?").replace(/^v/i, "");
+    const remote = String(program.remoteVersion || "?").replace(/^v/i, "");
+    bits.push(`Sentinel v${local} → v${remote}`);
+  }
+  if (apkReady) {
+    const local = String(apk.localVersion || "").trim();
+    const remote = String(apk.remoteVersion || "").trim();
+    if (local && remote) {
+      bits.push(`Whiteout APK ${local} → ${remote}`);
+    } else if (apk.message) {
+      bits.push(String(apk.message));
+    } else {
+      bits.push("Whiteout APK update available");
+    }
+  }
+  els.updateAvailableText.textContent = `${bits.join(". ")}. Open Settings to review and apply when ready.`;
+
+  if (els.updateAvailableProgram) {
+    els.updateAvailableProgram.classList.toggle("hidden", !programReady);
+  }
+  if (els.updateAvailableApk) {
+    els.updateAvailableApk.classList.toggle("hidden", !apkReady);
+  }
+  banner.dataset.fingerprint = fingerprint;
+  banner.classList.remove("hidden");
+}
+
 function renderRestoreRecommendation(accounts, payload) {
+  renderAvailableUpdates(payload?.availableUpdates || {});
+
   const banner = els.restoreRecommendBanner;
   if (!banner || !els.restoreRecommendText) return;
 
@@ -521,6 +593,9 @@ function updateControlsDisabled() {
   document.querySelectorAll(".btn-command, .btn-action").forEach((btn) => {
     btn.disabled = offline || commandBusy;
   });
+  if (els.restartSentinelBtn) {
+    els.restartSentinelBtn.disabled = commandBusy;
+  }
   updateHostButtons(lastPayload?.stack);
 }
 
@@ -1860,6 +1935,48 @@ els.accountsGrid.addEventListener("click", async (event) => {
 els.restoreRecommendDismiss?.addEventListener("click", () => {
   localStorage.setItem(RESTORE_RECOMMEND_DISMISS_KEY, new Date().toISOString().slice(0, 10));
   els.restoreRecommendBanner?.classList.add("hidden");
+});
+
+els.updateAvailableDismiss?.addEventListener("click", () => {
+  const fingerprint =
+    els.updateAvailableBanner?.dataset?.fingerprint ||
+    updateBannerFingerprint(lastPayload?.availableUpdates || {});
+  if (fingerprint) {
+    localStorage.setItem(UPDATE_BANNER_DISMISS_KEY, fingerprint);
+  }
+  els.updateAvailableBanner?.classList.add("hidden");
+});
+
+els.restartSentinelBtn?.addEventListener("click", async () => {
+  if (commandBusy) return;
+  if (
+    !window.confirm(
+      "Restart Sentinel on the bot PC?\n\nThe dashboard will disconnect briefly. Refresh in about 30 seconds."
+    )
+  ) {
+    return;
+  }
+
+  commandBusy = true;
+  updateControlsDisabled();
+  setHostStatus("Sending Sentinel restart request…", "pending");
+
+  try {
+    const response = await fetch("/api/host/monitor/restart", { method: "POST" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.message || `HTTP ${response.status}`);
+    }
+    setHostStatus(
+      payload.message || "Sentinel restart started. Refresh in about 30 seconds.",
+      "ok"
+    );
+  } catch (error) {
+    setHostStatus(`Restart failed: ${error.message}`, "error");
+  } finally {
+    commandBusy = false;
+    updateControlsDisabled();
+  }
 });
 
 els.logOcrNotice?.addEventListener("click", (event) => {

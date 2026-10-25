@@ -88,6 +88,7 @@ from whiteout_apk import (
     save_persisted_apk_update_instance_indexes,
 )
 from apk_update_jobs import (
+    cancel_apk_update_job,
     find_active_apk_update_job,
     get_apk_update_job,
     list_apk_update_jobs,
@@ -2248,6 +2249,15 @@ def effective_dashboard_cache_seconds(payload: dict[str, Any]) -> float:
     return base
 
 
+def _dashboard_available_updates() -> dict[str, Any]:
+    try:
+        from update_watch import get_update_watch_status
+
+        return get_update_watch_status()
+    except Exception:  # noqa: BLE001
+        return {"program": {}, "apk": {}}
+
+
 def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | None, gnbots_error: str | None) -> dict[str, Any]:
     gnbots_root = resolve_gnbots_root(config)
     sessions_by_id: dict[str, dict[str, Any]] = {}
@@ -2486,6 +2496,7 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
         "profile": profile_name,
         "botActive": bot_active,
         "botState": bot_state,
+        "availableUpdates": _dashboard_available_updates(),
         "status": status,
         "settings": settings,
         "summary": {
@@ -3668,6 +3679,17 @@ async def get_emulator_apk_update_job(job_id: str) -> dict[str, Any]:
     return {"ok": True, "job": job}
 
 
+@app.post("/api/emulators/apk/jobs/{job_id}/cancel")
+async def cancel_emulator_apk_update_job(job_id: str) -> dict[str, Any]:
+    """Abort a stuck/in-flight APK update so Restore UI unlocks."""
+    try:
+        job = cancel_apk_update_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown APK update job: {job_id}") from exc
+    invalidate_dashboard_cache()
+    return {"ok": True, "job": job, "message": job.get("message") or "APK update cancelled."}
+
+
 @app.post("/api/emulators/update-apk")
 async def update_all_emulator_apks(
     indexes: str | None = Query(None),
@@ -4326,6 +4348,44 @@ async def restart_gnbots() -> dict[str, Any]:
         return {**result, "provider": backend.provider_id}
     finally:
         invalidate_dashboard_cache()
+
+
+@app.post("/api/host/monitor/restart")
+@app.post("/api/host/sentinel/restart")
+async def restart_sentinel_monitor() -> dict[str, Any]:
+    """Restart the Sentinel monitor stack (usable from phone / PWA)."""
+    from monitor_restart import restart_monitor_stack
+
+    if push_enabled(config):
+        try:
+            notify_monitor_event(
+                "Sentinel restarting",
+                "Monitor stack restart requested from the dashboard.",
+                tag="monitor-restart",
+                config=config,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    result = await asyncio.to_thread(restart_monitor_stack)
+    if not result.get("ok"):
+        raise HTTPException(status_code=503, detail=result.get("message") or "Restart failed.")
+    return result
+
+
+@app.get("/api/updates/available")
+async def updates_available(force: bool = False) -> dict[str, Any]:
+    """Latest program + APK update availability (periodic watch / dashboard banner)."""
+    from update_watch import (
+        check_apk_update_availability,
+        check_program_update,
+        get_update_watch_status,
+    )
+
+    if force:
+        await asyncio.to_thread(check_program_update, config, force=True)
+        await asyncio.to_thread(check_apk_update_availability, config, force=True)
+    return {"ok": True, **get_update_watch_status()}
 
 
 @app.get("/api/profiles")

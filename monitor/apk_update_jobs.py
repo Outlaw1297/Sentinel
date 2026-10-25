@@ -7,13 +7,14 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from paths import get_logs_dir
 
 _APK_JOB_LOCK = threading.RLock()
 _APK_UPDATE_JOBS: dict[str, dict[str, Any]] = {}
 _APK_INSTANCE_BUSY: dict[int, str] = {}
+_APK_JOB_CANCEL: set[str] = set()
 _APK_UPDATE_LOG = get_logs_dir() / "apk-update-jobs.log"
 
 APK_UPDATE_STATUS_PROGRESS = {
@@ -24,11 +25,36 @@ APK_UPDATE_STATUS_PROGRESS = {
     "finalizing": 90,
     "completed": 100,
     "failed": 100,
+    "cancelled": 100,
 }
+
+# Wall-clock cap for one emulator in a batch. Without this, a hung ldconsole/adb
+# install can leave the dashboard on "Updating…" for hours with no new log lines.
+DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS = 900
+# After the instance timeout the worker still stops the emulator. runninglist is
+# 30s (+ optional list2 30s) and ldconsole quit is 90s; the best-effort loop can
+# issue a second quit before it notices its deadline. Polls must not fail the job
+# during that stop (quit alone can sit on the timeout the whole time).
+APK_POST_TIMEOUT_STOP_GRACE_SECONDS = 30 + 30 + 90 + 90
+# Fail active jobs that have not heartbeated / advanced for this long (crashed worker).
+APK_JOB_STALE_SECONDS = 1200
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_to_epoch(value: str | None) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
 
 
 def _append_apk_job_log(message: str) -> None:
@@ -45,12 +71,28 @@ def _progress_for_status(status: str) -> int:
     return APK_UPDATE_STATUS_PROGRESS.get(str(status or ""), 15)
 
 
+def _terminal_statuses() -> set[str]:
+    return {"completed", "failed", "cancelled"}
+
+
+def _resolve_instance_timeout(config: dict[str, Any] | None) -> int:
+    if config is not None and config.get("apk_update_instance_timeout") is not None:
+        # Explicit override may be short (tests / aggressive ops); default path stays 900s.
+        return max(1, int(config["apk_update_instance_timeout"]))
+    return DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS
+
+
 def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
     if "status" in updates and "progress" not in updates:
         updates["progress"] = _progress_for_status(str(updates["status"]))
     with _APK_JOB_LOCK:
         job = _APK_UPDATE_JOBS.setdefault(job_id, {})
-        if "progress" in updates and updates.get("status") != "failed":
+        # Reap and operator cancel finalize under this lock. A worker still inside
+        # the timeout/stop path, or between its cancel check and the next write,
+        # must not put the job back to "updating" and lock the dashboard again.
+        if str(job.get("status") or "") in _terminal_statuses():
+            return dict(job)
+        if "progress" in updates and updates.get("status") not in _terminal_statuses():
             previous = job.get("progress")
             new_progress = int(updates["progress"])
             if isinstance(previous, (int, float)):
@@ -60,13 +102,118 @@ def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
         return dict(job)
 
 
+def _fail_job_stalled(job_id: str, *, reason: str) -> dict[str, Any] | None:
+    with _APK_JOB_LOCK:
+        job = _APK_UPDATE_JOBS.get(job_id)
+        if job is None:
+            return None
+        status = str(job.get("status") or "")
+        if status in _terminal_statuses():
+            return dict(job)
+        current = job.get("currentIndex")
+        failures = list(job.get("failures") or [])
+        if current is not None:
+            failures.append({"index": current, "error": reason})
+        else:
+            failures.append({"index": None, "error": reason})
+        for index, owner in list(_APK_INSTANCE_BUSY.items()):
+            if owner == job_id:
+                _APK_INSTANCE_BUSY.pop(index, None)
+        job.update(
+            {
+                "status": "failed",
+                "progress": 100,
+                "message": reason,
+                "failures": failures,
+                "failed": max(int(job.get("failed") or 0), len(failures)),
+                "finishedAt": _utc_now_iso(),
+                "currentIndex": None,
+                "instanceStartedAt": None,
+                "stalled": True,
+            }
+        )
+        job["updatedAt"] = _utc_now_iso()
+        snapshot = dict(job)
+        # Same signal as operator cancel so the worker breaks instead of
+        # continuing the batch and writing over this failed snapshot.
+        _APK_JOB_CANCEL.add(job_id)
+    _append_apk_job_log(f"[{job_id}] stalled: {reason}")
+    return snapshot
+
+
+def _instance_stall_limit_seconds(job: dict[str, Any], override: float | None) -> float:
+    """Age of instanceStartedAt after which a status poll may fail the job.
+
+    An explicit override is the full cap (tests). Otherwise use this job's
+    configured instance timeout plus the post-timeout ldconsole stop budget.
+    """
+    if override is not None:
+        return float(override)
+    timeout = float(DEFAULT_APK_INSTANCE_TIMEOUT_SECONDS)
+    raw = job.get("instanceTimeoutSeconds")
+    if raw is not None:
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError):
+            parsed = 0
+        if parsed >= 1:
+            timeout = parsed
+    return timeout + float(APK_POST_TIMEOUT_STOP_GRACE_SECONDS)
+
+
+def reap_stale_apk_update_jobs(
+    *,
+    max_idle_seconds: float | None = None,
+    instance_timeout_seconds: float | None = None,
+) -> list[dict[str, Any]]:
+    """Mark hung active jobs failed so the UI cannot sit on Updating forever."""
+    idle_limit = float(APK_JOB_STALE_SECONDS if max_idle_seconds is None else max_idle_seconds)
+    now = time.time()
+    reaped: list[dict[str, Any]] = []
+    with _APK_JOB_LOCK:
+        candidates = [
+            dict(job)
+            for job in _APK_UPDATE_JOBS.values()
+            if str(job.get("status") or "") not in _terminal_statuses()
+        ]
+    for job in candidates:
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            continue
+        instance_started = _parse_iso_to_epoch(str(job.get("instanceStartedAt") or ""))
+        instance_limit = _instance_stall_limit_seconds(job, instance_timeout_seconds)
+        if instance_started is not None and (now - instance_started) > instance_limit:
+            index = job.get("currentIndex")
+            reason = (
+                f"APK update stalled on instance {index}: no completion within "
+                f"{int(instance_limit)}s wall-clock. Aborting so the batch cannot block the dashboard."
+            )
+            failed = _fail_job_stalled(job_id, reason=reason)
+            if failed:
+                reaped.append(failed)
+            continue
+        updated = _parse_iso_to_epoch(str(job.get("updatedAt") or job.get("startedAt") or ""))
+        if updated is not None and (now - updated) > idle_limit:
+            reason = (
+                f"APK update job went silent for {int(idle_limit)}s "
+                f"(last status={job.get('status')}, index={job.get('currentIndex')}). "
+                f"Marked failed — check logs/apk-update-jobs.log."
+            )
+            failed = _fail_job_stalled(job_id, reason=reason)
+            if failed:
+                reaped.append(failed)
+    return reaped
+
+
 def get_apk_update_job(job_id: str) -> dict[str, Any] | None:
+    reap_stale_apk_update_jobs()
     with _APK_JOB_LOCK:
         job = _APK_UPDATE_JOBS.get(job_id)
         return dict(job) if job else None
 
 
 def list_apk_update_jobs(limit: int = 20) -> list[dict[str, Any]]:
+    reap_stale_apk_update_jobs()
     with _APK_JOB_LOCK:
         jobs = sorted(
             _APK_UPDATE_JOBS.values(),
@@ -77,6 +224,7 @@ def list_apk_update_jobs(limit: int = 20) -> list[dict[str, Any]]:
 
 
 def find_active_apk_update_job() -> dict[str, Any] | None:
+    reap_stale_apk_update_jobs()
     with _APK_JOB_LOCK:
         for job in sorted(
             _APK_UPDATE_JOBS.values(),
@@ -84,9 +232,46 @@ def find_active_apk_update_job() -> dict[str, Any] | None:
             reverse=True,
         ):
             status = str(job.get("status") or "")
-            if status and status not in {"completed", "failed"}:
+            if status and status not in _terminal_statuses():
                 return dict(job)
     return None
+
+
+def cancel_apk_update_job(job_id: str, *, reason: str | None = None) -> dict[str, Any]:
+    """Abort an active job so the dashboard unlocks even if a worker thread is wedged."""
+    reap_stale_apk_update_jobs()
+    message = reason or "APK update cancelled by operator."
+    with _APK_JOB_LOCK:
+        job = _APK_UPDATE_JOBS.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        status = str(job.get("status") or "")
+        if status in _terminal_statuses():
+            return dict(job)
+        _APK_JOB_CANCEL.add(job_id)
+        current = job.get("currentIndex")
+        failures = list(job.get("failures") or [])
+        failures.append({"index": current, "error": message})
+        for index, owner in list(_APK_INSTANCE_BUSY.items()):
+            if owner == job_id:
+                _APK_INSTANCE_BUSY.pop(index, None)
+        job.update(
+            {
+                "status": "cancelled",
+                "progress": 100,
+                "message": message,
+                "failures": failures,
+                "failed": max(int(job.get("failed") or 0), len(failures)),
+                "finishedAt": _utc_now_iso(),
+                "updatedAt": _utc_now_iso(),
+                "currentIndex": None,
+                "instanceStartedAt": None,
+                "cancelled": True,
+            }
+        )
+        snapshot = dict(job)
+    _append_apk_job_log(f"[{job_id}] cancelled: {message}")
+    return snapshot
 
 
 def apk_update_busy_indexes() -> set[int]:
@@ -98,14 +283,61 @@ def apk_update_busy_indexes() -> set[int]:
 def _sync_stale_instance_busy() -> None:
     for index, job_id in list(_APK_INSTANCE_BUSY.items()):
         job = _APK_UPDATE_JOBS.get(job_id)
-        if job is None or job.get("status") in ("completed", "failed"):
+        if job is None or job.get("status") in _terminal_statuses():
             _APK_INSTANCE_BUSY.pop(index, None)
+
+
+def _job_cancelled(job_id: str) -> bool:
+    return job_id in _APK_JOB_CANCEL
+
+
+def _run_with_timeout(
+    fn: Callable[[], Any],
+    *,
+    timeout_seconds: float,
+    label: str,
+) -> Any:
+    """Run ``fn`` in a daemon thread; raise TimeoutError if it exceeds the wall clock.
+
+    The underlying thread cannot be force-killed in Python; callers should best-effort
+    stop the emulator so a wedged ldconsole/adb eventually unwinds.
+    """
+    box: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            box["result"] = fn()
+        except Exception as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, name=f"apk-instance-{label}", daemon=True)
+    thread.start()
+    thread.join(timeout=max(1.0, float(timeout_seconds)))
+    if thread.is_alive():
+        raise TimeoutError(
+            f"{label} exceeded {int(timeout_seconds)}s wall-clock limit "
+            f"(likely hung ldconsole/adb install or resource-pack wait)."
+        )
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def _clear_instance_busy(index: int, job_id: str) -> None:
     with _APK_JOB_LOCK:
         if _APK_INSTANCE_BUSY.get(index) == job_id:
             _APK_INSTANCE_BUSY.pop(index, None)
+
+
+def _notify_apk_job_started(job: dict[str, Any], config: dict[str, Any]) -> None:
+    try:
+        from push_notifications import notify_apk_update_started, push_enabled
+
+        if not push_enabled(config):
+            return
+        notify_apk_update_started(job, config=config)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _notify_apk_job_finished(job: dict[str, Any], config: dict[str, Any]) -> None:
@@ -121,6 +353,7 @@ def _notify_apk_job_finished(job: dict[str, Any], config: dict[str, Any]) -> Non
                 "message": job.get("message") or "",
                 "results": job.get("results") or [],
                 "failures": job.get("failures") or [],
+                "cacheVersion": job.get("cacheVersion"),
             },
             config=config,
         )
@@ -231,6 +464,28 @@ def _resolve_target_indexes(
     return normalized, meta
 
 
+def _best_effort_stop_instance(config: dict[str, Any], index: int) -> None:
+    try:
+        from ldplayer_restore import (
+            list_running_ld_indexes,
+            resolve_ldconsole,
+            run_ldconsole,
+            stop_ldplayer_instance_best_effort,
+        )
+
+        ldconsole = resolve_ldconsole(config)
+        running = list_running_ld_indexes(ldconsole, run_ldconsole)
+        stop_ldplayer_instance_best_effort(
+            ldconsole,
+            index,
+            run_ldconsole,
+            timeout=60,
+            running_indexes=running,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _append_apk_job_log(f"stop after timeout index={index} warning: {exc}")
+
+
 def _apk_update_worker(
     job_id: str,
     config: dict[str, Any],
@@ -247,6 +502,7 @@ def _apk_update_worker(
     results: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     total = len(indexes)
+    instance_timeout = _resolve_instance_timeout(config)
 
     try:
         _set_job(
@@ -260,26 +516,86 @@ def _apk_update_worker(
             total=total,
             completedCount=0,
             currentIndex=None,
+            instanceTimeoutSeconds=instance_timeout,
         )
-        _append_apk_job_log(f"[{job_id}] start targets={indexes}")
+        _append_apk_job_log(
+            f"[{job_id}] start targets={indexes} instance_timeout={instance_timeout}s"
+        )
 
         for position, index in enumerate(indexes):
+            if _job_cancelled(job_id):
+                _append_apk_job_log(f"[{job_id}] cancelled before index={index}")
+                break
+
             with _APK_JOB_LOCK:
                 _APK_INSTANCE_BUSY[index] = job_id
             progress = 15 + int((position / max(total, 1)) * 70)
+            started_iso = _utc_now_iso()
             _set_job(
                 job_id,
                 status="updating",
                 progress=progress,
                 currentIndex=index,
                 completedCount=position,
+                instanceStartedAt=started_iso,
                 message=f"Updating Whiteout Survival on instance {index} ({position + 1}/{total})…",
             )
             _append_apk_job_log(f"[{job_id}] updating index={index} ({position + 1}/{total})")
+
+            heartbeat_stop = threading.Event()
+
+            def _on_progress(message: str, _pct: Any = None, *, _index: int = index, _pos: int = position) -> None:
+                text = str(message or "").strip() or "working…"
+                _set_job(
+                    job_id,
+                    message=f"Instance {_index} ({_pos + 1}/{total}): {text}",
+                )
+                _append_apk_job_log(f"[{job_id}] progress index={_index}: {text}")
+
+            def _heartbeat(*, _index: int = index, _pos: int = position) -> None:
+                while not heartbeat_stop.wait(_HEARTBEAT_INTERVAL_SECONDS):
+                    if _job_cancelled(job_id):
+                        return
+                    elapsed = 0
+                    started = _parse_iso_to_epoch(started_iso)
+                    if started is not None:
+                        elapsed = int(time.time() - started)
+                    _set_job(
+                        job_id,
+                        message=(
+                            f"Still updating instance {_index} ({_pos + 1}/{total}) — "
+                            f"{elapsed}s elapsed (limit {instance_timeout}s)…"
+                        ),
+                        heartbeatAt=_utc_now_iso(),
+                    )
+                    _append_apk_job_log(
+                        f"[{job_id}] heartbeat index={_index} elapsed={elapsed}s"
+                    )
+
+            hb_thread = threading.Thread(
+                target=_heartbeat,
+                name=f"apk-hb-{job_id}-{index}",
+                daemon=True,
+            )
+            hb_thread.start()
             try:
-                # Batch installs use a shorter resource-pack budget so a hung optional
-                # download on one instance cannot block the rest of the queue.
-                result = update_whiteout_apk_on_instance(config, index, batch=True)
+                # Re-check after the status write. A poll may have reaped this job, or
+                # the operator may have cancelled, between the loop check and here.
+                if _job_cancelled(job_id):
+                    _append_apk_job_log(f"[{job_id}] cancelled before index={index}")
+                    break
+                # Batch: shorter pack budget + hard wall-clock so one hung emulator
+                # cannot block the rest of the queue (or leave the UI spinning for hours).
+                result = _run_with_timeout(
+                    lambda idx=index, progress_cb=_on_progress: update_whiteout_apk_on_instance(
+                        config,
+                        idx,
+                        batch=True,
+                        on_progress=progress_cb,
+                    ),
+                    timeout_seconds=instance_timeout,
+                    label=f"instance {index}",
+                )
                 # Soft-success guard: never count an instance that still needs an update.
                 apk_row = result.get("apk") if isinstance(result.get("apk"), dict) else {}
                 if (
@@ -306,11 +622,26 @@ def _apk_update_worker(
                     )
                 else:
                     _append_apk_job_log(f"[{job_id}] ok index={index}")
+            except TimeoutError as exc:
+                failures.append({"index": index, "error": str(exc)})
+                _append_apk_job_log(f"[{job_id}] timeout index={index}: {exc}")
+                _best_effort_stop_instance(config, index)
             except Exception as exc:  # noqa: BLE001
                 failures.append({"index": index, "error": str(exc)})
                 _append_apk_job_log(f"[{job_id}] failed index={index}: {exc}")
             finally:
+                heartbeat_stop.set()
+                hb_thread.join(timeout=1.0)
                 _clear_instance_busy(index, job_id)
+                _set_job(job_id, instanceStartedAt=None)
+
+        if _job_cancelled(job_id):
+            _APK_JOB_CANCEL.discard(job_id)
+            # cancel_apk_update_job already finalized status; only finish if still active.
+            with _APK_JOB_LOCK:
+                current = dict(_APK_UPDATE_JOBS.get(job_id) or {})
+            if str(current.get("status") or "") in _terminal_statuses():
+                return
 
         updated = len(results)
         failed = len(failures)
@@ -358,6 +689,13 @@ def _apk_update_worker(
             message = f"Updated Whiteout Survival on {updated} instance{'s' if updated != 1 else ''}."
             status = "completed"
 
+        with _APK_JOB_LOCK:
+            existing_status = str((_APK_UPDATE_JOBS.get(job_id) or {}).get("status") or "")
+        if existing_status in _terminal_statuses():
+            _APK_JOB_CANCEL.discard(job_id)
+            _append_apk_job_log(f"[{job_id}] already terminal ({existing_status}); skipping finalize")
+            return
+
         cache = get_persisted_apk_cache_state()
         finished = {
             "status": status,
@@ -369,11 +707,13 @@ def _apk_update_worker(
             "failures": failures,
             "completedCount": total,
             "currentIndex": None,
+            "instanceStartedAt": None,
             "finishedAt": _utc_now_iso(),
             "cacheVersion": cache.get("versionName"),
             "localVersion": cache.get("versionName"),
         }
         job = _set_job(job_id, **finished)
+        _APK_JOB_CANCEL.discard(job_id)
         _append_apk_job_log(f"[{job_id}] {status}: {message}")
         if indexes:
             try:
@@ -396,7 +736,9 @@ def _apk_update_worker(
             failures=failures + [{"index": None, "error": str(exc)}],
             finishedAt=_utc_now_iso(),
             currentIndex=None,
+            instanceStartedAt=None,
         )
+        _APK_JOB_CANCEL.discard(job_id)
         _append_apk_job_log(f"[{job_id}] failed unexpectedly: {exc}")
         _record_job_issues(job)
         _notify_apk_job_finished(job, config)
@@ -472,7 +814,10 @@ def start_apk_update_job(
     )
     thread.start()
     _append_apk_job_log(f"[{job_id}] queued indexes={targets} source={source}")
-    return dict(job)
+    started = dict(job)
+    if targets:
+        _notify_apk_job_started(started, config)
+    return started
 
 
 def wait_for_apk_update_job(job_id: str, *, timeout_seconds: float = 10.0) -> dict[str, Any] | None:
@@ -492,3 +837,4 @@ def reset_apk_update_jobs_for_tests() -> None:
     with _APK_JOB_LOCK:
         _APK_UPDATE_JOBS.clear()
         _APK_INSTANCE_BUSY.clear()
+        _APK_JOB_CANCEL.clear()

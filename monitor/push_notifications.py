@@ -703,6 +703,35 @@ def _format_apk_batch_push(result: dict[str, Any]) -> tuple[str, str]:
     return title, body
 
 
+def notify_apk_update_started(
+    job: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Push when an APK update job is queued (phone-friendly progress)."""
+    cfg = config or load_monitor_config()
+    if not _operation_push_enabled(cfg):
+        return None
+    indexes = job.get("indexes") if isinstance(job.get("indexes"), list) else []
+    total = int(job.get("total") or len(indexes) or 0)
+    if total <= 0 and job.get("index") is None:
+        return None
+    if job.get("index") is not None and total <= 0:
+        total = 1
+        indexes = [job.get("index")]
+    title = "APK update started"
+    if total == 1 and indexes:
+        body = f"Updating Whiteout Survival on instance {indexes[0]}."
+        tag = f"apk-update-start-{indexes[0]}"
+    else:
+        body = f"Updating Whiteout Survival on {total} instance{'s' if total != 1 else ''}."
+        tag = "apk-update-start"
+    source = str(job.get("source") or "").strip()
+    if source:
+        body = f"{body} Source: {source}."
+    return notify_monitor_event(title, body[:240], tag=tag, config=cfg)
+
+
 def notify_apk_update_result(
     result: dict[str, Any],
     *,
@@ -750,6 +779,32 @@ def notify_apk_update_failed(
     )
 
 
+def notify_restore_job_started(
+    job: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Push when an LDPlayer restore is queued."""
+    cfg = config or load_monitor_config()
+    if not _operation_push_enabled(cfg):
+        return None
+    index = job.get("instanceIndex")
+    name = str(job.get("instanceName") or job.get("targetName") or "").strip()
+    label = f"instance {index}" if index is not None else "instance"
+    if name:
+        label = f"{name} ({label})"
+    backup = str(job.get("backupFile") or "").strip()
+    body = f"Restoring {label}."
+    if backup:
+        body = f"{body} Backup: {backup}."
+    return notify_monitor_event(
+        f"Restore started: {label}",
+        body[:240],
+        tag=f"restore-start-{index}",
+        config=cfg,
+    )
+
+
 def notify_restore_job_finished(
     job: dict[str, Any],
     *,
@@ -761,7 +816,7 @@ def notify_restore_job_finished(
         return None
 
     status = str(job.get("status") or "")
-    if status not in {"completed", "failed"}:
+    if status not in {"completed", "failed", "cancelled"}:
         return None
 
     index = job.get("instanceIndex")
@@ -795,16 +850,48 @@ def notify_restore_job_finished(
     )
 
 
+def notify_available_update(
+    *,
+    kind: str,
+    local_version: str,
+    remote_version: str,
+    detail: str = "",
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Push when a Sentinel program update or Whiteout APK update is available."""
+    cfg = config or load_monitor_config()
+    if not push_enabled(cfg):
+        return None
+    kind_name = str(kind or "update").strip().lower()
+    local = str(local_version or "").strip() or "?"
+    remote = str(remote_version or "").strip() or "?"
+    extra = str(detail or "").strip()
+    if kind_name == "apk":
+        title = "Whiteout APK update available"
+        body = f"Cache {local} → {remote}."
+        tag = f"apk-available-{remote}"
+        url = "/settings?tab=restore"
+    else:
+        title = "Sentinel update available"
+        body = f"v{local.lstrip('v')} → v{remote.lstrip('v')}."
+        tag = f"program-available-{remote}"
+        url = "/settings?tab=monitor"
+    if extra:
+        body = f"{body} {extra[:120]}"
+    return notify_monitor_event(title, body[:240], tag=tag, config=cfg, url=url)
+
+
 def notify_monitor_event(
     title: str,
     body: str,
     *,
     tag: str = "gnbots",
     config: dict[str, Any] | None = None,
+    url: str = "/",
 ) -> dict[str, Any]:
     cfg = config or load_monitor_config()
     _log_push_event(title, body, tag=tag)
-    result = send_push_notification(title, body, tag=tag)
+    result = send_push_notification(title, body, tag=tag, url=url)
     try:
         _EVENT_STATE["snapshot"] = build_monitor_snapshot(cfg)
         _EVENT_STATE["initialized"] = True

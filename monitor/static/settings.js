@@ -1421,6 +1421,15 @@ function renderRestoreSummary(rows) {
       ${selectedButtonDisabled ? "disabled" : ""}
     >${forceUpdateSelectedApksBusy ? "Force updating…" : `Force update selected (${selectedInstanceCount})`}</button>`,
   );
+  if (updateAllApksBusy || updateSelectedApksBusy || forceUpdateSelectedApksBusy || updateApkBusyIndex != null) {
+    actionButtons.push(
+      `<button
+        type="button"
+        class="btn btn-small btn-abort-apk-update"
+        id="abort-apk-update-btn"
+      >Abort stuck APK update</button>`,
+    );
+  }
   actionButtons.push(
     `<button
       type="button"
@@ -2378,9 +2387,15 @@ async function followApkUpdateJob(job, { busyMode = "all" } = {}) {
     await loadApkUpdateSelection();
     await loadEmulatorApkForRows(restoreRows, { force: true });
     const failed = Number(finished.failed) || 0;
+    const cancelled = String(finished.status || "") === "cancelled";
     setRestorePageStatus(
-      finished.message || (failed ? `Updated with ${failed} failure(s).` : "APK update complete."),
-      failed ? "warn" : "ok",
+      finished.message ||
+        (cancelled
+          ? "APK update cancelled."
+          : failed
+            ? `Updated with ${failed} failure(s).`
+            : "APK update complete."),
+      cancelled || failed ? "warn" : "ok",
       100,
     );
     return finished;
@@ -2388,6 +2403,45 @@ async function followApkUpdateJob(job, { busyMode = "all" } = {}) {
     if (pollToken === activeApkUpdatePollToken) {
       clearApkUpdateBusyFlags();
     }
+  }
+}
+
+async function abortActiveApkUpdate() {
+  if (!window.GnBotsRestore?.cancelApkUpdateJob) {
+    setRestorePageStatus("Cancel is not available in this build.", "error");
+    return;
+  }
+  let jobId = null;
+  try {
+    const active = await window.GnBotsRestore.findActiveApkUpdateJob();
+    jobId = active?.id || null;
+  } catch {
+    jobId = null;
+  }
+  if (!jobId) {
+    try {
+      jobId = sessionStorage.getItem("sentinelApkUpdateJobId");
+    } catch {
+      jobId = null;
+    }
+  }
+  if (!jobId) {
+    setRestorePageStatus("No active APK update job to abort.", "warn");
+    clearApkUpdateBusyFlags();
+    return;
+  }
+  if (!window.confirm("Abort the in-progress APK update? Remaining instances will be skipped.")) {
+    return;
+  }
+  try {
+    const job = await window.GnBotsRestore.cancelApkUpdateJob(jobId);
+    activeApkUpdatePollToken += 1;
+    clearApkUpdateBusyFlags();
+    setRestorePageStatus(job?.message || "APK update cancelled.", "warn", 100);
+    await loadApkUpdateSelection();
+    await loadEmulatorApkForRows(restoreRows, { force: true });
+  } catch (error) {
+    setRestorePageStatus(error.message || "Could not abort APK update.", "error");
   }
 }
 
@@ -5984,6 +6038,12 @@ els.restoreSummaryPanel?.addEventListener("click", async (event) => {
   );
   if (forceUpdateSelectedButton && !forceUpdateSelectedButton.disabled) {
     await forceUpdateSelectedApks();
+    return;
+  }
+
+  const abortApkUpdateButton = event.target.closest("#abort-apk-update-btn, .btn-abort-apk-update");
+  if (abortApkUpdateButton) {
+    await abortActiveApkUpdate();
     return;
   }
 

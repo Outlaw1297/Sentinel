@@ -27,6 +27,8 @@ class AutomationTests(unittest.TestCase):
             "issue_history_enabled": True,
             "auto_stop_gnbots_on_trouble": False,
             "auto_update_apks": False,
+            "update_notify_enabled": False,
+            "apk_update_notify_enabled": False,
             "stuck_screen_learning_enabled": False,
             "stuck_screen_auto_fix_enabled": False,
             "gnbots_root": str(ROOT),

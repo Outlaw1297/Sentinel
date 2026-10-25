@@ -205,7 +205,7 @@ def test_notify_restore_push_helper_calls_module():
     }
     with patch("push_notifications.notify_restore_job_finished") as mocked:
         _notify_restore_push(job, {"push_enabled": True})
-        mocked.assert_called_once_with(job, {"push_enabled": True})
+        mocked.assert_called_once_with(job, config={"push_enabled": True})
 
 
 def test_push_disabled_skips_apk_notification(monkeypatch):
@@ -213,3 +213,102 @@ def test_push_disabled_skips_apk_notification(monkeypatch):
     with patch.object(push, "send_push_notification") as mocked:
         assert push.notify_apk_update_result({"index": 1}, config={"push_enabled": False}) is None
         mocked.assert_not_called()
+
+
+def test_notify_apk_update_started_batch(monkeypatch):
+    monkeypatch.setattr(push, "push_enabled", lambda _cfg=None: True)
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        push,
+        "send_push_notification",
+        lambda title, body, *, tag="gnbots", url="/": calls.append((title, body, tag)) or {"ok": True, "sent": 1},
+    )
+    monkeypatch.setattr(push, "build_monitor_snapshot", lambda _cfg: {})
+
+    push.notify_apk_update_started(
+        {"indexes": [1, 2, 3], "total": 3, "source": "gnbots"},
+        config={"push_enabled": True},
+    )
+
+    title, body, tag = calls[0]
+    assert title == "APK update started"
+    assert "3 instance" in body
+    assert "gnbots" in body
+    assert tag == "apk-update-start"
+
+
+def test_notify_restore_job_started(monkeypatch):
+    monkeypatch.setattr(push, "push_enabled", lambda _cfg=None: True)
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        push,
+        "send_push_notification",
+        lambda title, body, *, tag="gnbots", url="/": calls.append((title, body, tag)) or {"ok": True, "sent": 1},
+    )
+    monkeypatch.setattr(push, "build_monitor_snapshot", lambda _cfg: {})
+
+    push.notify_restore_job_started(
+        {
+            "instanceIndex": 5,
+            "instanceName": "Pam",
+            "backupFile": "Pam.ldbk",
+        },
+        config={"push_enabled": True},
+    )
+
+    title, body, tag = calls[0]
+    assert "Restore started" in title
+    assert "Pam" in title
+    assert "Pam.ldbk" in body
+    assert tag == "restore-start-5"
+
+
+def test_notify_available_update_program(monkeypatch):
+    monkeypatch.setattr(push, "push_enabled", lambda _cfg=None: True)
+    calls: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr(
+        push,
+        "send_push_notification",
+        lambda title, body, *, tag="gnbots", url="/": calls.append((title, body, tag, url))
+        or {"ok": True, "sent": 1},
+    )
+    monkeypatch.setattr(push, "build_monitor_snapshot", lambda _cfg: {})
+
+    push.notify_available_update(
+        kind="program",
+        local_version="0.2.3",
+        remote_version="0.2.4",
+        detail="hang fix",
+        config={"push_enabled": True},
+    )
+
+    title, body, tag, url = calls[0]
+    assert "Sentinel update available" in title
+    assert "0.2.3" in body and "0.2.4" in body
+    assert tag == "program-available-0.2.4"
+    assert "monitor" in url
+
+
+def test_notify_available_update_apk(monkeypatch):
+    monkeypatch.setattr(push, "push_enabled", lambda _cfg=None: True)
+    calls: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr(
+        push,
+        "send_push_notification",
+        lambda title, body, *, tag="gnbots", url="/": calls.append((title, body, tag, url))
+        or {"ok": True, "sent": 1},
+    )
+    monkeypatch.setattr(push, "build_monitor_snapshot", lambda _cfg: {})
+
+    push.notify_available_update(
+        kind="apk",
+        local_version="1.32.20",
+        remote_version="1.32.21",
+        config={"push_enabled": True},
+    )
+
+    title, body, tag, url = calls[0]
+    assert "Whiteout APK" in title
+    assert "1.32.21" in body
+    assert tag == "apk-available-1.32.21"
+    assert "restore" in url

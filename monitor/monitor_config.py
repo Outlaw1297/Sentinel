@@ -443,6 +443,19 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "max": 1440,
             },
             {
+                "key": "apk_update_notify_enabled",
+                "type": "boolean",
+                "label": "Notify when APK update is available",
+                "hint": "Periodic check + push/dashboard banner. Does not install unless Auto-update APKs is also on.",
+            },
+            {
+                "key": "apk_update_notify_check_minutes",
+                "type": "number",
+                "label": "APK availability check (minutes)",
+                "min": 15,
+                "max": 1440,
+            },
+            {
                 "key": "automation_poll_seconds",
                 "type": "number",
                 "label": "Automation poll (seconds)",
@@ -519,7 +532,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
     {
         "id": "push",
         "title": "Push notifications",
-        "description": "Browser web push alerts (bell icon on dashboard). Also used for APK update and restore completion.",
+        "description": "Browser web push (bell on dashboard). Covers bot events, APK update/restore start+finish, and available-update alerts.",
         "restart": "immediate",
         "fields": [
             {"key": "push_enabled", "type": "boolean", "label": "Push enabled"},
@@ -554,6 +567,19 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "label": "Update channel",
                 "options": ["stable", "main"],
                 "hint": "stable = GitHub Releases; main = latest commit zip.",
+            },
+            {
+                "key": "update_notify_enabled",
+                "type": "boolean",
+                "label": "Notify when Sentinel update is available",
+                "hint": "Periodic check + push/dashboard banner. Apply from Settings → Updates.",
+            },
+            {
+                "key": "update_notify_check_minutes",
+                "type": "number",
+                "label": "Sentinel availability check (minutes)",
+                "min": 15,
+                "max": 1440,
             },
         ],
     },

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.4 — 2026-10-24
+
+### Phone dashboard + push
+- **Restart Sentinel** from the phone/PWA dashboard (`POST /api/host/monitor/restart`) restarts the headless monitor stack on the bot PC
+- Push notifications when APK update or restore jobs **start** (finish notifications already existed)
+- Periodic checks for Sentinel program + Whiteout APK updates with dashboard banner and optional push (`update_notify_*`, `apk_update_notify_*`)
+
+### Batch APK update / restore reliability
+- Per-instance wall-clock timeout (default 15 min) so one hung ldconsole/adb install cannot block the rest of the batch for hours
+- Heartbeat lines in `logs/apk-update-jobs.log` and live status while an instance is working
+- Stale active jobs are auto-failed on status poll so the Restore UI cannot sit on "Updating…" forever after a wedged worker
+- **Abort stuck APK update** button + `POST /api/emulators/apk/jobs/{id}/cancel`
+- Batch installs use a 10-minute installapp budget (was 30 minutes)
+
 ## 0.2.3 — 2026-10-24
 
 ### Updates UI
