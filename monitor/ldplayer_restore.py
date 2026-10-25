@@ -1167,12 +1167,20 @@ def enrich_accounts_with_restore(
     return accounts
 
 
+def _terminal_restore_statuses() -> set[str]:
+    return {"completed", "failed"}
+
+
 def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
     if "status" in updates and "progress" not in updates:
         updates["progress"] = _progress_for_status(str(updates["status"]))
     with _RESTORE_LOCK:
         job = _RESTORE_JOBS.setdefault(job_id, {})
-        if "progress" in updates and updates.get("status") != "failed":
+        # Stall reap finalizes under this lock. A worker still inside ldconsole /
+        # ensure_latest must not resurrect status back to installing/completed.
+        if str(job.get("status") or "") in _terminal_restore_statuses():
+            return dict(job)
+        if "progress" in updates and updates.get("status") not in _terminal_restore_statuses():
             previous = job.get("progress")
             new_progress = int(updates["progress"])
             if isinstance(previous, (int, float)):
@@ -1214,13 +1222,16 @@ def reap_stale_restore_jobs(*, max_idle_seconds: float | None = None) -> list[di
         if stamp is None or (now - stamp) <= idle_limit:
             continue
         finished_at = datetime.now(timezone.utc).isoformat()
+        # Jobs are created with instanceIndex (not index). Accept either so reap
+        # always clears the matching _INSTANCE_BUSY entry.
+        raw_index = job.get("instanceIndex", job.get("index"))
         message = (
             f"Restore job went silent for {int(idle_limit)}s "
-            f"(status={job.get('status')}, index={job.get('index')}). Marked failed."
+            f"(status={job.get('status')}, index={raw_index}). Marked failed."
         )
         failed = _set_job(job_id, status="failed", message=message, finishedAt=finished_at, stalled=True)
         try:
-            busy_index = int(job.get("index"))
+            busy_index = int(raw_index)
         except (TypeError, ValueError):
             busy_index = None
         if busy_index is not None and busy_index >= 0:
