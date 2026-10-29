@@ -362,6 +362,10 @@ if ($Action -eq "Start") {
 
 if ($Action -eq "Stop") {
 
+    # Always arm suppress, even when the process is already gone. Close-after-crash
+    # must still block stack-watcher relaunch while LDPlayer instances are open.
+    Set-UserStopSuppressed -Minutes 120
+
     if ($running.Count -eq 0) {
 
         Clear-StaleGnBotsApiPorts
@@ -371,10 +375,6 @@ if ($Action -eq "Stop") {
         exit 0
 
     }
-
-
-
-    Set-UserStopSuppressed -Minutes 120
 
     if ($elevation.requiresAdmin -and -not $elevation.isAdmin) {
         $stopTask = if ($config.gnbots_task_stop) { [string]$config.gnbots_task_stop } else { "GnBotsMonitor\Stop" }
