@@ -18,8 +18,9 @@ DefaultDirName={autopf}\Sentinel
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; Inno's default (auto) hides Select Destination Location once Sentinel is already
-; installed. Always show the folder page so an upgrade can confirm or change it.
+; installed. Always show the folder page, prefilled with that install, so the path can be checked.
 DisableDirPage=no
+AlwaysShowDirOnReadyPage=yes
 ; Selecting an existing Sentinel folder should repair that folder, not nest another \Sentinel.
 AppendDefaultDirName=no
 DirExistsWarning=no
@@ -57,6 +58,8 @@ Filename: "{app}\SentinelSetup.exe"; Description: "Run setup wizard"; Flags: pos
 [Code]
 var
   RepairInstall: Boolean;
+  SuggestedInstallDir: String;
+  DirPagePrefilled: Boolean;
 
 function IsSentinelInstallDir(Dir: String): Boolean;
 begin
@@ -86,21 +89,41 @@ begin
   Result := not RepairInstall;
 end;
 
+procedure RememberInstallDir(Dir: String);
+begin
+  Dir := RemoveBackslashUnlessRoot(Dir);
+  if (Dir <> '') and IsSentinelInstallDir(Dir) then
+  begin
+    SuggestedInstallDir := Dir;
+    RepairInstall := True;
+  end;
+end;
+
 procedure InitializeWizard;
 var
-  Current, Found: String;
+  Found: String;
 begin
-  Current := WizardForm.DirEdit.Text;
-  if IsSentinelInstallDir(Current) then
-  begin
-    RepairInstall := True;
+  { UsePreviousAppDir has already put the last install path in the edit box. }
+  RememberInstallDir(WizardForm.DirEdit.Text);
+  if SuggestedInstallDir <> '' then
     Exit;
-  end;
   Found := FirstExistingSentinelDir;
   if Found <> '' then
   begin
-    WizardForm.DirEdit.Text := Found;
+    SuggestedInstallDir := RemoveBackslashUnlessRoot(Found);
+    WizardForm.DirEdit.Text := SuggestedInstallDir;
     RepairInstall := True;
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { Modern wizard style can clear the edit box after InitializeWizard.
+    Put the current install back the first time the folder page is shown. }
+  if (CurPageID = wpSelectDir) and (not DirPagePrefilled) and (SuggestedInstallDir <> '') then
+  begin
+    WizardForm.DirEdit.Text := SuggestedInstallDir;
+    DirPagePrefilled := True;
   end;
 end;
 

@@ -13,7 +13,10 @@ def test_installer_repairs_existing_sentinel_without_wiping_settings():
     assert "RepairInstall" in text
     assert "AppendDefaultDirName=no" in text
     assert "DisableDirPage=no" in text
+    assert "AlwaysShowDirOnReadyPage=yes" in text
     assert "UsePreviousAppDir=yes" in text
+    assert "SuggestedInstallDir" in text
+    assert "WizardForm.DirEdit.Text := SuggestedInstallDir" in text
     assert 'Excludes: "config.json,logs,logs\\*,watcher.lock,watcher-status.json"' in text
     assert "not FileExists(ConfigPath)" in text
     assert "FileCopy(ExamplePath, ConfigPath, True)" in text
