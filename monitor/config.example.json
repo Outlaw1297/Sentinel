@@ -48,6 +48,7 @@
   "dashboard_cache_active_seconds": 30,
   "gnbots_api_recovery_seconds": 300,
   "gnbots_api_restart_after_minutes": 15,
+  "gnbots_resume_loop_after_crash": true,
   "stack_cache_seconds": 30,
   "metrics_cache_seconds": 120,
   "task_cache_seconds": 300,

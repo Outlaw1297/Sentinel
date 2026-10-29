@@ -29,6 +29,8 @@ Low account uptime is reported on the dashboard and is **not** a reason to stop 
 
 A stop still requires `auto_stop_min_troubled` matching accounts (default 3) so one bad instance does not take the farm down. Stop and Start both clear listeners on that five-port window first.
 
+If GnBots crashes while the run loop is active, Sentinel restarts the process and then sends the same Start command the dashboard uses (`GET /start`). That resume is on by default (`gnbots_resume_loop_after_crash`). Pressing Stop, Stop All, Stop Emulators, or Close GnBots clears it, so a loop you stopped is not started again.
+
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `auto_stop_gnbots_on_trouble` | `false` | Master toggle |

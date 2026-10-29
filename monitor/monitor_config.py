@@ -395,6 +395,13 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "max": 1440,
                 "hint": "0 = recover after 15 minutes. The watcher also starts GnBots again if the process exits on its own.",
             },
+            {
+                "key": "gnbots_resume_loop_after_crash",
+                "type": "boolean",
+                "label": "Restart the bot loop after a GnBots crash",
+                "default": True,
+                "hint": "If the run loop was going when GnBots dies, Sentinel starts GnBots and presses Start again. A manual Stop does not resume.",
+            },
         ],
     },
     {
@@ -982,7 +989,10 @@ def monitor_config_for_ui() -> dict[str, Any]:
         if meta["type"] == "string_list":
             display[key] = _format_string_list(value)
         elif meta["type"] == "boolean":
-            display[key] = bool(value) if value is not None else False
+            if value is None and "default" in meta:
+                display[key] = bool(meta["default"])
+            else:
+                display[key] = bool(value) if value is not None else False
         elif value is None:
             display[key] = ""
         else:

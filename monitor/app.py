@@ -2054,6 +2054,13 @@ def _fetch_gnbots_sync_uncached(config: dict[str, Any]) -> dict[str, Any]:
 
     _GNBOTS_API_STATE.update(failures=0, last_ok=time.time(), last_error=None)
 
+    try:
+        from gnbots_loop_resume import note_loop_observed
+
+        note_loop_observed(loop_running=bool(bot_activity_from_status(status_data, sessions_data).get("botActive")))
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "status": status_data,
         "settings": settings_data,
@@ -2077,6 +2084,12 @@ def fetch_gnbots_sync_with_retry(config: dict[str, Any], *, attempts: int = 5) -
             if attempt + 1 < attempts:
                 time.sleep(0.6 * (attempt + 1))
     assert last_exc is not None
+    try:
+        from gnbots_loop_resume import note_gnbots_unreachable
+
+        note_gnbots_unreachable()
+    except Exception:  # noqa: BLE001
+        pass
     raise last_exc
 
 
@@ -2212,6 +2225,19 @@ async def fetch_gnbots_with_retry(config: dict[str, Any], *, attempts: int = 3) 
                 await asyncio.sleep(0.4 * (attempt + 1))
     assert last_exc is not None
     raise last_exc
+
+
+async def gnbots_loop_resume_loop() -> None:
+    """If the run loop was active when GnBots died, start it again once the API is back."""
+    await asyncio.sleep(15)
+    while True:
+        try:
+            from gnbots_loop_resume import tick_gnbots_loop_resume
+
+            await asyncio.to_thread(tick_gnbots_loop_resume, config)
+        except Exception as exc:  # noqa: BLE001
+            log_unhandled_exception("gnbots_loop_resume_loop", exc)
+        await asyncio.sleep(20)
 
 
 async def gnbots_api_health_loop() -> None:
@@ -2599,6 +2625,7 @@ async def on_startup() -> None:
     setup_monitor_logging().info("Sentinel started on port %s", int(config.get("dashboard_port", 8787)))
     refresh_profiles_manifest()
     asyncio.create_task(gnbots_api_health_loop())
+    asyncio.create_task(gnbots_loop_resume_loop())
     asyncio.create_task(session_apk_probe_loop())
     asyncio.create_task(automation_loop(config))
     if push_enabled(config):
@@ -3271,6 +3298,14 @@ async def run_global_command(command_id: str) -> dict[str, Any]:
 
     if resolved_id in {"stop", "stopall", "stopemulators"}:
         set_gnbots_user_stop_suppress(120)
+        if detect_bot_provider(config) == "gnbots":
+            from gnbots_loop_resume import clear_loop_intent
+
+            clear_loop_intent()
+    elif resolved_id == "start" and detect_bot_provider(config) == "gnbots":
+        from gnbots_loop_resume import mark_loop_started_by_user
+
+        mark_loop_started_by_user()
 
     try:
         provider = detect_bot_provider(config)
@@ -4302,6 +4337,9 @@ async def close_gnbots() -> dict[str, Any]:
     invalidate_dashboard_cache()
     try:
         if backend.provider_id == "gnbots":
+            from gnbots_loop_resume import clear_loop_intent
+
+            clear_loop_intent()
             for path in ("/stopall", "/stop"):
                 try:
                     await call_gnbots(config, method="GET", path=path)

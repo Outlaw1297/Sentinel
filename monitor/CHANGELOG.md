@@ -7,6 +7,7 @@
 - Stop and Start clear listeners on the API window (5508–5512) so a restart binds the original port instead of stacking leftover processes
 - If GnBots.exe is down while LDPlayer is still open, or the process exits on its own, the watcher starts one clean instance after a couple of minutes (unless you pressed Stop). A dead API with the process still running is restarted after 15 minutes even when `gnbots_api_restart_after_minutes` is 0
 - LDPlayer still running no longer counts as GnBots being up, so the watcher does not leave the bot down for hours
+- If the run loop was going when GnBots crashes, Sentinel starts GnBots and sends Start again once the API is back. Stop and Close GnBots clear that memory, so a loop you stopped stays stopped (`gnbots_resume_loop_after_crash`, on by default)
 
 ## 0.2.5 — 2026-10-24
 
