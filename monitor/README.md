@@ -100,6 +100,8 @@ Details and config keys: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 3. Start with **Sentinel.exe**
 4. Open http://localhost:8787
 
+Re-running **Sentinel-Setup.exe** upgrades/repairs the existing install — see [Upgrade or repair](#upgrade-or-repair-with-sentinel-setupexe).
+
 ### Windows — from source
 
 ```bat
@@ -181,6 +183,18 @@ cd monitor\scripts
 Then use `StartGnBotStack.bat`. Optional elevated scheduled tasks: `.\ensure-elevated-tasks.ps1`.  
 Auto-start Sentinel when GnBots launches: `.\install-watcher-user.ps1`, or use `launch-gnbots-with-monitor.bat`.
 
+### Upgrade or repair with Sentinel-Setup.exe
+
+Re-run the release installer over an existing bot PC. Behavior is defined in `build/installer.iss` (covered by `tests/test_installer_repair.py`):
+
+1. **Select Destination Location always appears** — Inno’s default (`DisableDirPage=auto`) hides that page once Sentinel is already installed. Sentinel forces `DisableDirPage=no` so you can confirm or change the folder on every upgrade.
+2. **Path is prefilled** — `UsePreviousAppDir` fills the last install path; if that is empty, setup probes Program Files `\Sentinel`, `%LocalAppData%\Programs\Sentinel`, `%LocalAppData%\Sentinel`, then Documents `\Sentinel`. Modern wizard style can clear the edit box after init; `CurPageChanged` writes the suggested path back the first time the folder page is shown.
+3. **Existing folder = repair** — A directory counts as Sentinel if it has `Sentinel.exe`, `gnbot-monitor.exe`, or both `config.json` and `version.json`. Choosing that folder repairs program files and keeps `config.json`, `logs/`, `watcher.lock`, and `watcher-status.json` (those paths are excluded from the file copy). Setup does **not** nest another `\Sentinel` under the chosen path (`AppendDefaultDirName=no`); if you pick a parent that already contains a nested `Sentinel\` install, Next redirects into that nested folder.
+4. **No first-run wizard on repair** — The post-install **SentinelSetup.exe** offer is skipped when repairing (`ShouldRunSetupWizard`), so saved GnBots paths and other settings are not overwritten. Fresh installs still copy `config.example.json` → `config.json` only when `config.json` is missing.
+5. **Ready page shows the folder** — `AlwaysShowDirOnReadyPage=yes` so the destination is visible again before Install.
+
+Dashboard **Check / Apply** self-update (Settings → Sentinel → Updates) is a separate path for already-running installs; the Setup.exe flow above is the full packaged upgrade/repair.
+
 ---
 
 ## Configuration
@@ -248,18 +262,21 @@ cd monitor\scripts
 ## Build (Windows release)
 
 ```powershell
-./monitor/build/build.ps1 -AppVersion 0.1.9
+./monitor/build/build.ps1 -AppVersion 0.2.7
 ./monitor/build/build-installer.ps1   # requires Inno Setup 6
 ./monitor/build/build-native.ps1      # .NET 8 launchers / tray / setup
 ```
 
 Artifacts: portable **Sentinel.zip** / `gnbot-monitor.exe`, **Sentinel-Setup.exe**, native `Sentinel.exe` / `SentinelSetup.exe` / tray.
 
+Installer script: `build/installer.iss`. Keep `DisableDirPage=no`, `AlwaysShowDirOnReadyPage=yes`, repair excludes, and the `SuggestedInstallDir` / `CurPageChanged` prefill when changing upgrade UX — `tests/test_installer_repair.py` asserts those markers.
+
 ---
 
 ## Version & changelog
 
-Current app version: **0.1.10** — see [`CHANGELOG.md`](CHANGELOG.md).
+Current app version: **0.2.7** — see [`CHANGELOG.md`](CHANGELOG.md).
 
-Highlights in 0.1.10: stuck-screen learning (event page → Back / restart / warn).  
-0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
+Highlights in 0.2.7: Setup always shows the destination folder (prefilled) on upgrades; Apply Update no longer crashes on Windows PowerShell 5.1 integer casts.  
+0.2.6: GnBots API port-window clear on Stop/Start, watcher relaunch, loop resume after crash.  
+0.2.5: installer repair keeps `config.json` / `logs`; Setup Wizard Browse STA fix; Apply Update GitHub TLS/JSON reliability.

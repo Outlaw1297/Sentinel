@@ -28,10 +28,17 @@ If you skip the wizard, start the monitor and use the browser setup at /setup.
 Updates
 -------
 
+- **Sentinel-Setup.exe** (recommended): re-run the installer. Select Destination
+  Location always appears and is prefilled with the current install (previous
+  setup path, or Program Files / LocalAppData / Documents Sentinel folders).
+  Choosing an existing Sentinel folder repairs program files only — config.json,
+  logs/, watcher.lock, and watcher-status.json stay on disk. The first-run
+  wizard is skipped on repair. The Ready page also shows the destination folder.
 - **Git clone**: Settings → Sentinel → Updates → Check / Apply (git pull --ff-only).
-- **Release zip**: Configure update_repo in Settings, then Check / Apply.
+- **Release zip / frozen install**: Configure update_repo in Settings, then Check / Apply.
 
-User data preserved during updates: config.json, logs/, version.json.
+User data preserved during Setup.exe repair and Apply updates: config.json, logs/.
+(Apply also keeps version.json where applicable.)
 
 Dev / source install
 --------------------

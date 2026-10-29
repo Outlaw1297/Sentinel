@@ -7,7 +7,7 @@ Windows monitor and control stack for **GnBots** — live dashboard, LDPlayer re
 | **Dashboard** | http://localhost:8787 |
 | **Primary OS** | Windows bot PC (GnBots + LDPlayer) |
 | **Dev / CI** | Python FastAPI app + pytest also run on Linux (GnBots/LDPlayer offline) |
-| **Current version** | 0.1.10 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
+| **Current version** | 0.2.7 — see [`monitor/CHANGELOG.md`](monitor/CHANGELOG.md) |
 
 Full feature list, compatibility matrix, and how-to: **[`monitor/README.md`](monitor/README.md)**.
 
@@ -34,6 +34,8 @@ Tagged releases publish:
 3. Start the stack with **Sentinel.exe**
 4. Open **http://localhost:8787**
 
+Re-running **Sentinel-Setup.exe** shows the install folder (prefilled) and repairs that path while keeping `config.json` and `logs`. Details: [`monitor/README.md`](monitor/README.md#upgrade-or-repair-with-sentinel-setupexe).
+
 ## Development
 
 ```bat
@@ -55,7 +57,7 @@ Details: [`monitor/README.md`](monitor/README.md).
 ## Build
 
 ```powershell
-./monitor/build/build.ps1 -AppVersion 0.1.9
+./monitor/build/build.ps1 -AppVersion 0.2.7
 ./monitor/build/build-installer.ps1   # requires Inno Setup 6
 ```
 
