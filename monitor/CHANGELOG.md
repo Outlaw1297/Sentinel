@@ -2,6 +2,9 @@
 
 ## 0.2.7 — 2026-10-28
 
+### Installer
+- Setup always shows the destination folder, filled in with the current Sentinel install, so an upgrade can be checked before it repairs that folder
+
 ### Apply update
 - Apply Update no longer dies with `Cannot convert the "System.Int32" value of type "System.Int32" to type "System.Int32"` on Windows PowerShell 5.1. Release picking compares version text instead of casting integers, which that PowerShell build rejects
 
