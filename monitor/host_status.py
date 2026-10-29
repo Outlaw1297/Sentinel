@@ -1221,6 +1221,9 @@ def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str,
             return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
 
         try:
+            # Drop listeners left by earlier GnBots processes so this launch
+            # can bind WebServerPort instead of walking 5509, 5510, ...
+            clear_stale_gnbots_api_ports(config)
             # GnBots is a GUI app — do not pass CREATE_NO_WINDOW / SW_HIDE or the
             # main window stays invisible (looks like Launch did nothing).
             proc = subprocess.Popen(
@@ -1249,72 +1252,78 @@ def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str,
 
     if action == "Stop":
         if not running:
-            details = {"ok": True, "message": f"{process_name} is not running."}
-            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
+            stop_details: dict[str, Any] = {"ok": True, "message": f"{process_name} is not running."}
+        else:
+            set_gnbots_user_stop_suppress(120)
 
-        set_gnbots_user_stop_suppress(120)
+            if elevation.get("requiresAdmin") and not elevation.get("isAdmin"):
+                stop_task = str(config.get("gnbots_task_stop") or "GnBotsMonitor\\Stop")
+                subprocess.run(
+                    ["schtasks.exe", "/Run", "/TN", stop_task],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    **hidden,
+                )
+                time.sleep(6)
+                if not find_processes(process_name):
+                    stop_details = {
+                        "ok": True,
+                        "message": f"Closed {process_name} via scheduled task.",
+                        "method": "scheduled-task",
+                    }
+                else:
+                    kill_result = force_kill_gnbots_process(config)
+                    if not kill_result.get("stillRunning"):
+                        stop_details = {
+                            "ok": True,
+                            "message": f"Closed {process_name} via elevated taskkill.",
+                            "method": "elevated-taskkill",
+                        }
+                    else:
+                        still = find_processes(process_name)
+                        stop_details = {
+                            "ok": False,
+                            "message": f"Could not close elevated {process_name}. Close Goodnight Bots manually from the taskbar.",
+                            "pids": [proc.pid for proc in still],
+                            "blocked": True,
+                        }
+            else:
+                for proc in running:
+                    try:
+                        proc.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                time.sleep(2)
+                if not find_processes(process_name):
+                    stop_details = {"ok": True, "message": f"Closed {process_name}.", "method": "direct-native"}
+                else:
+                    subprocess.run(
+                        ["taskkill.exe", "/F", "/IM", exe_name, "/T"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        **hidden,
+                    )
+                    time.sleep(2)
+                    if not find_processes(process_name):
+                        stop_details = {"ok": True, "message": f"Closed {process_name}.", "method": "taskkill-native"}
+                    else:
+                        still = find_processes(process_name)
+                        stop_details = {
+                            "ok": False,
+                            "message": f"Could not close {process_name}.",
+                            "pids": [proc.pid for proc in still],
+                        }
 
-        if elevation.get("requiresAdmin") and not elevation.get("isAdmin"):
-            stop_task = str(config.get("gnbots_task_stop") or "GnBotsMonitor\\Stop")
-            subprocess.run(
-                ["schtasks.exe", "/Run", "/TN", stop_task],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                **hidden,
-            )
-            time.sleep(6)
-            if not find_processes(process_name):
-                details = {"ok": True, "message": f"Closed {process_name} via scheduled task.", "method": "scheduled-task"}
-                return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
-
-            kill_result = force_kill_gnbots_process(config)
-            if not kill_result.get("stillRunning"):
-                details = {
-                    "ok": True,
-                    "message": f"Closed {process_name} via elevated taskkill.",
-                    "method": "elevated-taskkill",
-                }
-                return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
-
-            still = find_processes(process_name)
-            details = {
-                "ok": False,
-                "message": f"Could not close elevated {process_name}. Close Goodnight Bots manually from the taskbar.",
-                "pids": [proc.pid for proc in still],
-                "blocked": True,
-            }
-            return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
-
-        for proc in running:
-            try:
-                proc.terminate()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-        time.sleep(2)
-        if not find_processes(process_name):
-            details = {"ok": True, "message": f"Closed {process_name}.", "method": "direct-native"}
-            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
-
-        subprocess.run(
-            ["taskkill.exe", "/F", "/IM", exe_name, "/T"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            **hidden,
-        )
-        time.sleep(2)
-        if not find_processes(process_name):
-            details = {"ok": True, "message": f"Closed {process_name}.", "method": "taskkill-native"}
-            return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
-
-        still = find_processes(process_name)
-        details = {
-            "ok": False,
-            "message": f"Could not close {process_name}.",
-            "pids": [proc.pid for proc in still],
+        # Name-based kill misses leftovers that still own 5508-5512.
+        stop_details["portClear"] = clear_stale_gnbots_api_ports(config)
+        return {
+            "ok": bool(stop_details.get("ok")),
+            "action": action,
+            "message": json.dumps(stop_details),
+            "details": stop_details,
         }
-        return {"ok": False, "action": action, "message": json.dumps(details), "details": details}
 
     return None
 
@@ -1392,7 +1401,40 @@ def force_kill_gnbots_process(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def kill_processes_listening_on_port(port: int) -> dict[str, Any]:
+# GnBots searches WebServerPort through WebServerPort+4, then gives up
+# ("No available ports found in range 5508-5512").
+GNBOTS_API_PORT_SPAN = 5
+
+
+def gnbots_api_port_range(config: dict[str, Any]) -> list[int]:
+    base = read_gnbots_web_server_port(config) or 5508
+    return [base + offset for offset in range(GNBOTS_API_PORT_SPAN)]
+
+
+def clear_stale_gnbots_api_ports(config: dict[str, Any]) -> dict[str, Any]:
+    """Free every listener in GnBots' API window before the next start.
+
+    Stopping only the newest GnBots.exe leaves older processes bound to
+    5508, 5509, ... The next launch logs "Using alternate port" and, after
+    five leftovers, cannot open a web server at all.
+    """
+    cleared: list[dict[str, Any]] = []
+    for port in gnbots_api_port_range(config):
+        if not is_port_listening(port):
+            continue
+        cleared.append(kill_processes_listening_on_port(port, settle_seconds=0))
+    if cleared:
+        time.sleep(1)
+    _GNBOTS_API_PORT_CACHE.update(at=0.0, port=None)
+    still = [port for port in gnbots_api_port_range(config) if is_port_listening(port)]
+    return {
+        "ok": not still,
+        "cleared": cleared,
+        "stillListening": still,
+    }
+
+
+def kill_processes_listening_on_port(port: int, *, settle_seconds: float = 2) -> dict[str, Any]:
     """Kill whatever process holds a TCP listen socket (clears zombie API ports)."""
     pids: set[int] = set()
     try:
@@ -1428,7 +1470,8 @@ def kill_processes_listening_on_port(port: int) -> dict[str, Any]:
             else:
                 errors.append(f"taskkill {pid}: {(completed.stderr or completed.stdout or '').strip()}")
 
-    time.sleep(2)
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
     still_listening = is_port_listening(port)
     return {
         "ok": not still_listening,

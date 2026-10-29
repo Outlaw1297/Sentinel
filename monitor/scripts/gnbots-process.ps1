@@ -132,6 +132,58 @@ function Test-GnBotsRunning([string]$ProcessName) {
 
 
 
+function Get-GnBotsApiPortSpan {
+    # GnBots only tries WebServerPort..+4, then "No available ports".
+    $base = 5508
+    $root = $null
+    if ($config -and $config.gnbots_root) { $root = [string]$config.gnbots_root }
+    elseif ($exePath) { $root = Split-Path -Parent ([string]$exePath) }
+    if ($root) {
+        $gnbotsConfig = Join-Path $root "config.json"
+        if (Test-Path -LiteralPath $gnbotsConfig) {
+            try {
+                $data = Get-Content -LiteralPath $gnbotsConfig -Raw | ConvertFrom-Json
+                $parsed = [int]$data.WebServerPort
+                if ($parsed -gt 0) { $base = $parsed }
+            } catch {}
+        }
+    }
+    $ports = @()
+    for ($offset = 0; $offset -lt 5; $offset++) { $ports += ($base + $offset) }
+    return $ports
+}
+
+function Clear-StaleGnBotsApiPorts {
+    $killed = $false
+    foreach ($port in @(Get-GnBotsApiPortSpan)) {
+        $pids = @()
+        try {
+            $pids = @(
+                Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+                    Select-Object -ExpandProperty OwningProcess -Unique
+            )
+        } catch {}
+        if (-not $pids -or @($pids | Where-Object { $_ }).Count -eq 0) {
+            $netstat = & "$env:SystemRoot\System32\netstat.exe" -ano -p tcp 2>$null
+            foreach ($line in @($netstat)) {
+                if ($line -match "^\s*TCP\s+\S+:$port\s+\S+\s+LISTENING\s+(\d+)") {
+                    $pids += [int]$Matches[1]
+                }
+            }
+        }
+        foreach ($procId in @($pids)) {
+            $owned = 0
+            try { $owned = [int]$procId } catch { continue }
+            if ($owned -le 4) { continue }
+            & "$env:SystemRoot\System32\taskkill.exe" /F /PID $owned /T 2>$null | Out-Null
+            $killed = $true
+        }
+    }
+    if ($killed) { Start-Sleep -Seconds 1 }
+}
+
+
+
 $config = Read-Config
 
 $processName = if ($config.gnbots_process_name) { [string]$config.gnbots_process_name } else { "GnBots" }
@@ -248,7 +300,7 @@ if ($Action -eq "Start") {
 
     $workDir = Split-Path $exePath -Parent
 
-
+    Clear-StaleGnBotsApiPorts
 
     try {
 
@@ -312,6 +364,8 @@ if ($Action -eq "Stop") {
 
     if ($running.Count -eq 0) {
 
+        Clear-StaleGnBotsApiPorts
+
         Write-JsonResult @{ ok = $true; message = "$processName is not running." }
 
         exit 0
@@ -328,6 +382,7 @@ if ($Action -eq "Stop") {
         Start-Sleep -Seconds 6
 
         if (-not (Test-GnBotsRunning $processName)) {
+            Clear-StaleGnBotsApiPorts
             Write-JsonResult @{ ok = $true; message = "Closed $processName via scheduled task."; method = "scheduled-task" }
             exit 0
         }
@@ -344,6 +399,7 @@ taskkill /F /IM adb.exe /T 2>nul
         Start-Sleep -Seconds 3
 
         if (-not (Test-GnBotsRunning $processName)) {
+            Clear-StaleGnBotsApiPorts
             Write-JsonResult @{ ok = $true; message = "Closed $processName via elevated taskkill."; method = "elevated-taskkill" }
             exit 0
         }
@@ -355,6 +411,7 @@ taskkill /F /IM adb.exe /T 2>nul
             pids    = @($stillRunning | ForEach-Object { $_.Id })
             blocked = $true
         }
+        Clear-StaleGnBotsApiPorts
         exit 1
     }
 
@@ -369,6 +426,8 @@ taskkill /F /IM adb.exe /T 2>nul
 
 
         if (-not (Test-GnBotsRunning $processName)) {
+
+            Clear-StaleGnBotsApiPorts
 
             Write-JsonResult @{ ok = $true; message = "Closed $processName."; method = "direct" }
 
@@ -385,6 +444,8 @@ taskkill /F /IM adb.exe /T 2>nul
 
 
         if (-not (Test-GnBotsRunning $processName)) {
+
+            Clear-StaleGnBotsApiPorts
 
             Write-JsonResult @{ ok = $true; message = "Closed $processName."; method = "taskkill" }
 
@@ -406,9 +467,13 @@ taskkill /F /IM adb.exe /T 2>nul
 
         }
 
+        Clear-StaleGnBotsApiPorts
+
         exit 1
 
     } catch {
+
+        Clear-StaleGnBotsApiPorts
 
         Write-JsonResult @{ ok = $false; message = $_.Exception.Message }
 

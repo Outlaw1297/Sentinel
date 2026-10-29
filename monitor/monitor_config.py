@@ -393,7 +393,14 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "label": "Restart GnBots if API down (minutes)",
                 "min": 0,
                 "max": 1440,
-                "hint": "0 = disabled.",
+                "hint": "0 = recover after 15 minutes. The watcher also starts GnBots again if the process exits on its own.",
+            },
+            {
+                "key": "gnbots_resume_loop_after_crash",
+                "type": "boolean",
+                "label": "Restart the bot loop after a GnBots crash",
+                "default": True,
+                "hint": "If the run loop was going when GnBots dies, Sentinel starts GnBots and presses Start again. A manual Stop does not resume.",
             },
         ],
     },
@@ -413,7 +420,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "key": "auto_stop_gnbots_on_trouble",
                 "type": "boolean",
                 "label": "Auto-stop GnBots on problem emulators",
-                "hint": "Stops GnBots when severe emulator trouble is detected so you can restore/fix.",
+                "hint": "Stops GnBots only when several emulators are offline or missing. Low uptime does not stop GnBots.",
             },
             {
                 "key": "auto_stop_gnbots_cooldown_minutes",
@@ -425,7 +432,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
             {
                 "key": "auto_stop_min_troubled",
                 "type": "number",
-                "label": "Min troubled accounts for uptime stop",
+                "label": "Min severe emulator problems before auto-stop",
                 "min": 1,
                 "max": 50,
             },
@@ -982,7 +989,10 @@ def monitor_config_for_ui() -> dict[str, Any]:
         if meta["type"] == "string_list":
             display[key] = _format_string_list(value)
         elif meta["type"] == "boolean":
-            display[key] = bool(value) if value is not None else False
+            if value is None and "default" in meta:
+                display[key] = bool(meta["default"])
+            else:
+                display[key] = bool(value) if value is not None else False
         elif value is None:
             display[key] = ""
         else:

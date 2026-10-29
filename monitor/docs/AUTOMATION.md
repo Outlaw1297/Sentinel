@@ -20,19 +20,22 @@ APK bulk updates run as **background jobs**. Refreshing the page no longer cance
 
 ### 1. Auto-stop GnBots for problem emulators
 
-When enabled (`auto_stop_gnbots_on_trouble`), each automation tick looks for severe trouble signals such as:
+When enabled (`auto_stop_gnbots_on_trouble`), each automation tick looks for severe emulator failures:
 
+- Device offline
 - Missing LDPlayer instances
-- Emulator / offline style trouble reasons from restore enrichment
-- Clusters of low-uptime accounts (threshold: `auto_stop_min_troubled`)
 
-If GnBots is running and the cooldown has elapsed, Sentinel issues a **Stop** so you can restore or fix settings safely.
+Low account uptime is reported on the dashboard and is **not** a reason to stop GnBots. Stopping on uptime every half hour left the old Remote API port occupied. The next GnBots then bound 5509, 5510, 5511, and 5512 until it logged `No available ports found in range 5508-5512` and the API stayed down.
+
+A stop still requires `auto_stop_min_troubled` matching accounts (default 3) so one bad instance does not take the farm down. Stop and Start both clear listeners on that five-port window first.
+
+If GnBots crashes while the run loop is active, Sentinel restarts the process and then sends the same Start command the dashboard uses (`GET /start`). That resume is on by default (`gnbots_resume_loop_after_crash`). Pressing Stop, Stop All, Stop Emulators, or Close GnBots clears it, so a loop you stopped is not started again.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `auto_stop_gnbots_on_trouble` | `false` | Master toggle |
 | `auto_stop_gnbots_cooldown_minutes` | `30` | Minimum minutes between auto-stops |
-| `auto_stop_min_troubled` | `3` | How many low-uptime signals before uptime alone triggers a stop |
+| `auto_stop_min_troubled` | `3` | How many severe emulator failures are required before a stop |
 
 ### 2. Auto APK updates
 
