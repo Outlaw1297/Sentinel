@@ -88,15 +88,28 @@ function Test-UserStopSuppressed {
 
 
 
-function Set-UserStopSuppressed([int]$Minutes = 30) {
+function Set-UserStopSuppressed([int]$Minutes = 30, [switch]$Sticky) {
 
     $suppressScript = Join-Path $PSScriptRoot "gnbots-suppress.ps1"
 
     if (-not (Test-Path $suppressScript)) { return }
 
+    # Dot-sourcing gnbots-suppress.ps1 rebinds $Minutes and $Sticky in this scope.
+    $latchedMinutes = $Minutes
+
+    $latchedSticky = [bool]$Sticky
+
     . $suppressScript
 
-    Set-GnBotsUserStopSuppressed $MonitorRoot $Minutes | Out-Null
+    if ($latchedSticky) {
+
+        Set-GnBotsUserStopSuppressed $MonitorRoot -Minutes $latchedMinutes -Sticky | Out-Null
+
+    } else {
+
+        Set-GnBotsUserStopSuppressed $MonitorRoot $latchedMinutes | Out-Null
+
+    }
 
 }
 
@@ -362,6 +375,9 @@ if ($Action -eq "Start") {
 
 if ($Action -eq "Stop") {
 
+    # Latch even when the exe is already gone, or the watcher relaunches it.
+    Set-UserStopSuppressed -Minutes 120 -Sticky
+
     if ($running.Count -eq 0) {
 
         Clear-StaleGnBotsApiPorts
@@ -373,8 +389,6 @@ if ($Action -eq "Stop") {
     }
 
 
-
-    Set-UserStopSuppressed -Minutes 120
 
     if ($elevation.requiresAdmin -and -not $elevation.isAdmin) {
         $stopTask = if ($config.gnbots_task_stop) { [string]$config.gnbots_task_stop } else { "GnBotsMonitor\Stop" }

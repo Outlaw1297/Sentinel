@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $false)]
     [ValidateSet("Set", "Clear", "Test")]
     [string]$Action,
-    [int]$Minutes = 30
+    [int]$Minutes = 30,
+    [switch]$Sticky
 )
 
 function Get-GnBotsSuppressFlagPath([string]$MonitorRoot) {
@@ -21,7 +22,10 @@ function Read-GnBotsSuppressFlag([string]$MonitorRoot) {
 
 function Test-GnBotsUserStopSuppressed([string]$MonitorRoot) {
     $flag = Read-GnBotsSuppressFlag $MonitorRoot
-    if (-not $flag -or -not $flag.until) { return $false }
+    if (-not $flag) { return $false }
+    # Close / auto-stop. Stay latched until Start; do not expire or delete.
+    if ($flag.sticky -eq $true) { return $true }
+    if (-not $flag.until) { return $false }
     try {
         $until = [DateTime]::Parse($flag.until).ToUniversalTime()
         if ((Get-Date).ToUniversalTime() -lt $until) { return $true }
@@ -31,17 +35,19 @@ function Test-GnBotsUserStopSuppressed([string]$MonitorRoot) {
     return $false
 }
 
-function Set-GnBotsUserStopSuppressed([string]$MonitorRoot, [int]$Minutes = 30) {
+function Set-GnBotsUserStopSuppressed([string]$MonitorRoot, [int]$Minutes = 30, [switch]$Sticky) {
     if ($Minutes -lt 1) { $Minutes = 30 }
     $flagFile = Get-GnBotsSuppressFlagPath $MonitorRoot
     $logDir = Split-Path -Parent $flagFile
     if (-not (Test-Path $logDir)) {
         New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     }
-    $until = (Get-Date).AddMinutes($Minutes).ToUniversalTime().ToString("o")
-    @{ until = $until; setAt = (Get-Date).ToUniversalTime().ToString("o") } |
-        ConvertTo-Json -Compress |
-        Set-Content -Path $flagFile -Encoding UTF8
+    $payload = @{
+        until = (Get-Date).AddMinutes($Minutes).ToUniversalTime().ToString("o")
+        setAt = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    if ($Sticky) { $payload.sticky = $true }
+    $payload | ConvertTo-Json -Compress | Set-Content -Path $flagFile -Encoding UTF8
 }
 
 function Clear-GnBotsUserStopSuppressed([string]$MonitorRoot) {
@@ -57,7 +63,11 @@ if ($MyInvocation.InvocationName -ne '.') {
             exit 0
         }
         "Set" {
-            Set-GnBotsUserStopSuppressed $MonitorRoot $Minutes
+            if ($Sticky) {
+                Set-GnBotsUserStopSuppressed $MonitorRoot -Minutes $Minutes -Sticky
+            } else {
+                Set-GnBotsUserStopSuppressed $MonitorRoot $Minutes
+            }
             exit 0
         }
         "Test" {

@@ -48,6 +48,6 @@ Write-Output "Remaining processes: $($remaining.Count)"
 
 $suppressScript = Join-Path $PSScriptRoot "gnbots-suppress.ps1"
 if (Test-Path $suppressScript) {
-    & $suppressScript -Action Set -Minutes 240 | Out-Null
-    Write-Output "Suppress flag set for 240 minutes."
+    & $suppressScript -Action Set -Minutes 240 -Sticky | Out-Null
+    Write-Output "Suppress flag latched until Start."
 }

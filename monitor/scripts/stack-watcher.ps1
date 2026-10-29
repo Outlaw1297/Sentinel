@@ -393,7 +393,8 @@ while ($true) {
         $emulatorsUp = [bool](Test-EmulatorProcessesRunning)
     }
     # Emulators left open used to look like a healthy stack, so GnBots.exe stayed
-    # down until somebody noticed. Bring one instance back unless Stop was pressed.
+    # down until somebody noticed. Bring one instance back unless Stop latched
+    # suppression (sticky until Start, including when the exe was already down).
     $shouldRelaunch = $script:SawGnBotsProcess -or $autoStartGnBots -or $emulatorsUp
     $relaunchCooldownOk = -not $script:LastGnBotsRelaunchAt -or ((Get-Date) - $script:LastGnBotsRelaunchAt).TotalMinutes -ge 5
     if ($relaunchCooldownOk -and $shouldRelaunch -and -not $gnbotsProcessSeen -and -not $gnbotsApiHealthy -and -not (Test-UserStopSuppressed) -and $missingMinutes -ge 2) {

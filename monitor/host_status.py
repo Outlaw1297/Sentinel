@@ -1088,15 +1088,19 @@ def run_gnbots_ui_action(action: str) -> dict[str, Any]:
     return run_gnbots_pause_action(action)
 
 
-def set_gnbots_user_stop_suppress(minutes: int = 120) -> None:
+def set_gnbots_user_stop_suppress(minutes: int = 120, *, sticky: bool = False) -> None:
     flag_path = _gnbots_user_stop_flag_path()
     flag_path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
     until = now.timestamp() + max(1, minutes) * 60
-    payload = {
+    payload: dict[str, Any] = {
         "until": datetime.fromtimestamp(until, timezone.utc).isoformat(),
         "setAt": now.isoformat(),
     }
+    # Close and auto-stop stay latched until Start. A two-hour "until" let the
+    # watcher relaunch GnBots (emulators still open, auto_start_gnbots off).
+    if sticky:
+        payload["sticky"] = True
     flag_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -1106,6 +1110,10 @@ def test_gnbots_user_stop_suppressed() -> bool:
         return False
     try:
         data = json.loads(flag_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("suppress flag is not an object")
+        if data.get("sticky") is True:
+            return True
         until_raw = str(data.get("until") or "")
         until = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
         if until.tzinfo is None:
@@ -1251,11 +1259,12 @@ def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str,
         return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
 
     if action == "Stop":
+        # Latch even when GnBots.exe is already gone. Stop after a crash used
+        # to skip the flag, so the watcher started the farm again in two minutes.
+        set_gnbots_user_stop_suppress(120, sticky=True)
         if not running:
             stop_details: dict[str, Any] = {"ok": True, "message": f"{process_name} is not running."}
         else:
-            set_gnbots_user_stop_suppress(120)
-
             if elevation.get("requiresAdmin") and not elevation.get("isAdmin"):
                 stop_task = str(config.get("gnbots_task_stop") or "GnBotsMonitor\\Stop")
                 subprocess.run(

@@ -3270,7 +3270,7 @@ async def run_global_command(command_id: str) -> dict[str, Any]:
     invalidate_dashboard_cache()
 
     if resolved_id in {"stop", "stopall", "stopemulators"}:
-        set_gnbots_user_stop_suppress(120)
+        set_gnbots_user_stop_suppress(120, sticky=True)
 
     try:
         provider = detect_bot_provider(config)
