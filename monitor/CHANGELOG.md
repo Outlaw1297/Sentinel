@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.8 — 2026-10-28
+
+### Installer
+- The setup wizard always shows the destination folder page, including when Sentinel is already installed. Upgrades were skipping that page and jumping to additional tasks
+
 ## 0.2.7 — 2026-10-28
 
 ### Apply update

@@ -17,6 +17,9 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\Sentinel
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; Inno's default (auto) hides Select Destination Location once Sentinel is already
+; installed. Always show the folder page so an upgrade can confirm or change it.
+DisableDirPage=no
 ; Selecting an existing Sentinel folder should repair that folder, not nest another \Sentinel.
 AppendDefaultDirName=no
 DirExistsWarning=no

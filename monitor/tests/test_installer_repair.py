@@ -12,6 +12,7 @@ def test_installer_repairs_existing_sentinel_without_wiping_settings():
     assert "IsSentinelInstallDir" in text
     assert "RepairInstall" in text
     assert "AppendDefaultDirName=no" in text
+    assert "DisableDirPage=no" in text
     assert "UsePreviousAppDir=yes" in text
     assert 'Excludes: "config.json,logs,logs\\*,watcher.lock,watcher-status.json"' in text
     assert "not FileExists(ConfigPath)" in text
