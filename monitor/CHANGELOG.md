@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.6 — 2026-10-28
+
+### GnBots stays up
+- Auto-stop no longer kills GnBots because accounts have low uptime. That stop ran about every 30 minutes and each new process left the previous Remote API port occupied until GnBots logged `No available ports found in range 5508-5512` and the API stayed down
+- Stop and Start clear listeners on the API window (5508–5512) so a restart binds the original port instead of stacking leftover processes
+- If GnBots.exe is down while LDPlayer is still open, or the process exits on its own, the watcher starts one clean instance after a couple of minutes (unless you pressed Stop). A dead API with the process still running is restarted after 15 minutes even when `gnbots_api_restart_after_minutes` is 0
+- LDPlayer still running no longer counts as GnBots being up, so the watcher does not leave the bot down for hours
+
 ## 0.2.5 — 2026-10-24
 
 ### Installer repair

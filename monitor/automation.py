@@ -159,6 +159,37 @@ def _collect_trouble_signals(config: dict[str, Any]) -> list[dict[str, Any]]:
     return signals
 
 
+# Low uptime stays on the dashboard. Stopping GnBots for it every cooldown
+# left the previous API port occupied and walked the next process through
+# 5508-5512 until the web server could not start.
+_SEVERE_STOP_MARKERS = (
+    "device offline",
+    "ldplayer instance missing",
+)
+
+
+def _signals_worth_stopping_gnbots(
+    signals: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Emulator failures that justify stopping the whole bot process.
+
+    Routine "% uptime today" rows are ignored. A stop still requires
+    ``auto_stop_min_troubled`` matching accounts so one bad instance does not
+    take the farm down.
+    """
+    min_count = max(1, int(config.get("auto_stop_min_troubled", 3)))
+    severe: list[dict[str, Any]] = []
+    for signal in signals:
+        reasons = " ".join(str(reason) for reason in (signal.get("reasons") or []))
+        lowered = reasons.lower()
+        if any(marker in lowered for marker in _SEVERE_STOP_MARKERS):
+            severe.append(signal)
+    if len(severe) < min_count:
+        return []
+    return severe
+
+
 def _maybe_stop_gnbots_for_trouble(config: dict[str, Any]) -> dict[str, Any] | None:
     if not config.get("auto_stop_gnbots_on_trouble"):
         return None
@@ -185,24 +216,7 @@ def _maybe_stop_gnbots_for_trouble(config: dict[str, Any]) -> dict[str, Any] | N
             return None
 
     signals = _collect_trouble_signals(config)
-    # Only auto-stop for severe emulator problems, not routine low-uptime alone.
-    severe = []
-    for signal in signals:
-        reasons = " ".join(str(r) for r in (signal.get("reasons") or []))
-        lowered = reasons.lower()
-        if any(
-            marker in lowered
-            for marker in (
-                "device offline",
-                "emulator",
-                "ldplayer instance missing",
-                "offline",
-                "closed",
-            )
-        ):
-            severe.append(signal)
-        elif "uptime" in lowered and len(signals) >= max(2, int(config.get("auto_stop_min_troubled", 3))):
-            severe.append(signal)
+    severe = _signals_worth_stopping_gnbots(signals, config)
 
     if not severe:
         return None

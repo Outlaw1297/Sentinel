@@ -161,9 +161,16 @@ function Ensure-GnBots([string]$ProcessName, [bool]$AutoStart, [string]$ApiUrl, 
     if (Test-UserStopSuppressed) {
         return
     }
-    if (Invoke-GnBotsStackPresent $ProcessName $ApiUrl $ExePath) { return }
+    # LDPlayer still running is not GnBots. Treating emulators as "stack present"
+    # left GnBots.exe down for hours after the API port window filled up.
+    $processSeen = Test-GnBotsProcessByName $ProcessName
+    if (-not $processSeen -and $ExePath) {
+        $processSeen = Test-GnBotsProcessByPath $ExePath
+    }
+    if ($processSeen) { return }
+    if (Test-GnBotsApiHealthy $ApiUrl) { return }
     if (-not (Test-Path $GnBotsScript)) { return }
-    Write-Log "$ProcessName not detected. Auto-starting via gnbots-process.ps1 ..."
+    Write-Log "$ProcessName is not running. Auto-starting via gnbots-process.ps1 ..."
     try {
         & $GnBotsScript -Action Start | Out-Null
     } catch {
@@ -251,8 +258,11 @@ $gnbotsApiUrl = if (Get-Command Get-GnBotsApiUrl -ErrorAction SilentlyContinue) 
 }
 $gnbotsExePath = if ($config.gnbots_exe) { [string]$config.gnbots_exe } else { "" }
 $trayEnabled = ($config.tray_enabled -ne $false)
-$apiRestartAfterMinutes = [int]$config.gnbots_api_restart_after_minutes
-if ($apiRestartAfterMinutes -lt 0) { $apiRestartAfterMinutes = 0 }
+$apiRestartAfterMinutes = 0
+try { $apiRestartAfterMinutes = [int]$config.gnbots_api_restart_after_minutes } catch { $apiRestartAfterMinutes = 0 }
+# Saved installs use 0 because that used to mean "disabled". A dead API then sat
+# for hours. 0 now recovers after 15 minutes; set a positive value to change the wait.
+if ($apiRestartAfterMinutes -le 0) { $apiRestartAfterMinutes = 15 }
 
 if (Test-Path $LockFile) {
     $lockPid = [int](Get-Content $LockFile -ErrorAction SilentlyContinue)
@@ -275,6 +285,9 @@ $script:GnBotsAbsentSince = $null
 $script:GnBotsApiUnhealthySince = $null
 $script:IdleMonitorStopped = $false
 $script:LastHeartbeatAt = Get-Date
+$script:SawGnBotsProcess = $false
+$script:GnBotsMissingSince = $null
+$script:LastGnBotsRelaunchAt = $null
 
 # Always bring monitor up immediately at watcher start.
 Ensure-Monitor $dashboardPort | Out-Null
@@ -360,7 +373,44 @@ while ($true) {
         shutdownAfterMinutes = $shutdownAfterMinutes
     }
 
-    if ($apiRestartAfterMinutes -gt 0 -and $gnbotsProcessSeen -and -not $gnbotsApiHealthy -and $script:GnBotsApiUnhealthySince -and $apiUnhealthyMinutes -ge $apiRestartAfterMinutes) {
+    if ($gnbotsProcessSeen) {
+        $script:SawGnBotsProcess = $true
+        $script:GnBotsMissingSince = $null
+    } elseif (-not $gnbotsApiHealthy) {
+        if (-not $script:GnBotsMissingSince) {
+            $script:GnBotsMissingSince = Get-Date
+        }
+    } else {
+        $script:GnBotsMissingSince = $null
+    }
+
+    $missingMinutes = 0
+    if ($script:GnBotsMissingSince) {
+        $missingMinutes = [int][Math]::Floor(((Get-Date) - $script:GnBotsMissingSince).TotalMinutes)
+    }
+    $emulatorsUp = $false
+    if (Get-Command Test-EmulatorProcessesRunning -ErrorAction SilentlyContinue) {
+        $emulatorsUp = [bool](Test-EmulatorProcessesRunning)
+    }
+    # Emulators left open used to look like a healthy stack, so GnBots.exe stayed
+    # down until somebody noticed. Bring one instance back unless Stop was pressed.
+    $shouldRelaunch = $script:SawGnBotsProcess -or $autoStartGnBots -or $emulatorsUp
+    $relaunchCooldownOk = -not $script:LastGnBotsRelaunchAt -or ((Get-Date) - $script:LastGnBotsRelaunchAt).TotalMinutes -ge 5
+    if ($relaunchCooldownOk -and $shouldRelaunch -and -not $gnbotsProcessSeen -and -not $gnbotsApiHealthy -and -not (Test-UserStopSuppressed) -and $missingMinutes -ge 2) {
+        Write-Log "$processName is down (API unhealthy). Starting one clean instance ..."
+        $script:LastGnBotsRelaunchAt = Get-Date
+        $script:GnBotsMissingSince = $null
+        try {
+            & $GnBotsScript -Action Start | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "GnBots Start exited with code $LASTEXITCODE"
+            }
+        } catch {
+            Write-Log "GnBots relaunch failed: $($_.Exception.Message)"
+        }
+    }
+
+    if ($apiRestartAfterMinutes -gt 0 -and $gnbotsProcessSeen -and -not $gnbotsApiHealthy -and $script:GnBotsApiUnhealthySince -and $apiUnhealthyMinutes -ge $apiRestartAfterMinutes -and -not (Test-UserStopSuppressed)) {
         Write-Log "GnBots API unresponsive for $apiUnhealthyMinutes minutes (process still running). Restarting GnBots..."
         try {
             & $GnBotsScript -Action Stop | Out-Null

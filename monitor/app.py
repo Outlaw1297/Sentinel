@@ -39,11 +39,10 @@ from host_status import (
     collect_stack_status,
     configured_gnbots_api_url,
     force_kill_gnbots_process,
-    gnbots_api_port,
     gnbots_api_status,
     gnbots_api_status_known,
     gnbots_stack_active,
-    kill_processes_listening_on_port,
+    clear_stale_gnbots_api_ports,
     read_gnbots_web_server_port,
     resolve_gnbots_api_url,
     resolve_gnbots_root,
@@ -2144,12 +2143,9 @@ def recover_gnbots_api(config: dict[str, Any], *, force_restart: bool = False) -
                     "forceKill": kill_result,
                 }
 
-        if api.get("listening") and not api.get("healthy"):
-            port = int(api.get("port") or gnbots_api_port(config))
-            log.warning("Port %s still listening but API is dead; clearing stale listener", port)
-            port_kill = kill_processes_listening_on_port(port)
-            kill_result = port_kill if kill_result is None else {**(kill_result or {}), "portKill": port_kill}
-            time.sleep(2)
+        log.warning("Clearing stale GnBots API listeners in the 5508-5512 window")
+        port_kill = clear_stale_gnbots_api_ports(config)
+        kill_result = port_kill if kill_result is None else {**(kill_result or {}), "portClear": port_kill}
 
         log.info("GnBots API recovery: starting process")
         start_result = run_gnbots_process_action("Start", force=True)

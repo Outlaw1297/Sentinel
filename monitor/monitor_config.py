@@ -393,7 +393,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "label": "Restart GnBots if API down (minutes)",
                 "min": 0,
                 "max": 1440,
-                "hint": "0 = disabled.",
+                "hint": "0 = recover after 15 minutes. The watcher also starts GnBots again if the process exits on its own.",
             },
         ],
     },
@@ -413,7 +413,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "key": "auto_stop_gnbots_on_trouble",
                 "type": "boolean",
                 "label": "Auto-stop GnBots on problem emulators",
-                "hint": "Stops GnBots when severe emulator trouble is detected so you can restore/fix.",
+                "hint": "Stops GnBots only when several emulators are offline or missing. Low uptime does not stop GnBots.",
             },
             {
                 "key": "auto_stop_gnbots_cooldown_minutes",
@@ -425,7 +425,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
             {
                 "key": "auto_stop_min_troubled",
                 "type": "number",
-                "label": "Min troubled accounts for uptime stop",
+                "label": "Min severe emulator problems before auto-stop",
                 "min": 1,
                 "max": 50,
             },
