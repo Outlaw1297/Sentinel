@@ -1251,11 +1251,12 @@ def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str,
         return {"ok": True, "action": action, "message": json.dumps(details), "details": details}
 
     if action == "Stop":
+        # Always arm suppress, even when GnBots.exe is already gone. Otherwise
+        # Close-after-crash never blocks the watcher relaunch (emulators still up).
+        set_gnbots_user_stop_suppress(120)
         if not running:
             stop_details: dict[str, Any] = {"ok": True, "message": f"{process_name} is not running."}
         else:
-            set_gnbots_user_stop_suppress(120)
-
             if elevation.get("requiresAdmin") and not elevation.get("isAdmin"):
                 stop_task = str(config.get("gnbots_task_stop") or "GnBotsMonitor\\Stop")
                 subprocess.run(

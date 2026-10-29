@@ -4340,6 +4340,8 @@ async def close_gnbots() -> dict[str, Any]:
             from gnbots_loop_resume import clear_loop_intent
 
             clear_loop_intent()
+            # Close must suppress watcher relaunch even if GnBots.exe already exited.
+            set_gnbots_user_stop_suppress(120)
             for path in ("/stopall", "/stop"):
                 try:
                     await call_gnbots(config, method="GET", path=path)
