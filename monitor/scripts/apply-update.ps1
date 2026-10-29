@@ -6,7 +6,8 @@ param(
     [string]$MonitorRoot = "",
     [switch]$SkipStop,
     [switch]$SkipRestart,
-    [switch]$NoUi
+    [switch]$NoUi,
+    [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +49,7 @@ if (-not (Test-Path $StopScript)) {
 # Relaunch a TEMP copy once, then continue (child inherits GNBOT_APPLY_FROM_TEMP).
 $scriptPath = $MyInvocation.MyCommand.Path
 if (
+    -not $SelfTest -and
     $scriptPath -and
     -not $env:GNBOT_APPLY_FROM_TEMP -and
     $scriptPath.StartsWith($MonitorRoot, [System.StringComparison]::OrdinalIgnoreCase)
@@ -67,6 +69,10 @@ if (
     exit $(if ($null -ne $proc) { $proc.ExitCode } else { 1 })
 }
 
+if (-not $env:TEMP) {
+    if ($env:TMPDIR) { $env:TEMP = $env:TMPDIR }
+    else { $env:TEMP = [System.IO.Path]::GetTempPath().TrimEnd('\', '/') }
+}
 $script:UpdateUiStatusPath = Join-Path $env:TEMP "gnbot-update-ui-status.json"
 $script:UpdateStatus = [hashtable]::Synchronized(@{
     Text   = "Starting..."
@@ -80,9 +86,9 @@ function Write-UpdateUiStatusFile {
     try {
         $payload = [ordered]@{
             text    = [string]$script:UpdateStatus.Text
-            percent = [int]$script:UpdateStatus.Percent
-            done    = [bool]$script:UpdateStatus.Done
-            failed  = [bool]$script:UpdateStatus.Failed
+            percent = (ConvertTo-PlainInt $script:UpdateStatus.Percent)
+            done    = ([string]$script:UpdateStatus.Done -eq "True")
+            failed  = ([string]$script:UpdateStatus.Failed -eq "True")
             error   = [string]$script:UpdateStatus.Error
         }
         $json = ($payload | ConvertTo-Json -Compress)
@@ -90,10 +96,29 @@ function Write-UpdateUiStatusFile {
     } catch {}
 }
 
-function Set-UpdateProgress([string]$Text, [int]$Percent = -1) {
+function ConvertTo-PlainInt($Value, [int]$Default = 0) {
+    # Windows PowerShell 5.1 throws an Int32-to-Int32 conversion error when an
+    # existing integer is cast again or passed to Math Min/Max or a generic int list.
+    # Parse the string form instead of casting.
+    $text = ""
+    try { $text = [string]$Value } catch { return $Default }
+    if ($null -eq $text) { return $Default }
+    $text = $text.Trim()
+    if (-not $text) { return $Default }
+    if ($text -match '^-?\d+\.0+$') { $text = $text.Split(".")[0] }
+    $parsed = 0
+    if ([int]::TryParse($text, [ref]$parsed)) {
+        return $parsed
+    }
+    return $Default
+}
+
+function Set-UpdateProgress([string]$Text, $Percent = -1) {
     $script:UpdateStatus.Text = $Text
-    if ($Percent -ge 0) {
-        $script:UpdateStatus.Percent = [Math]::Max(0, [Math]::Min(100, $Percent))
+    $pct = ConvertTo-PlainInt $Percent -Default -1
+    if ($pct -ge 0) {
+        if ($pct -gt 100) { $pct = 100 }
+        $script:UpdateStatus.Percent = $pct
     }
     Write-UpdateUiStatusFile
 }
@@ -276,34 +301,71 @@ function Enable-GithubTls {
 }
 
 function ConvertTo-VersionTuple([string]$Value) {
+    # Return a dotted numeric string ("0.2.6"), never an int array.
+    # A 1-element int[] unrolls into a scalar on PS 5.1, and casting that
+    # value back to [int] / [int[]] throws the Int32-to-Int32 error.
     $text = ([string]$Value).Trim()
     if ($text.Length -ge 2 -and ($text[0] -eq "v" -or $text[0] -eq "V") -and [char]::IsDigit($text[1])) {
         $text = $text.Substring(1)
     }
-    $parts = New-Object System.Collections.Generic.List[int]
+    $parts = New-Object System.Collections.ArrayList
     foreach ($piece in $text.Split(".")) {
-        $digits = ($piece -replace "[^\d]", "")
+        $digits = ([string]$piece) -replace "[^\d]", ""
         if ($digits) {
-            [void]$parts.Add([int]$digits)
+            [void]$parts.Add($digits)
         } elseif ($parts.Count -gt 0) {
             break
         }
     }
-    # Unary comma prevents PowerShell from unrolling a single-element int[] into a scalar.
-    , $parts.ToArray()
+    if ($parts.Count -eq 0) { return "" }
+    return ($parts -join ".")
 }
 
-function Compare-VersionTuple([int[]]$Left, [int[]]$Right) {
-    $leftArr = @($Left)
-    $rightArr = @($Right)
-    $len = [Math]::Max($leftArr.Length, $rightArr.Length)
+function Compare-VersionTuple($Left, $Right) {
+    $leftText = [string]$Left
+    $rightText = [string]$Right
+    $leftArr = @()
+    $rightArr = @()
+    if ($leftText) { $leftArr = $leftText.Split(".") }
+    if ($rightText) { $rightArr = $rightText.Split(".") }
+    $len = $leftArr.Length
+    if ($rightArr.Length -gt $len) { $len = $rightArr.Length }
     for ($i = 0; $i -lt $len; $i++) {
-        $l = if ($i -lt $leftArr.Length) { [int]$leftArr[$i] } else { 0 }
-        $r = if ($i -lt $rightArr.Length) { [int]$rightArr[$i] } else { 0 }
+        $l = 0
+        $r = 0
+        if ($i -lt $leftArr.Length) { $l = ConvertTo-PlainInt $leftArr[$i] }
+        if ($i -lt $rightArr.Length) { $r = ConvertTo-PlainInt $rightArr[$i] }
         if ($l -lt $r) { return -1 }
         if ($l -gt $r) { return 1 }
     }
     return 0
+}
+
+function Test-ReleaseFlag($Value) {
+    $text = ""
+    try { $text = [string]$Value } catch { return $false }
+    return ($text -eq "True" -or $text -eq "true")
+}
+
+function Select-HighestReleaseEntry($Releases) {
+    $best = $null
+    $bestTuple = ""
+    foreach ($entry in @($Releases)) {
+        if ($null -eq $entry) { continue }
+        if ((Test-ReleaseFlag $entry.draft) -or (Test-ReleaseFlag $entry.prerelease)) { continue }
+        $tag = ""
+        try { $tag = [string]$entry.tag_name } catch {}
+        if (-not $tag) { continue }
+        $tuple = [string](ConvertTo-VersionTuple $tag)
+        if (-not $tuple) { continue }
+        $cmp = 1
+        if ($bestTuple) { $cmp = Compare-VersionTuple $tuple $bestTuple }
+        if ($cmp -gt 0) {
+            $best = $entry
+            $bestTuple = $tuple
+        }
+    }
+    return $best
 }
 
 function Invoke-GithubJson([string]$Url, $Headers) {
@@ -362,24 +424,10 @@ function Get-HighestGithubRelease([string]$Repo, $Headers) {
 
     $releases = @($payload)
     $best = $null
-    $bestTuple = [int[]]@()
-    foreach ($entry in $releases) {
-        if ($null -eq $entry) { continue }
-        $isDraft = $false
-        $isPre = $false
-        try { $isDraft = [bool]$entry.draft } catch {}
-        try { $isPre = [bool]$entry.prerelease } catch {}
-        if ($isDraft -or $isPre) { continue }
-        $tag = ""
-        try { $tag = [string]$entry.tag_name } catch {}
-        if (-not $tag) { continue }
-        $tuple = @(ConvertTo-VersionTuple $tag)
-        if ($tuple.Count -eq 0) { continue }
-        $tuple = [int[]]$tuple
-        if ($null -eq $best -or (Compare-VersionTuple $tuple $bestTuple) -gt 0) {
-            $best = $entry
-            $bestTuple = $tuple
-        }
+    try {
+        $best = Select-HighestReleaseEntry $releases
+    } catch {
+        Write-UpdateLog "Semver pick failed: $($_.Exception.Message)"
     }
 
     if ($null -ne $best) {
@@ -390,7 +438,7 @@ function Get-HighestGithubRelease([string]$Repo, $Headers) {
     try {
         $latestUrl = "https://api.github.com/repos/$Repo/releases/latest"
         $latest = Invoke-GithubJson -Url $latestUrl -Headers $Headers
-        if ($latest -and $latest.tag_name -and -not [bool]$latest.draft) {
+        if ($latest -and $latest.tag_name -and -not (Test-ReleaseFlag $latest.draft)) {
             Write-UpdateLog "Highest-semver pick empty among $($releases.Count) row(s); falling back to $($latest.tag_name)"
             return $latest
         }
@@ -600,11 +648,12 @@ function Show-UpdateProgressWindow {
                 $raw = [System.IO.File]::ReadAllText($script:UpdateUiStatusPath)
                 $st = $raw | ConvertFrom-Json
                 if ($st.text) { $status.Text = [string]$st.text }
-                $pct = 5
-                try { $pct = [int]$st.percent } catch {}
+                $pct = ConvertTo-PlainInt $st.percent -Default 5
                 if ($pct -lt 0) { $pct = 0 }
                 if ($pct -gt 100) { $pct = 100 }
-                $progress.Value = $pct
+                try { $progress.Value = $pct } catch {
+                    try { $progress.Value = [Convert]::ToInt32([string]$pct) } catch {}
+                }
             }
         } catch {}
 
@@ -614,8 +663,7 @@ function Show-UpdateProgressWindow {
 
         if (-not $script:UiCloseArmed) {
             $script:UiCloseArmed = $true
-            $code = 1
-            try { $code = [int]$worker.ExitCode } catch {}
+            $code = ConvertTo-PlainInt $worker.ExitCode -Default 1
             $script:ApplyExitCode = $code
             if ($code -ne 0) {
                 $errText = "Update failed."
@@ -646,7 +694,7 @@ function Show-UpdateProgressWindow {
         }
 
         if ($script:ApplyExitCode -eq 0) {
-            $script:UiCloseTicks = [int]$script:UiCloseTicks + 1
+            $script:UiCloseTicks = (ConvertTo-PlainInt $script:UiCloseTicks) + 1
             if ($script:UiCloseTicks -ge 6) {
                 $timer.Stop()
                 $form.Close()
@@ -666,10 +714,72 @@ function Show-UpdateProgressWindow {
 
     [System.Windows.Forms.Application]::EnableVisualStyles()
     [void][System.Windows.Forms.Application]::Run($form)
-    return [int]$script:ApplyExitCode
+    return (ConvertTo-PlainInt $script:ApplyExitCode)
+}
+
+function Invoke-ApplyUpdateSelfTest {
+    $failures = New-Object System.Collections.ArrayList
+    function Add-Fail([string]$Message) {
+        [void]$script:SelfTestFailures.Add($Message)
+    }
+    $script:SelfTestFailures = $failures
+
+    $v026 = ConvertTo-VersionTuple "v0.2.6"
+    $v025 = ConvertTo-VersionTuple "v0.2.5"
+    $v0113 = ConvertTo-VersionTuple "v0.1.13"
+    $v10 = ConvertTo-VersionTuple "v10"
+    $v090 = ConvertTo-VersionTuple "0.9.0"
+    $rc = ConvertTo-VersionTuple "v0.2.3-rc1"
+    $empty = ConvertTo-VersionTuple "nope"
+    if ($v026 -ne "0.2.6") { Add-Fail "v0.2.6 parsed as '$v026'" }
+    if ($v10 -ne "10") { Add-Fail "v10 parsed as '$v10' (must stay one part)" }
+    if ($rc -ne "0.2.31") { Add-Fail "v0.2.3-rc1 parsed as '$rc'" }
+    if ($empty) { Add-Fail "non-numeric tag parsed as '$empty'" }
+    if ((Compare-VersionTuple $v026 $v025) -le 0) { Add-Fail "0.2.6 should be newer than 0.2.5" }
+    if ((Compare-VersionTuple $v025 $v026) -ge 0) { Add-Fail "0.2.5 should be older than 0.2.6" }
+    if ((Compare-VersionTuple $v026 $v026) -ne 0) { Add-Fail "0.2.6 should equal itself" }
+    if ((Compare-VersionTuple $v0113 $v026) -ge 0) { Add-Fail "0.1.13 should be older than 0.2.6" }
+    if ((Compare-VersionTuple "0.2" "0.1.9") -le 0) { Add-Fail "0.2 should be newer than 0.1.9" }
+    if ((Compare-VersionTuple "0.10.0" $v090) -le 0) { Add-Fail "0.10.0 should be newer than 0.9.0" }
+    if ((ConvertTo-PlainInt 12) -ne 12) { Add-Fail "plain int parse failed" }
+    if ((ConvertTo-PlainInt "07") -ne 7) { Add-Fail "leading zero parse failed" }
+    if ((ConvertTo-PlainInt "" -Default 4) -ne 4) { Add-Fail "default int parse failed" }
+
+    $releases = @(
+        [pscustomobject]@{ tag_name = "v0.1.13"; draft = $false; prerelease = $false },
+        [pscustomobject]@{ tag_name = "v0.2.6"; draft = $false; prerelease = $false },
+        [pscustomobject]@{ tag_name = "v0.2.5"; draft = $false; prerelease = $false },
+        [pscustomobject]@{ tag_name = "v0.9.0"; draft = $true; prerelease = $false },
+        [pscustomobject]@{ tag_name = "v0.8.0"; draft = $false; prerelease = $true },
+        [pscustomobject]@{ tag_name = "v0.10.1"; draft = $false; prerelease = $false }
+    )
+    $best = Select-HighestReleaseEntry $releases
+    if ($null -eq $best -or [string]$best.tag_name -ne "v0.10.1") {
+        Add-Fail "highest release was '$($best.tag_name)' expected v0.10.1"
+    }
+    $stable = Select-HighestReleaseEntry @(
+        [pscustomobject]@{ tag_name = "v0.2.5"; draft = $false; prerelease = $false },
+        [pscustomobject]@{ tag_name = "v0.1.13"; draft = $false; prerelease = $false },
+        [pscustomobject]@{ tag_name = "v0.2.6"; draft = $false; prerelease = $false }
+    )
+    if ($null -eq $stable -or [string]$stable.tag_name -ne "v0.2.6") {
+        Add-Fail "stable pick was '$($stable.tag_name)' expected v0.2.6"
+    }
+
+    foreach ($message in $failures) {
+        Write-Host "FAIL $message"
+    }
+    if ($failures.Count -gt 0) { return $false }
+    Write-Host "apply-update self-test passed"
+    return $true
 }
 
 # --- entry ---
+if ($SelfTest) {
+    if (Invoke-ApplyUpdateSelfTest) { exit 0 }
+    exit 1
+}
+
 if ($NoUi) {
     try {
         Invoke-UpdateWork
