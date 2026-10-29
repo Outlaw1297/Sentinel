@@ -268,6 +268,8 @@ Add `build/build-native.ps1` wrapper for local iteration.
 
 Add `[Run]` entry: copy `config.example.json` → `config.json` if missing (replaces `install-headless.ps1` for frozen installs).
 
+**Upgrade / repair (shipped):** keep `DisableDirPage=no` and `AlwaysShowDirOnReadyPage=yes` so upgrades always show Select Destination Location (Inno `auto` would hide it). Prefill via `UsePreviousAppDir` + `SuggestedInstallDir` / `CurPageChanged`; detect existing installs with `IsSentinelInstallDir`; exclude `config.json` and `logs` from the copy; skip post-install wizard when `RepairInstall` is set. Operator runbook: `monitor/README.md` → Upgrade or repair. Contract test: `monitor/tests/test_installer_repair.py`.
+
 `PrivilegesRequired=admin` may be needed if stack always requires elevation — evaluate against `gnbots-elevation.ps1` rules; default keep `lowest` and let `Sentinel.exe` UAC.
 
 ### Update `build-installer.ps1`
