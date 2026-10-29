@@ -63,6 +63,9 @@ Details and config keys: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 
 ### Stack helpers (Windows)
 - Headless watcher keeps the dashboard alive and can auto-start GnBots
+- Watcher relaunches GnBots when the process dies (even if LDPlayer is still open) and restarts it if the Remote API stays down (~15 minutes; `0` in config still means 15)
+- Stop / Start clear listeners on the GnBots API port window (`WebServerPort`..`+4`, normally **5508–5512**) so restarts bind the original port
+- After a crash, Sentinel can press Start again if the run loop was active (`gnbots_resume_loop_after_crash`, on by default) — see [`docs/AUTOMATION.md`](docs/AUTOMATION.md)
 - System tray icon for quick open / status
 - Capability matrix (`GET /api/capabilities`) explains what is blocked by elevation vs “bot is running”
 - First-run setup wizard (`/setup`) and a minimal `/status` page for elevation / LDRemote diagnostics
@@ -82,7 +85,7 @@ Details and config keys: [`docs/AUTOMATION.md`](docs/AUTOMATION.md).
 | Release installer / PyInstaller / native `.exe` | Yes | Build scripts are Windows-only |
 
 **Runtime:** Python **3.12+** (release builds target 3.12/3.13).  
-**Ports:** dashboard **8787** (binds `0.0.0.0` by default), GnBots API **5508**.
+**Ports:** dashboard **8787** (binds `0.0.0.0` by default), GnBots Remote API **5508** (GnBots may walk **5509–5512** if the preferred port is busy; Sentinel clears that five-port window on Stop/Start).
 
 ### Two locks to know
 
@@ -192,7 +195,7 @@ First run copies `config.example.json` → `config.json`. Important groups:
 | Paths / API | `gnbots_api_url`, `gnbots_root`, `gnbots_exe`, `ldplayer_backups_dir`, `ldplayer_path` | Find GnBots + LDPlayer |
 | Restore / APK | `whiteout_apk_url`, `whiteout_apk_dir`, `apk_third_party_provider`, `apk_third_party_package`, `apk_third_party_abi`, `restore_install_apk`, `restore_run_health_check`, `ldplayer_health_settings` | Backups and Whiteout installs |
 | Dashboard | `dashboard_host`, `dashboard_port`, refresh/cache intervals, screenshot interval | UI polling behavior |
-| Watcher | `auto_start_gnbots`, watcher poll rates, idle shutdown | Keep the stack alive |
+| Watcher | `auto_start_gnbots`, `gnbots_api_restart_after_minutes`, `gnbots_resume_loop_after_crash`, watcher poll rates, idle shutdown | Keep GnBots + API alive after crashes |
 | Automation | `auto_stop_gnbots_on_trouble`, `auto_update_apks`, `stuck_screen_*`, `assistant_api_*` | See Automation docs |
 | Push / tray | `push_*`, `tray_*` | Web push + Windows tray |
 | Updates | `update_repo`, `update_branch`, `update_channel` | Self-update Check / Apply |
@@ -259,7 +262,7 @@ Artifacts: portable **Sentinel.zip** / `gnbot-monitor.exe`, **Sentinel-Setup.exe
 
 ## Version & changelog
 
-Current app version: **0.1.10** — see [`CHANGELOG.md`](CHANGELOG.md).
+Current app version: **0.2.6** — see [`CHANGELOG.md`](CHANGELOG.md).
 
-Highlights in 0.1.10: stuck-screen learning (event page → Back / restart / warn).  
-0.1.9: background bulk APK jobs (no refresh 502) and the Automation tab (auto-stop, auto-APK, issue report, suggestions).
+Highlights in 0.2.6: stop API-port overrun (no auto-stop on low uptime; clear 5508–5512 on Stop/Start; watcher relaunch + loop resume after crash).  
+0.2.5: Apply Update TLS/JSON hardening, installer repair, Setup Wizard STA. Earlier: stuck-screen learning, background APK jobs, Automation tab.

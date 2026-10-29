@@ -29,13 +29,14 @@ Low account uptime is reported on the dashboard and is **not** a reason to stop 
 
 A stop still requires `auto_stop_min_troubled` matching accounts (default 3) so one bad instance does not take the farm down. Stop and Start both clear listeners on that five-port window first.
 
-If GnBots crashes while the run loop is active, Sentinel restarts the process and then sends the same Start command the dashboard uses (`GET /start`). That resume is on by default (`gnbots_resume_loop_after_crash`). Pressing Stop, Stop All, Stop Emulators, or Close GnBots clears it, so a loop you stopped is not started again.
+If GnBots crashes while the run loop is active, Sentinel restarts the process and then sends the same Start command the dashboard uses (`GET /start`). That resume is on by default (`gnbots_resume_loop_after_crash`). Pressing Stop, Stop All, Stop Emulators, or Close GnBots clears it, so a loop you stopped is not started again. See **GnBots process, ports, and watcher recovery** below for the full runbook.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `auto_stop_gnbots_on_trouble` | `false` | Master toggle |
 | `auto_stop_gnbots_cooldown_minutes` | `30` | Minimum minutes between auto-stops |
-| `auto_stop_min_troubled` | `3` | How many severe emulator failures are required before a stop |
+| `auto_stop_min_troubled` | `3` | How many severe emulator failures (offline / missing) are required before a stop |
+| `gnbots_resume_loop_after_crash` | `true` | After a crash, press Start once the API is healthy again if the loop was running |
 
 ### 2. Auto APK updates
 
@@ -150,6 +151,58 @@ Optional enrichment with an OpenAI-compatible chat API:
 
 Pass `?llm=1` to request enrichment. Without keys, Sentinel returns playbook suggestions only.
 
+## GnBots process, ports, and watcher recovery
+
+GnBots’ Remote API binds `WebServerPort` (default **5508**) and, if that listen fails, walks **four** alternate ports (`5509`–`5512`). After five leftovers it logs `No available ports found in range 5508-5512` and the web server never starts. Sentinel must free that whole window on stop/start and treat “emulators still open” as different from “GnBots is up.”
+
+### Architecture
+
+```
+Dashboard Stop / Start / Close
+        │
+        ├─ clear_stale_gnbots_api_ports()   # kill LISTEN on base..base+4
+        └─ gnbots-process.ps1 Clear-StaleGnBotsApiPorts
+
+stack-watcher.ps1 (Windows, always-on)
+        │
+        ├─ process gone ≥ ~2 min (+ emulators up / prior GnBots / auto_start)
+        │     → Start one clean GnBots (unless user-stop suppress)
+        ├─ process up, API unhealthy ≥ gnbots_api_restart_after_minutes
+        │     → Stop + Start (0 in config.json means 15 minutes)
+        └─ Ensure-GnBots: LDPlayer alone is NOT “already running”
+
+gnbots_loop_resume (dashboard automation tick)
+        │
+        ├─ note running loop → logs/gnbots-loop-intent.json
+        ├─ process/API down while loopWasRunning → resumeAfterCrash
+        └─ API healthy + due → GET /start (45s cooldown)
+```
+
+Codepaths: `host_status.clear_stale_gnbots_api_ports` / `gnbots_api_port_range`, `scripts/gnbots-process.ps1`, `scripts/stack-watcher.ps1` (`Ensure-GnBots` + relaunch / API restart), `gnbots_loop_resume.tick_gnbots_loop_resume`, dashboard `POST /api/commands/{start|stop|…}` and `POST /api/host/gnbots/stop`.
+
+### Config
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `gnbots_api_url` | `http://127.0.0.1:5508` | Preferred API base; live discovery may use `5509+` if that port is free and answering |
+| `gnbots_api_restart_after_minutes` | `15` (example) | Watcher restarts GnBots when the process is up but the API stays down this long. **`0` is not disabled** — existing installs that saved `0` recover after **15** minutes. Set a positive value to change the wait. |
+| `gnbots_resume_loop_after_crash` | `true` | Missing key still means on. Off = process may come back idle without Start. |
+| `auto_start_gnbots` | (install-dependent) | Watcher `Ensure-GnBots` path when enabled |
+
+### Constraints & pitfalls
+
+- Port clear kills **any** process listening on the five-port window (not name-filtered). Do not put unrelated services on `5508`–`5512` (or your configured `WebServerPort`..`+4`).
+- Manual **Stop** / **Stop All** / **Stop Emulators** / **Close GnBots** sets a user-stop suppress (~120 minutes) and clears `logs/gnbots-loop-intent.json`, so the watcher and loop resume stay quiet.
+- `stackActive` / presence snapshots may still list open LDPlayer processes for idle-monitor timing; **auto-start and relaunch** only treat GnBots.exe or a healthy API as “already up.”
+- Loop resume uses the same `GET /start` path as the dashboard (including License header from `/settings`). It does not toggle Start if the loop is already `botActive`.
+- Linux / Cloud Agent: learning and config docs apply; process start, port kill, and watcher recovery are Windows-only.
+
+### Operator checklist
+
+1. If GnBots logs `Using alternate port` or `No available ports found in range …`, Stop (or Recover API) so the window is cleared, then Start once.
+2. Confirm watcher status lines show `GnBots.exe=… apiHealthy=…` (not just open emulators).
+3. After an unexpected crash with the loop on, expect Start within a short tick once the API answers; if not, check `gnbots_resume_loop_after_crash` and `logs/gnbots-loop-intent.json`.
+
 ## APIs
 
 | Method | Path | Purpose |
@@ -197,9 +250,12 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 | File | Contents |
 |------|----------|
 | `logs/apk-update-jobs.log` | Background APK job timeline |
-| `logs/automation.log` | Automation actions (including stuck learn / auto-fix) |
+| `logs/automation.log` | Automation actions (including stuck learn / auto-fix / loop resume) |
+| `logs/gnbots-loop-intent.json` | Whether the run loop should be restarted after a crash |
+| `logs/gnbots-user-stopped.json` | Manual stop suppress window for the watcher |
 | `logs/issue-history.json` | Persisted issue events (`meta.actionHint` on same-screen rows) |
 | `logs/stuck-screen-rules.json` | Learned / seed stuck-screen rules |
+| `logs/stack-watcher.log` (Windows) | Watcher status / relaunch / API restart lines |
 
 ## Troubleshooting
 
@@ -210,6 +266,10 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 | Auto-fix only warns | Instance index unknown, or not on Windows/LDPlayer | Account name must map to a profile instance; Back/restart need `ldconsole` + ADB |
 | Same event never re-fixed | Event id already in `autoFixedEventIds` | Expected once-per-event; wait for a new timeout log |
 | Fixes feel spammy | Cooldown too low | Raise `cooldownSeconds` (30–3600) on the rule |
+| `No available ports found in range 5508-5512` | Leftover listeners after repeated Stop/Start | Stop/Close or Recover API (clears base..+4); avoid auto-stop on low uptime (removed in 0.2.6) |
+| GnBots.exe down, LDPlayer still open for hours | Old watcher treated emulators as “stack up” | 0.2.6+ relaunches after ~2 minutes unless user-stop suppress is set |
+| Process running, API dead for a long time | `gnbots_api_restart_after_minutes` was `0` (“never”) | `0` now means **15** minutes; raise if restarts feel aggressive |
+| GnBots comes back idle after a crash | Loop resume off, or Stop cleared intent | `gnbots_resume_loop_after_crash`; `logs/gnbots-loop-intent.json`; did you press Stop? |
 | Linux / Cloud Agent | Remediations that need LDPlayer fail gracefully | Dashboard + learning still work; expect warn fallback / offline GnBots |
 
 ## Safety notes
@@ -218,5 +278,6 @@ curl -s -X POST 'http://localhost:8787/api/automation/stuck-rules/learn?days=7'
 - Stuck-screen **auto-fix is off by default**; learning can still propose rules safely.
 - Learned/manual rules are **disabled until you enable them**; only the seed event→Back rule ships enabled.
 - Press Back / restart emulator require Windows + LDPlayer ADB; if the instance cannot be resolved, Sentinel falls back to warning you.
-- Auto-stop is off by default; enable only if you want Sentinel to halt the farm when emulators look broken.
+- Auto-stop is off by default; enable only if you want Sentinel to halt the farm when emulators look broken. It ignores low uptime and only acts on clustered offline/missing instances.
+- Clearing the API port window is intentional and forceful — keep other services off those ports.
 - Issue history grows up to ~5000 events and rolls older rows off.
