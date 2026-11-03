@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.8 — 2026-11-02
+
 ### Frostguard alignment
 - Recommended emulator preset follows the active program: GnBots 400×652 @ 120 DPI / 2 CPU / 4096 MB, or Frostguard 720×1280 @ 320 DPI / 4 CPU / 2048 MB
 - Frostguard 3 profile and task tables (`profile_name`, `emulator_number`, `tp_daily_task`) are read correctly
