@@ -190,8 +190,59 @@ def _record_resume_attempt() -> None:
     _save_loop_intent(intent)
 
 
+def _tick_frostguard_loop_resume(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Same crash resume as GnBots: if Start Bot was active, send it again after Frostguard returns."""
+    from host_status import test_gnbots_user_stop_suppressed
+
+    if test_gnbots_user_stop_suppressed():
+        if load_loop_intent().get("resumeAfterCrash") or load_loop_intent().get("loopWasRunning"):
+            clear_loop_intent()
+        return None
+
+    import frostguard_bridge as bridge
+
+    process_up = False
+    bridge_ok = False
+    try:
+        process_up = bool(bridge.process_running(config))
+        bridge_ok = process_up and bool(bridge.pid_online(config))
+    except Exception:  # noqa: BLE001
+        process_up = False
+        bridge_ok = False
+
+    if not process_up or not bridge_ok:
+        note_gnbots_unreachable()
+        return None
+
+    try:
+        from bot_backend import get_bot_backend
+
+        loop_running = bool(get_bot_backend(config).automation_active(config))
+    except Exception:  # noqa: BLE001
+        note_gnbots_unreachable()
+        return None
+
+    note_loop_observed(loop_running=loop_running)
+    if loop_running or not resume_is_due():
+        return None
+
+    _record_resume_attempt()
+    try:
+        result = bridge.start_bot(config)
+    except Exception as exc:  # noqa: BLE001
+        result = {"ok": False, "message": str(exc)}
+
+    if result.get("ok"):
+        _append_automation_log("restarted Frostguard run after crash")
+    else:
+        _append_automation_log(
+            f"restart Frostguard run after crash failed: {result.get('message') or 'unknown'}"
+        )
+    return result
+
+
 def tick_gnbots_loop_resume(config: dict[str, Any]) -> dict[str, Any] | None:
-    """One pass: remember a live loop, or start it again after GnBots comes back."""
+    """One pass: remember a live loop, or start it again after the active program comes back."""
     if not config.get("gnbots_resume_loop_after_crash", True):
         return None
 
@@ -199,9 +250,12 @@ def tick_gnbots_loop_resume(config: dict[str, Any]) -> dict[str, Any] | None:
     from host_status import collect_stack_status, gnbots_api_status, test_gnbots_user_stop_suppressed
 
     try:
-        if detect_bot_provider(config) != "gnbots":
-            return None
+        provider = detect_bot_provider(config)
     except Exception:  # noqa: BLE001
+        provider = "gnbots"
+    if provider == "frostguard":
+        return _tick_frostguard_loop_resume(config)
+    if provider != "gnbots":
         return None
 
     if test_gnbots_user_stop_suppressed():

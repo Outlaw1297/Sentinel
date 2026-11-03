@@ -948,6 +948,9 @@ def gnbots_stack_active(config: dict[str, Any]) -> bool:
         return True
     if gnbots_api_status(config).get("healthy"):
         return True
+    # Frostguard runs the same emulator processes. An open instance is not GnBots.
+    if str(config.get("bot_provider") or "").strip().lower() == "frostguard":
+        return False
     for emu in ("dnplayer", "Ld9BoxHeadless"):
         if find_processes(emu):
             return True
@@ -1197,6 +1200,18 @@ def _run_gnbots_process_native(action: str, *, force: bool = False) -> dict[str,
         }
 
     if action == "Start":
+        if str(config.get("bot_provider") or "").strip().lower() == "frostguard":
+            details = {
+                "ok": True,
+                "skipped": True,
+                "message": "Frostguard is the active program. GnBots was not started.",
+            }
+            return {
+                "ok": True,
+                "action": action,
+                "message": json.dumps(details),
+                "details": details,
+            }
         clear_gnbots_user_stop_suppress()
         if force and running:
             for proc in running:

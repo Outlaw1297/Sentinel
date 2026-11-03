@@ -9,6 +9,14 @@ function Read-Config {
 
 try {
     $config = Read-Config
+    $pinned = ""
+    if ($config.bot_provider) { $pinned = ([string]$config.bot_provider).Trim().ToLower() }
+    if ($pinned -eq "frostguard") {
+        $frostguardScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
+        Write-GnBotsTaskLog $MonitorRoot "Launching Frostguard (active program)."
+        & $frostguardScript -Action Start | Out-Null
+        exit $LASTEXITCODE
+    }
     $processName = if ($config.gnbots_process_name) { [string]$config.gnbots_process_name } else { "GnBots" }
     $exePath = Resolve-GnBotsExePath -Config $config -MonitorRoot $MonitorRoot
 

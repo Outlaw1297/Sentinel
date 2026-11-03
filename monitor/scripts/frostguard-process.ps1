@@ -2,7 +2,7 @@
 # Stop and start run only for an explicit action. Status and Provider never kill a process.
 
 param(
-    [ValidateSet("Provider", "Status", "Start", "Stop", "StopIfActive", "MarkRestartIfRunning", "StartIfRestartRequested")]
+    [ValidateSet("Provider", "Status", "Health", "Start", "Stop", "StopIfActive", "MarkRestartIfRunning", "StartIfRestartRequested")]
     [string]$Action = "Status"
 )
 
@@ -72,6 +72,46 @@ function Write-Result([hashtable]$Body) {
     $Body | ConvertTo-Json -Compress
 }
 
+function Get-FrostguardBridgePort([object]$Config) {
+    $workspace = ""
+    if ($Config -and $Config.frostguard_workspace) { $workspace = [string]$Config.frostguard_workspace }
+    if ($workspace) {
+        $props = Join-Path $workspace "watcher\telegram-watcher.properties"
+        if (Test-Path -LiteralPath $props) {
+            foreach ($line in @(Get-Content -LiteralPath $props -ErrorAction SilentlyContinue)) {
+                if ($line -match '^\s*localPort\s*[=:]\s*(\d+)\s*$') {
+                    return [int]$Matches[1]
+                }
+            }
+        }
+    }
+    if ($Config -and $Config.frostguard_local_port) {
+        try { return [int]$Config.frostguard_local_port } catch {}
+    }
+    return 0
+}
+
+function Test-FrostguardBridge([int]$Port) {
+    if ($Port -le 0) { return $false }
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/pid" -UseBasicParsing -TimeoutSec 3
+        return $response.StatusCode -eq 200
+    } catch {
+        return $false
+    }
+}
+
+function Use-BotStopSuppress([string]$Which) {
+    $suppress = Join-Path $PSScriptRoot "gnbots-suppress.ps1"
+    if (-not (Test-Path $suppress)) { return }
+    . $suppress
+    if ($Which -eq "Set") {
+        Set-GnBotsUserStopSuppressed $MonitorRoot 120
+    } else {
+        Clear-GnBotsUserStopSuppressed $MonitorRoot
+    }
+}
+
 $config = Read-MonitorConfig
 $provider = Get-ActiveBotProvider $config
 $processName = Get-ProcessName $config "frostguard_process_name" "Frostguard"
@@ -84,9 +124,21 @@ switch ($Action) {
     "Status" {
         Write-Result @{ provider = $provider; process = $processName; running = [bool]$running }
     }
+    "Health" {
+        $port = Get-FrostguardBridgePort $config
+        $bridge = $false
+        if ($running) { $bridge = Test-FrostguardBridge $port }
+        Write-Result @{
+            provider = $provider
+            process = $processName
+            running = [bool]$running
+            bridgeHealthy = [bool]$bridge
+        }
+    }
     "Start" {
         $started = $false
         if ($provider -eq "frostguard") {
+            Use-BotStopSuppress "Clear"
             if (Test-NamedProcess $processName) {
                 $started = $true
             } else {
@@ -107,6 +159,7 @@ switch ($Action) {
     "Stop" {
         $stopped = $false
         if ($provider -eq "frostguard" -and $running) {
+            Use-BotStopSuppress "Set"
             $stopped = Stop-FrostguardProcess $processName
         }
         Write-Result @{
@@ -147,6 +200,7 @@ switch ($Action) {
             Remove-Item $RestartFlag -Force -ErrorAction SilentlyContinue
         }
         if ($provider -eq "frostguard" -and $requested) {
+            Use-BotStopSuppress "Clear"
             if (Test-NamedProcess $processName) {
                 $started = $true
             } else {

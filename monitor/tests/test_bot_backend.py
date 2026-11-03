@@ -260,3 +260,30 @@ def test_start_bot_requires_pid(tmp_path: Path):
             result = bridge.start_bot(config)
     assert result["ok"] is True
     mock_post.assert_called_once()
+
+
+def test_open_emulators_are_not_a_gnbots_stack_for_frostguard():
+    import host_status
+
+    config = {"bot_provider": "frostguard", "gnbots_process_name": "GnBots"}
+
+    def fake_find(name):
+        return [object()] if name == "dnplayer" else []
+
+    with patch("host_status.find_processes", side_effect=fake_find), patch(
+        "host_status.gnbots_api_status", return_value={"healthy": False}
+    ):
+        assert host_status.gnbots_stack_active(config) is False
+
+
+def test_native_start_does_not_launch_gnbots_when_frostguard_is_active():
+    import host_status
+
+    with patch.object(host_status.os, "name", "nt"), patch.object(
+        host_status, "_load_monitor_config", return_value={"bot_provider": "frostguard"}
+    ), patch.object(host_status, "find_processes", return_value=[]), patch.object(
+        host_status, "monitor_elevation_status", return_value={}
+    ), patch.object(host_status.subprocess, "Popen") as popen:
+        result = host_status._run_gnbots_process_native("Start")
+    popen.assert_not_called()
+    assert result["details"]["skipped"] is True

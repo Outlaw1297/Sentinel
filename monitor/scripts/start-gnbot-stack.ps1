@@ -177,11 +177,14 @@ if (Test-Path $FrostguardScript) {
 }
 
 if ($activeProvider -eq "frostguard") {
-    if (-not $restartedFrostguard) {
-        Write-Info "Frostguard is the active program and was not running. Leaving it stopped."
+    if ($restartedFrostguard) {
+        $launchResult = "frostguard"
+        $launchExit = 0
+    } else {
+        Write-Info "Launching Frostguard ..."
+        $launchResult = & $FrostguardScript -Action Start
+        $launchExit = $LASTEXITCODE
     }
-    $launchResult = "frostguard"
-    $launchExit = 0
 } else {
     Write-Info "Launching GnBots ..."
     $launchResult = & $GnBotsScript -Action Start

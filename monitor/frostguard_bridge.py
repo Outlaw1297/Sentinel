@@ -219,6 +219,12 @@ def host_start(config: dict[str, Any]) -> dict[str, Any]:
             "action": "start",
             "message": "Frostguard host start is Windows-only on this Sentinel build.",
         }
+    try:
+        from host_status import clear_gnbots_user_stop_suppress
+
+        clear_gnbots_user_stop_suppress()
+    except Exception:  # noqa: BLE001
+        pass
     if process_running(config):
         return {
             "ok": True,
@@ -270,6 +276,13 @@ def host_stop(config: dict[str, Any]) -> dict[str, Any]:
         }
     name = str(config.get("frostguard_process_name") or "Frostguard").strip() or "Frostguard"
     exe_name = f"{name}.exe"
+    if process_running(config):
+        try:
+            from host_status import set_gnbots_user_stop_suppress
+
+            set_gnbots_user_stop_suppress(120)
+        except Exception:  # noqa: BLE001
+            pass
     # Prefer pid from bridge when available.
     endpoint = resolve_bridge_endpoint(config)
     if bridge_enabled(config):

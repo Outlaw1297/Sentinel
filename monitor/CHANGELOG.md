@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Auto-start and crash restart follow the active program. Frostguard is brought back the same way GnBots was, and GnBots stays stopped while Frostguard is selected.
 - The tray menu Launch and Close items follow the active program, Frostguard or GnBots.
 - Dashboard branding follows monitor/VERSION, so a source checkout of 0.2.8 no longer shows v0.2.7 from an older version.json.
 - A git checkout shows the version tag on the update line. It was repeating the installed version.json on both sides, so 0.2.8 looked like v0.2.7.

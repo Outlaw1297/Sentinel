@@ -45,6 +45,17 @@ function Test-GnBotsProcessByPath([string]$ExePath) {
     return $false
 }
 
+function Test-FrostguardIsActiveProgram {
+    $configPath = Join-Path (Split-Path -Parent $PSScriptRoot) "config.json"
+    if (-not (Test-Path $configPath)) { return $false }
+    try {
+        $config = Get-Content $configPath -Raw | ConvertFrom-Json
+        return ([string]$config.bot_provider).Trim().ToLower() -eq "frostguard"
+    } catch {
+        return $false
+    }
+}
+
 function Test-EmulatorProcessesRunning {
     foreach ($name in @("dnplayer", "Ld9BoxHeadless")) {
         if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
@@ -64,7 +75,9 @@ function Get-GnBotsPresenceSnapshot {
     $ApiUrl = Resolve-GnBotsApiUrl $ApiUrl
     $processSeen = (Test-GnBotsProcessByName $ProcessName) -or (Test-GnBotsProcessByPath $ExePath)
     $apiHealthy = Test-GnBotsApiHealthy $ApiUrl
-    $stackPresent = $processSeen -or $apiHealthy -or (Test-EmulatorProcessesRunning)
+    # Open emulators belong to Frostguard when that program is selected.
+    $emulatorsImplyStack = -not (Test-FrostguardIsActiveProgram) -and (Test-EmulatorProcessesRunning)
+    $stackPresent = $processSeen -or $apiHealthy -or $emulatorsImplyStack
     return @{
         stackPresent = $stackPresent
         processSeen  = $processSeen

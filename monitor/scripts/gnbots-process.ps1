@@ -226,6 +226,17 @@ if ($Action -eq "Status") {
 
 if ($Action -eq "Start") {
 
+    $pinned = ""
+    if ($config.bot_provider) { $pinned = ([string]$config.bot_provider).Trim().ToLower() }
+    if ($pinned -eq "frostguard") {
+        Write-JsonResult @{
+            ok      = $true
+            skipped = $true
+            message = "Frostguard is the active program. GnBots was not started."
+        }
+        exit 0
+    }
+
     Clear-UserStopSuppressed
 
 

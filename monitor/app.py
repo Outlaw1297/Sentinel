@@ -2199,6 +2199,13 @@ def wait_for_gnbots_api_ready(
 
 def recover_gnbots_api(config: dict[str, Any], *, force_restart: bool = False) -> dict[str, Any]:
     """Probe the API, then restart GnBots.exe if needed. Runs synchronously."""
+    if detect_bot_provider(config) == "frostguard":
+        return {
+            "ok": True,
+            "skipped": True,
+            "restarted": False,
+            "message": "Frostguard is the active program. GnBots was not started.",
+        }
     log = setup_monitor_logging()
     kill_result: dict[str, Any] | None = None
 
@@ -3414,11 +3421,10 @@ async def run_global_command(command_id: str) -> dict[str, Any]:
 
     if resolved_id in {"stop", "stopall", "stopemulators"}:
         set_gnbots_user_stop_suppress(120)
-        if detect_bot_provider(config) == "gnbots":
-            from gnbots_loop_resume import clear_loop_intent
+        from gnbots_loop_resume import clear_loop_intent
 
-            clear_loop_intent()
-    elif resolved_id == "start" and detect_bot_provider(config) == "gnbots":
+        clear_loop_intent()
+    elif resolved_id == "start":
         from gnbots_loop_resume import mark_loop_started_by_user
 
         mark_loop_started_by_user()
@@ -4486,10 +4492,10 @@ async def close_gnbots() -> dict[str, Any]:
     backend = get_bot_backend(config)
     invalidate_dashboard_cache()
     try:
-        if backend.provider_id == "gnbots":
-            from gnbots_loop_resume import clear_loop_intent
+        from gnbots_loop_resume import clear_loop_intent
 
-            clear_loop_intent()
+        clear_loop_intent()
+        if backend.provider_id == "gnbots":
             for path in ("/stopall", "/stop"):
                 try:
                     await call_gnbots(config, method="GET", path=path)

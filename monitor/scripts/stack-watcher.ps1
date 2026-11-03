@@ -3,6 +3,7 @@ $MonitorRoot = Split-Path -Parent $PSScriptRoot
 $ConfigPath = Join-Path $MonitorRoot "config.json"
 $StartScript = Join-Path $PSScriptRoot "start-stack.ps1"
 $GnBotsScript = Join-Path $PSScriptRoot "gnbots-process.ps1"
+$FrostguardScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
 $PresenceScript = Join-Path $PSScriptRoot "gnbots-presence.ps1"
 $ConfigScript = Join-Path $PSScriptRoot "monitor-config.ps1"
 $TrayScript = Join-Path $PSScriptRoot "start-tray.ps1"
@@ -156,7 +157,61 @@ function Stop-StaleLaunchers {
         }
 }
 
+function Get-PinnedBotProvider {
+    if (-not (Test-Path $ConfigPath)) { return "gnbots" }
+    try {
+        $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        $raw = ([string]$cfg.bot_provider).Trim().ToLower()
+        if ($raw -eq "frostguard" -or $raw -eq "gnbots") { return $raw }
+    } catch {}
+    return "gnbots"
+}
+
+function Get-FrostguardWatchSnapshot {
+    $running = $false
+    $bridgeHealthy = $false
+    $name = "Frostguard"
+    if (Test-Path $FrostguardScript) {
+        try {
+            $info = & $FrostguardScript -Action Health | ConvertFrom-Json
+            $running = [bool]$info.running
+            $bridgeHealthy = [bool]$info.bridgeHealthy
+            if ($info.process) { $name = [string]$info.process }
+        } catch {}
+    }
+    return @{ processSeen = $running; apiHealthy = $bridgeHealthy; process = $name }
+}
+
+function Start-ActiveBotProcess([string]$Provider) {
+    if ($Provider -eq "frostguard") {
+        if (Test-Path $FrostguardScript) { & $FrostguardScript -Action Start | Out-Null }
+        return
+    }
+    & $GnBotsScript -Action Start | Out-Null
+}
+
+function Stop-ActiveBotProcess([string]$Provider) {
+    if ($Provider -eq "frostguard") {
+        if (Test-Path $FrostguardScript) { & $FrostguardScript -Action Stop | Out-Null }
+        return
+    }
+    & $GnBotsScript -Action Stop | Out-Null
+}
+
 function Ensure-GnBots([string]$ProcessName, [bool]$AutoStart, [string]$ApiUrl, [string]$ExePath) {
+    if ((Get-PinnedBotProvider) -eq "frostguard") {
+        if (-not $AutoStart) { return }
+        if (Test-UserStopSuppressed) { return }
+        $snap = Get-FrostguardWatchSnapshot
+        if ($snap.processSeen) { return }
+        Write-Log "Frostguard is not running. Auto-starting via frostguard-process.ps1 ..."
+        try {
+            Start-ActiveBotProcess "frostguard"
+        } catch {
+            Write-Log "Auto-start Frostguard failed: $($_.Exception.Message)"
+        }
+        return
+    }
     if (-not $AutoStart) { return }
     if (Test-UserStopSuppressed) {
         return
@@ -240,6 +295,7 @@ $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 if ($config.auto_start_with_gnbots -eq $false -and $config.headless_mode -ne $true) { exit 0 }
 
 $processName = if ($config.gnbots_process_name) { [string]$config.gnbots_process_name } else { "GnBots" }
+$gnbotsProcessName = $processName
 $dashboardPort = [int]$config.dashboard_port
 if ($dashboardPort -le 0) { $dashboardPort = 8787 }
 $pollFast = [int]$config.watcher_poll_seconds
@@ -293,7 +349,11 @@ $script:LastGnBotsRelaunchAt = $null
 Ensure-Monitor $dashboardPort | Out-Null
 Start-TrayOnce $trayEnabled
 
-if (-not (Invoke-GnBotsStackPresent $processName $gnbotsApiUrl $gnbotsExePath)) {
+$script:ActiveProvider = Get-PinnedBotProvider
+if ($script:ActiveProvider -eq "frostguard") {
+    $opening = Get-FrostguardWatchSnapshot
+    if (-not $opening.processSeen) { $script:GnBotsAbsentSince = Get-Date }
+} elseif (-not (Invoke-GnBotsStackPresent $processName $gnbotsApiUrl $gnbotsExePath)) {
     $script:GnBotsAbsentSince = Get-Date
 }
 
@@ -313,10 +373,19 @@ while ($true) {
             apiHealthy   = $false
         }
     }
+    $processName = $gnbotsProcessName
     $gnbotsStackPresent = [bool]$presence.stackPresent
     $gnbotsProcessSeen = [bool]$presence.processSeen
-    $monitorHealthy = Test-MonitorHealthy $dashboardPort
     $gnbotsApiHealthy = [bool]$presence.apiHealthy
+    $script:ActiveProvider = Get-PinnedBotProvider
+    if ($script:ActiveProvider -eq "frostguard") {
+        $opening = Get-FrostguardWatchSnapshot
+        $gnbotsProcessSeen = [bool]$opening.processSeen
+        $gnbotsApiHealthy = [bool]$opening.apiHealthy
+        $gnbotsStackPresent = $gnbotsProcessSeen -or $gnbotsApiHealthy
+        if ($opening.process) { $processName = [string]$opening.process }
+    }
+    $monitorHealthy = Test-MonitorHealthy $dashboardPort
 
     if ($gnbotsStackPresent) {
         $script:GnBotsAbsentSince = $null
@@ -347,7 +416,8 @@ while ($true) {
         [int][Math]::Floor(((Get-Date) - $script:GnBotsApiUnhealthySince).TotalMinutes)
     } else { 0 }
 
-    $statusLine = "GnBots.exe=$gnbotsProcessSeen stackActive=$gnbotsStackPresent apiHealthy=$gnbotsApiHealthy monitorHealthy=$monitorHealthy watcherPid=$PID idleMin=$idleMinutes apiDownMin=$apiUnhealthyMinutes"
+    $botLabel = if ($script:ActiveProvider -eq "frostguard") { "Frostguard.exe" } else { "GnBots.exe" }
+    $statusLine = "$botLabel=$gnbotsProcessSeen stackActive=$gnbotsStackPresent apiHealthy=$gnbotsApiHealthy monitorHealthy=$monitorHealthy watcherPid=$PID idleMin=$idleMinutes apiDownMin=$apiUnhealthyMinutes"
 
     if ($statusLine -ne $script:LastStatusLine) {
         Write-Log "Status: $statusLine"
@@ -389,48 +459,58 @@ while ($true) {
         $missingMinutes = [int][Math]::Floor(((Get-Date) - $script:GnBotsMissingSince).TotalMinutes)
     }
     $emulatorsUp = $false
+    $frostguardActive = $script:ActiveProvider -eq "frostguard"
     if (Get-Command Test-EmulatorProcessesRunning -ErrorAction SilentlyContinue) {
         $emulatorsUp = [bool](Test-EmulatorProcessesRunning)
     }
-    # Emulators left open used to look like a healthy stack, so GnBots.exe stayed
-    # down until somebody noticed. Bring one instance back unless Stop was pressed.
+    # Emulators left open used to look like a healthy stack, so the bot exe stayed
+    # down until somebody noticed. Bring that program back unless Stop was pressed.
     $shouldRelaunch = $script:SawGnBotsProcess -or $autoStartGnBots -or $emulatorsUp
     $relaunchCooldownOk = -not $script:LastGnBotsRelaunchAt -or ((Get-Date) - $script:LastGnBotsRelaunchAt).TotalMinutes -ge 5
     if ($relaunchCooldownOk -and $shouldRelaunch -and -not $gnbotsProcessSeen -and -not $gnbotsApiHealthy -and -not (Test-UserStopSuppressed) -and $missingMinutes -ge 2) {
-        Write-Log "$processName is down (API unhealthy). Starting one clean instance ..."
+        Write-Log "$processName is down. Starting one clean instance ..."
         $script:LastGnBotsRelaunchAt = Get-Date
         $script:GnBotsMissingSince = $null
         try {
-            & $GnBotsScript -Action Start | Out-Null
+            Start-ActiveBotProcess $script:ActiveProvider
             if ($LASTEXITCODE -ne 0) {
-                Write-Log "GnBots Start exited with code $LASTEXITCODE"
+                Write-Log "$processName Start exited with code $LASTEXITCODE"
             }
         } catch {
-            Write-Log "GnBots relaunch failed: $($_.Exception.Message)"
+            Write-Log "$processName relaunch failed: $($_.Exception.Message)"
         }
     }
 
     if ($apiRestartAfterMinutes -gt 0 -and $gnbotsProcessSeen -and -not $gnbotsApiHealthy -and $script:GnBotsApiUnhealthySince -and $apiUnhealthyMinutes -ge $apiRestartAfterMinutes -and -not (Test-UserStopSuppressed)) {
-        Write-Log "GnBots API unresponsive for $apiUnhealthyMinutes minutes (process still running). Restarting GnBots..."
+        Write-Log "$processName is unresponsive for $apiUnhealthyMinutes minutes (process still running). Restarting..."
         try {
-            & $GnBotsScript -Action Stop | Out-Null
+            Stop-ActiveBotProcess $script:ActiveProvider
             if ($LASTEXITCODE -ne 0) {
-                Write-Log "GnBots Stop exited with code $LASTEXITCODE"
+                Write-Log "$processName Stop exited with code $LASTEXITCODE"
             }
             Start-Sleep -Seconds 3
-            if (Test-GnBotsProcessByName $ProcessName) {
+            $stillUp = if ($frostguardActive) {
+                [bool](Get-FrostguardWatchSnapshot).processSeen
+            } else {
+                [bool](Test-GnBotsProcessByName $ProcessName)
+            }
+            if ($stillUp -and -not $frostguardActive) {
                 Write-Log "GnBots still running after Stop; force-killing..."
                 $null = Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" -ArgumentList "/F /IM ${ProcessName}.exe /T" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds 2
             }
-            & $GnBotsScript -Action Start -Force | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Log "GnBots Start exited with code $LASTEXITCODE"
+            if ($frostguardActive) {
+                Start-ActiveBotProcess "frostguard"
             } else {
-                Write-Log "GnBots restart requested after API timeout."
+                & $GnBotsScript -Action Start -Force | Out-Null
+            }
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "$processName Start exited with code $LASTEXITCODE"
+            } else {
+                Write-Log "$processName restart requested after it stopped answering."
             }
         } catch {
-            Write-Log "GnBots API recovery restart failed: $($_.Exception.Message)"
+            Write-Log "$processName recovery restart failed: $($_.Exception.Message)"
         }
         $script:GnBotsApiUnhealthySince = $null
     }

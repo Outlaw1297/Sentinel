@@ -88,6 +88,28 @@ class LoopResumeTests(unittest.TestCase):
         start.assert_not_called()
         self.assertFalse(resume.load_loop_intent().get("resumeAfterCrash"))
 
+    def test_frostguard_crash_sends_startbot_once(self) -> None:
+        resume.note_loop_observed(loop_running=True)
+        with patch("host_status.test_gnbots_user_stop_suppressed", return_value=False):
+            resume.note_gnbots_unreachable()
+        config = {"gnbots_resume_loop_after_crash": True, "bot_provider": "frostguard"}
+        with patch("bot_backend.detect_bot_provider", return_value="frostguard"):
+            with patch("host_status.test_gnbots_user_stop_suppressed", return_value=False):
+                with patch("frostguard_bridge.process_running", return_value=True):
+                    with patch("frostguard_bridge.pid_online", return_value=True):
+                        with patch("bot_backend.get_bot_backend") as backend:
+                            backend.return_value.automation_active.return_value = False
+                            with patch(
+                                "frostguard_bridge.start_bot",
+                                return_value={"ok": True, "message": "startbot"},
+                            ) as start:
+                                first = resume.tick_gnbots_loop_resume(config)
+                                second = resume.tick_gnbots_loop_resume(config)
+        self.assertTrue(first["ok"])
+        self.assertIsNone(second)
+        start.assert_called_once_with(config)
+        self.assertIn("restarted Frostguard run after crash", (self.logs / "automation.log").read_text(encoding="utf-8"))
+
     def test_disabled_config_does_nothing(self) -> None:
         resume.note_loop_observed(loop_running=True)
         with patch.object(resume, "start_gnbots_run_loop") as start:
