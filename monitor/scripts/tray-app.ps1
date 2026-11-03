@@ -552,12 +552,24 @@ function Invoke-TrayAction([string]$Action) {
                 Start-Sleep -Seconds 1
                 Exit-TrayApp
             }
-            "start_gnbots" { Start-TrayScript "gnbots-process.ps1" @("-Action", "Start") | Out-Null }
-            "stop_gnbots" {
-                $ok = Start-TrayScript "gnbots-process.ps1" @("-Action", "Stop") -Wait
+            "start_bot" {
+                if ((Get-TrayBotProvider) -eq "frostguard") {
+                    Start-TrayScript "frostguard-process.ps1" @("-Action", "Start") | Out-Null
+                } else {
+                    Start-TrayScript "gnbots-process.ps1" @("-Action", "Start") | Out-Null
+                }
+            }
+            "stop_bot" {
+                $frostguard = (Get-TrayBotProvider) -eq "frostguard"
+                $scriptName = if ($frostguard) { "frostguard-process.ps1" } else { "gnbots-process.ps1" }
+                $ok = Start-TrayScript $scriptName @("-Action", "Stop") -Wait
                 Start-Sleep -Seconds 1
                 if ($ok) {
-                    Send-MonitorNotification "GnBots closed" "GnBots.exe was closed from the tray." "gnbots_closed"
+                    if ($frostguard) {
+                        Send-MonitorNotification "Frostguard closed" "Frostguard was closed from the tray." "frostguard_closed"
+                    } else {
+                        Send-MonitorNotification "GnBots closed" "GnBots.exe was closed from the tray." "gnbots_closed"
+                    }
                 }
             }
         }
@@ -620,14 +632,21 @@ $stopAllItem.Add_Click({
 
 [void]$menu.Items.Add("-")
 
-$launchGnBotsItem = $menu.Items.Add("Launch GnBots")
-$launchGnBotsItem.Add_Click({ Invoke-TrayAction "start_gnbots" })
+$launchBotItem = $menu.Items.Add("Launch GnBots")
+$launchBotItem.Add_Click({ Invoke-TrayAction "start_bot" })
 
-$closeGnBotsItem = $menu.Items.Add("Close GnBots")
-$closeGnBotsItem.Add_Click({
-    if (Confirm-TrayAction "Close GnBots.exe?") {
-        Invoke-TrayAction "stop_gnbots"
+$closeBotItem = $menu.Items.Add("Close GnBots")
+$closeBotItem.Add_Click({
+    $program = if ((Get-TrayBotProvider) -eq "frostguard") { "Frostguard" } else { "GnBots" }
+    if (Confirm-TrayAction "Close $program?") {
+        Invoke-TrayAction "stop_bot"
     }
+})
+
+$menu.Add_Opening({
+    $program = if ((Get-TrayBotProvider) -eq "frostguard") { "Frostguard" } else { "GnBots" }
+    $launchBotItem.Text = "Launch $program"
+    $closeBotItem.Text = "Close $program"
 })
 
 [void]$menu.Items.Add("-")

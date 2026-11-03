@@ -2,7 +2,7 @@
 # Stop and start run only for an explicit action. Status and Provider never kill a process.
 
 param(
-    [ValidateSet("Provider", "Status", "StopIfActive", "MarkRestartIfRunning", "StartIfRestartRequested")]
+    [ValidateSet("Provider", "Status", "Start", "Stop", "StopIfActive", "MarkRestartIfRunning", "StartIfRestartRequested")]
     [string]$Action = "Status"
 )
 
@@ -83,6 +83,37 @@ switch ($Action) {
     }
     "Status" {
         Write-Result @{ provider = $provider; process = $processName; running = [bool]$running }
+    }
+    "Start" {
+        $started = $false
+        if ($provider -eq "frostguard") {
+            if (Test-NamedProcess $processName) {
+                $started = $true
+            } else {
+                $exe = Resolve-FrostguardExe $config
+                if ($exe) {
+                    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+                    Start-Sleep -Milliseconds 400
+                    $started = Test-NamedProcess $processName
+                }
+            }
+        }
+        Write-Result @{
+            provider = $provider
+            started = [bool]$started
+            running = [bool](Test-NamedProcess $processName)
+        }
+    }
+    "Stop" {
+        $stopped = $false
+        if ($provider -eq "frostguard" -and $running) {
+            $stopped = Stop-FrostguardProcess $processName
+        }
+        Write-Result @{
+            provider = $provider
+            stopped = [bool]$stopped
+            running = [bool](Test-NamedProcess $processName)
+        }
     }
     "StopIfActive" {
         $handled = $provider -eq "frostguard"
