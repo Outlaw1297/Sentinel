@@ -12,6 +12,19 @@ from gnbots_emulator_health import (
 from monitor_config import ldplayer_health_settings_from_flat
 
 
+def test_frostguard_resolution_matches_install_guide():
+    from gnbots_emulator_health import FROSTGUARD_LDPLAYER_HEALTH
+
+    modify = FROSTGUARD_LDPLAYER_HEALTH["modify"]
+    config = FROSTGUARD_LDPLAYER_HEALTH["config"]
+    assert modify["resolution"] == "720,1280,320"
+    assert modify["cpu"] == "4"
+    assert modify["memory"] == "2048"
+    assert config["advancedSettings.resolution"] == {"width": 720, "height": 1280}
+    assert config["advancedSettings.resolutionDpi"] == 320
+    assert config["basicSettings.fps"] == 30
+
+
 def test_default_resolution_matches_gnbots_runtime():
     modify = DEFAULT_LDPLAYER_HEALTH["modify"]
     config = DEFAULT_LDPLAYER_HEALTH["config"]

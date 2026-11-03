@@ -159,9 +159,34 @@ if (-not (Wait-MonitorHealthy $dashboardPort 60)) {
     throw $msg
 }
 
-Write-Info "Launching GnBots ..."
-$launchResult = & $GnBotsScript -Action Start
-$launchExit = $LASTEXITCODE
+$FrostguardScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
+$activeProvider = "gnbots"
+$restartedFrostguard = $false
+if (Test-Path $FrostguardScript) {
+    try {
+        $activeProvider = [string](& $FrostguardScript -Action Provider | ConvertFrom-Json).provider
+        $restarted = & $FrostguardScript -Action StartIfRestartRequested | ConvertFrom-Json
+        $restartedFrostguard = [bool]$restarted.requested
+        if ($restartedFrostguard) {
+            Write-Info "Launching Frostguard ..."
+            Write-Info "Frostguard restart result: started=$($restarted.started)"
+        }
+    } catch {
+        Write-Info "Frostguard launch check failed: $($_.Exception.Message)"
+    }
+}
+
+if ($activeProvider -eq "frostguard") {
+    if (-not $restartedFrostguard) {
+        Write-Info "Frostguard is the active program and was not running. Leaving it stopped."
+    }
+    $launchResult = "frostguard"
+    $launchExit = 0
+} else {
+    Write-Info "Launching GnBots ..."
+    $launchResult = & $GnBotsScript -Action Start
+    $launchExit = $LASTEXITCODE
+}
 Write-Info "Launch result (exit $launchExit): $launchResult"
 if (-not $Quiet) {
     Write-Host $launchResult

@@ -16,7 +16,7 @@
 
   <title>Sentinel Settings</title>
 
-  <link rel="stylesheet" href="/static/styles.css?v=74">
+  <link rel="stylesheet" href="/static/styles.css?v=77">
 </head>
 <body>
   <div class="layout settings-layout">
@@ -59,7 +59,7 @@
 
     <div class="settings-tab-panel" id="tab-bot" data-tab-panel="bot">
       <div class="settings-banner panel">
-        <p>
+        <p id="bot-settings-banner-text">
           All setting changes require a <strong>GnBots restart</strong> to take effect. Editing is disabled while the bot is
           running, paused, or booting — stop the bot from the dashboard first, change settings here, then use Restart GnBots.
           Access is currently open — plan to restrict via nginx or a user system later.
@@ -85,7 +85,7 @@
 
     <div class="settings-tab-panel hidden" id="tab-accounts" data-tab-panel="accounts">
       <div class="settings-banner panel account-settings-banner">
-        <p>
+        <p id="account-settings-banner-text">
           Edit each account’s <strong>Action Editor</strong> settings from the profile file
           (<code>profiles/&lt;profile&gt;.json</code>). Includes advanced settings, templates, and editable
           per-action schedule rules. Stop the bot before saving, then restart GnBots.
@@ -137,8 +137,8 @@
       <section class="panel account-advanced-panel hidden" id="account-advanced-panel">
         <div class="panel-head">
           <div>
-            <h2>Advanced settings</h2>
-            <p class="settings-group-desc">Assigned session and account menu rules (shuffle / custom).</p>
+            <h2 id="account-advanced-title">Advanced settings</h2>
+            <p class="settings-group-desc" id="account-advanced-desc">Assigned session and account menu rules (shuffle / custom).</p>
           </div>
         </div>
         <div class="account-advanced-body" id="account-advanced-body">
@@ -149,8 +149,8 @@
       <section class="panel account-actions-panel hidden" id="account-actions-panel">
         <div class="panel-head">
           <div>
-            <h2>Actions</h2>
-            <p class="settings-group-desc">Per-action settings, schedules, and last-used times.</p>
+            <h2 id="account-actions-title">Actions</h2>
+            <p class="settings-group-desc" id="account-actions-desc">Per-action settings, schedules, and last-used times.</p>
           </div>
         </div>
         <div class="account-actions-list" id="account-actions-list">
@@ -161,7 +161,7 @@
 
     <div class="settings-tab-panel hidden" id="tab-names" data-tab-panel="names">
       <div class="settings-banner panel account-names-banner">
-        <p>
+        <p id="account-names-banner-text">
           Edit every account’s <strong>Switch account name</strong> (Account Switch action) in one place.
           Each row keeps up to 10 recent names for quick selection. Stop the bot before saving, then restart GnBots.
         </p>
@@ -187,7 +187,7 @@
 
     <div class="settings-tab-panel hidden" id="tab-bulk" data-tab-panel="bulk">
       <div class="settings-banner panel bulk-actions-banner">
-        <p>
+        <p id="bulk-actions-banner-text">
           Change one setting or <strong>schedule timer</strong> on a GnBots action across many accounts at once — for example,
           set <strong>Beasts</strong> to level 27, replace <strong>schedule rules</strong>, or
           <strong>reset timers</strong> on selected accounts.
@@ -240,7 +240,7 @@
 
     <div class="settings-tab-panel hidden" id="tab-provision" data-tab-panel="provision">
       <div class="settings-banner panel provision-settings-banner">
-        <p>
+        <p id="provision-banner-text">
           Create a new <strong>LDPlayer</strong> instance with recommended health settings, install the latest
           <strong>Whiteout Survival</strong> APK, and add a matching account to the active GnBots profile. The instance
           and account name are the same. Stop the bot before starting — restart GnBots when the job completes.
@@ -268,7 +268,16 @@
             >
           </div>
 
-          <div class="provision-field-row">
+          <div class="provision-field-row hidden" id="provision-identity-row">
+            <label class="account-settings-label" for="provision-player-id">Player id</label>
+            <input class="setting-input" id="provision-player-id" type="text" spellcheck="false" placeholder="Optional player id">
+            <label class="account-settings-label" for="provision-alliance">Alliance</label>
+            <input class="setting-input" id="provision-alliance" type="text" maxlength="3" spellcheck="false" placeholder="3-letter code">
+            <label class="account-settings-label" for="provision-state">State</label>
+            <input class="setting-input" id="provision-state" type="text" spellcheck="false" placeholder="State number">
+          </div>
+
+          <div class="provision-field-row" id="provision-clone-row">
             <label class="account-settings-label" for="provision-template-select">Clone settings from</label>
             <select class="setting-select" id="provision-template-select"></select>
             <p class="provision-field-hint" id="provision-template-hint">
@@ -303,7 +312,7 @@
 
     <div class="settings-tab-panel hidden" id="tab-restore" data-tab-panel="restore">
       <div class="settings-banner panel restore-settings-banner">
-        <p>
+        <p id="restore-banner-text">
           Restore troubled LDPlayer instances from your configured backup folder, then install the latest
           Whiteout Survival APK from the GnBots cache. Restore is disabled while the bot is running — stop the bot
           from the dashboard first.
@@ -392,11 +401,33 @@
         <p class="restore-path-meta" id="automation-meta">—</p>
       </section>
 
+      <section class="panel hidden" id="automation-scripts-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Frostguard script check</h2>
+            <p class="settings-group-desc" id="automation-scripts-desc">
+              Task Builder flows are checked against the installed template images. A failing node is
+              reported here before the script runs.
+            </p>
+          </div>
+        </div>
+        <div id="automation-scripts-debugger"></div>
+        <div id="automation-scripts-list"></div>
+        <label class="account-settings-label" for="automation-script-json">
+          Paste a Task Builder JSON flow
+          <textarea id="automation-script-json" class="setting-input" rows="6" spellcheck="false" placeholder="{ &quot;title&quot;: &quot;…&quot;, &quot;steps&quot;: [] }"></textarea>
+        </label>
+        <div class="settings-actions" style="margin-top: 0.75rem;">
+          <button class="btn btn-small" id="automation-script-check-btn" type="button">Check pasted flow</button>
+        </div>
+        <div id="automation-script-findings"></div>
+      </section>
+
       <section class="panel" id="automation-stuck-panel">
         <div class="panel-head">
           <div>
             <h2>Stuck-screen learning</h2>
-            <p class="settings-group-desc">
+            <p class="settings-group-desc" id="automation-stuck-desc">
               When GnBots reports a same-screen timeout (for example stuck on an event page), Sentinel
               learns a rule and can press Back, restart the emulator, or warn you — once Auto-fix is on.
             </p>
@@ -485,6 +516,6 @@
   </div>
 
   <script src="/static/restore-shared.js?v=6"></script>
-  <script src="/static/settings.js?v=61"></script>
+  <script src="/static/settings.js?v=74"></script>
 </body>
 </html>

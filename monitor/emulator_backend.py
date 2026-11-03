@@ -593,6 +593,32 @@ _BACKENDS: dict[str, EmulatorBackend] = {
 }
 
 
+def _frostguard_emulator_choice(config: dict[str, Any]) -> str | None:
+    """When Frostguard is the active program, follow its saved emulator."""
+    try:
+        from bot_backend import detect_bot_provider
+
+        if detect_bot_provider(config) != "frostguard":
+            return None
+        from frostguard_workspace import read_global_config_value, resolve_workspace
+
+        current = read_global_config_value(resolve_workspace(config), "CURRENT_EMULATOR_STRING")
+    except Exception:  # noqa: BLE001
+        return None
+    text = str(current or "").strip().lower()
+    if not text:
+        return None
+    if "mumu" in text:
+        return "mumu"
+    if "memu" in text:
+        return "memu"
+    if "nox" in text:
+        return "nox"
+    if "ld" in text:
+        return "ldplayer"
+    return None
+
+
 def detect_emulator_provider(config: dict[str, Any]) -> str:
     """Resolve ``emulator_provider`` (auto|ldplayer|memu|nox|mumu) to a concrete id.
 
@@ -605,6 +631,10 @@ def detect_emulator_provider(config: dict[str, Any]) -> str:
         return raw
     if raw != "auto":
         return "ldplayer"
+
+    frostguard_choice = _frostguard_emulator_choice(config)
+    if frostguard_choice:
+        return frostguard_choice
 
     gnbots = _read_gnbots_config(config)
     if gnbots:

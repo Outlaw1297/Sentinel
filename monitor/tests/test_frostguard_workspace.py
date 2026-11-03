@@ -78,7 +78,7 @@ def test_read_watcher_props_and_status(tmp_path: Path):
     assert props["token"] == "SECRET-TOKEN-DO-NOT-LOG"
     assert props["chatId"] == "123456789"
     assert props["localPort"] == 23456
-    assert "botJarPath" in props
+    assert props["botJarPath"] == "C:\\Games\\Frostguard\\bot.jar"
 
     status = workspace_status(workspace, channel="stable")
     assert status["lockPresent"] is True
@@ -89,6 +89,23 @@ def test_read_watcher_props_and_status(tmp_path: Path):
     # Ensure status dict itself does not include the token.
     assert "token" not in status
     assert "SECRET" not in str(status)
+
+
+def test_read_watcher_props_unescapes_java_properties(tmp_path: Path):
+    workspace = tmp_path / "default"
+    watcher = workspace / "watcher"
+    watcher.mkdir(parents=True)
+    (watcher / "telegram-watcher.properties").write_text(
+        "botJarPath=C\\:\\\\Users\\\\dalto\\\\AppData\\\\Local\\\\Frostguard\\\\app\\\\bot.jar\n"
+        "token=123\\:ABC\n"
+        "localPort=59075\n",
+        encoding="utf-8",
+    )
+    props = read_watcher_props(workspace)
+    assert props["botJarPath"] == r"C:\Users\dalto\AppData\Local\Frostguard\app\bot.jar"
+    assert props["token"] == "123:ABC"
+    assert props["localPort"] == 59075
+    assert "chatId" not in props
 
 
 def test_list_profiles_from_sqlite(tmp_path: Path):
@@ -112,6 +129,44 @@ def test_list_profiles_from_sqlite(tmp_path: Path):
     assert by_name["Rick"]["instanceId"] == 0
     assert by_name["Morty"]["enabled"] is False
     assert by_name["Morty"]["instanceId"] == 3
+
+
+def test_list_profiles_reads_frostguard3_snake_case(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    db_path = workspace / "frostguard.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE profiles ("
+        "id integer primary key, enabled boolean not null, character_name varchar(255), "
+        "emulator_number varchar(255) not null, profile_name varchar(255) not null)"
+    )
+    conn.execute(
+        "INSERT INTO profiles (id, enabled, character_name, emulator_number, profile_name) "
+        "VALUES (21, 1, 'Chief', '10', 'MainA')"
+    )
+    conn.commit()
+    conn.close()
+
+    profiles = list_profiles(workspace)
+    assert len(profiles) == 1
+    assert profiles[0]["name"] == "MainA"
+    assert profiles[0]["emulatorNumber"] == 10
+    assert profiles[0]["enabled"] is True
+
+
+def test_list_tasks_reads_tp_daily_task(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute("CREATE TABLE tp_daily_task (id integer primary key, task_name varchar(255) not null)")
+    conn.execute("INSERT INTO tp_daily_task VALUES (1, 'Hero Recruitment')")
+    conn.commit()
+    conn.close()
+
+    tasks = list_tasks(workspace)
+    assert tasks[0]["name"] == "Hero Recruitment"
+    assert tasks[0]["id"] == "1"
 
 
 def test_list_incidents_empty_without_table(tmp_path: Path):
@@ -238,3 +293,42 @@ def test_set_task_enabled_writes_user_db(tmp_path: Path):
     assert result["enabled"] is False
     tasks = {row["id"]: row for row in list_tasks(workspace)}
     assert tasks["9"]["enabled"] is False
+
+
+def test_bridge_chat_id_falls_back_to_global_config(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "ws"
+    watcher = workspace / "watcher"
+    watcher.mkdir(parents=True)
+    (watcher / "telegram-watcher.properties").write_text(
+        "token=123\\:ABC\nlocalPort=23456\n",
+        encoding="utf-8",
+    )
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE config (id integer, value text, config_key text, tp_config_id integer, profile_id integer)"
+    )
+    conn.execute(
+        "INSERT INTO config (id, value, config_key, tp_config_id, profile_id) "
+        "VALUES (1, '4242', 'TELEGRAM_ALLOWED_CHAT_ID_STRING', 1, NULL)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "empty-local"))
+
+    from frostguard_bridge import resolve_bridge_endpoint, resolve_frostguard_exe
+
+    endpoint = resolve_bridge_endpoint(
+        {"frostguard_workspace": str(workspace), "frostguard_channel": "stable"}
+    )
+    assert endpoint["chatId"] == "4242"
+    assert endpoint["port"] == 23456
+
+    install = tmp_path / "Frostguard"
+    install.mkdir()
+    exe = install / "Frostguard.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    found = resolve_frostguard_exe(
+        {"frostguard_workspace": str(workspace), "frostguard_channel": "stable"}
+    )
+    assert found == exe

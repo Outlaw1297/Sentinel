@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -76,11 +77,18 @@ def test_frostguard_run_global_command_stopemulators():
     mock_emu.quit_all.assert_called_once_with(config)
 
 
-def test_frostguard_automation_active_lock_and_pid(tmp_path: Path):
+def test_frostguard_automation_active_follows_task_queue(tmp_path: Path):
     workspace = tmp_path / "ws"
-    workspace.mkdir()
+    log_dir = workspace / "logs"
+    log_dir.mkdir(parents=True)
     (workspace / "frostguard.db").write_bytes(b"")
     (workspace / "frostguard.lock").write_text("1", encoding="utf-8")
+    log_path = log_dir / "frostguard.log"
+    log_path.write_text(
+        "2026-11-02T00:09:35.465-07:00 INFO  [TaskQueue-MainA] dev.frostguard.engine.schedule.TaskQueue - MainA - Executing: Initialize\n"
+        "2026-11-02T00:09:49.737-07:00 INFO  [virtual-297] dev.frostguard.engine.schedule.TaskQueue - MainA - TaskQueue stopped after worker termination\n",
+        encoding="utf-8",
+    )
     config = {
         "bot_provider": "frostguard",
         "frostguard_workspace": str(workspace),
@@ -88,10 +96,14 @@ def test_frostguard_automation_active_lock_and_pid(tmp_path: Path):
         "frostguard_bridge_mode": "localhost",
     }
     with patch("frostguard_bridge.pid_online", return_value=True):
-        assert FrostguardBackend().automation_active(config) is True
-    with patch("frostguard_bridge.pid_online", return_value=False):
-        with patch("frostguard_bridge.process_running", return_value=False):
-            assert FrostguardBackend().automation_active(config) is True  # lock + db
+        with patch("frostguard_bridge.process_running", return_value=True):
+            assert FrostguardBackend().automation_active(config) is False
+    log_path.write_text(
+        "2026-11-02T00:09:49.737-07:00 INFO  [virtual-297] dev.frostguard.engine.schedule.TaskQueue - MainA - TaskQueue stopped after worker termination\n"
+        "2026-11-02T01:00:00.000-07:00 INFO  [TaskQueue-Amanda] dev.frostguard.engine.schedule.TaskQueue - Amanda - Executing: Initialize\n",
+        encoding="utf-8",
+    )
+    assert FrostguardBackend().automation_active(config) is True
 
 
 def test_auto_prefers_gnbots_when_api_up():
@@ -177,6 +189,8 @@ def test_frostguard_status_summary(tmp_path: Path):
 
 
 def test_frostguard_host_start_linux_degrades():
+    if os.name == "nt":
+        return
     result = FrostguardBackend().host_action({"frostguard_exe": "C:\\Frostguard.exe"}, "start")
     # On this Linux CI/VM host_start returns ok:false.
     assert result["ok"] is False

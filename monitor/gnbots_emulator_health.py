@@ -54,7 +54,96 @@ DEFAULT_LDPLAYER_HEALTH: dict[str, Any] = {
     },
 }
 
+# Frostguard install guide: 720×1280 portrait, DPI 320, 4 CPU, 2 GB RAM, 30 FPS.
+# Phone identity stays aligned with the GnBots profile so instance spoofing does not flip
+# when the operator switches programs.
+FROSTGUARD_LDPLAYER_HEALTH: dict[str, Any] = {
+    "modify": {
+        "resolution": "720,1280,320",
+        "cpu": "4",
+        "memory": "2048",
+        "manufacturer": "asus",
+        "model": "ASUS_Z01QD",
+        "root": "1",
+        "autorotate": "1",
+        "lockwindow": "0",
+    },
+    "config": {
+        "basicSettings.rootMode": True,
+        "basicSettings.adbDebug": 1,
+        "basicSettings.fps": 30,
+        "basicSettings.astc": False,
+        "basicSettings.disableMouseFastOpt": True,
+        "basicSettings.cjztdisableMouseFastOpt_new": 0,
+        "basicSettings.qjcjdisableMouseFast": 1,
+        "basicSettings.HDRQuality": 0,
+        "basicSettings.heightFrameRate": False,
+        "basicSettings.verticalSync": False,
+        "basicSettings.standaloneSysVmdk": True,
+        "basicSettings.fsAutoSize": 1,
+        "basicSettings.mulFsAddSize": 0,
+        "basicSettings.mulFsAutoSize": 2,
+        "basicSettings.autoRun": False,
+        "basicSettings.autoRotate": True,
+        "basicSettings.isForceLandscape": False,
+        "basicSettings.lockWindow": False,
+        "basicSettings.isForstStart": False,
+        "statusSettings.closeOption": 1,
+        "networkSettings.networkEnable": True,
+        "advancedSettings.cpuCount": 4,
+        "advancedSettings.memorySize": 2048,
+        "advancedSettings.resolution": {"width": 720, "height": 1280},
+        "advancedSettings.resolutionDpi": 320,
+        "propertySettings.phoneModel": "ASUS_Z01QD",
+        "propertySettings.phoneManufacturer": "asus",
+    },
+}
+
+HEALTH_PRESET_IDS = ("auto", "gnbots", "frostguard", "custom")
+
 _DEFAULT_LD_NAME = re.compile(r"^LDPlayer(-?\d+)?$", re.IGNORECASE)
+
+
+def _clone_health(source: dict[str, Any]) -> dict[str, Any]:
+    config = dict(source.get("config") or {})
+    resolution = config.get("advancedSettings.resolution")
+    if isinstance(resolution, dict):
+        config["advancedSettings.resolution"] = dict(resolution)
+    return {
+        "modify": dict(source.get("modify") or {}),
+        "config": config,
+    }
+
+
+def normalize_health_preset(config: dict[str, Any]) -> str:
+    """Return auto|gnbots|frostguard|custom. Custom overrides imply custom when unset."""
+    raw = str(config.get("ld_health_preset") or "").strip().lower()
+    if raw in HEALTH_PRESET_IDS:
+        return raw
+    custom = config.get("ldplayer_health_settings")
+    if isinstance(custom, dict) and custom:
+        return "custom"
+    return "auto"
+
+
+def active_health_program(config: dict[str, Any]) -> str:
+    """Program whose recommended settings apply: gnbots, frostguard, or custom."""
+    preset = normalize_health_preset(config)
+    if preset in {"gnbots", "frostguard", "custom"}:
+        return preset
+    try:
+        from bot_backend import detect_bot_provider
+
+        provider = detect_bot_provider(config)
+    except Exception:  # noqa: BLE001
+        provider = "gnbots"
+    return "frostguard" if provider == "frostguard" else "gnbots"
+
+
+def health_settings_for_program(program: str) -> dict[str, Any]:
+    if program == "frostguard":
+        return _clone_health(FROSTGUARD_LDPLAYER_HEALTH)
+    return _clone_health(DEFAULT_LDPLAYER_HEALTH)
 
 
 def is_default_ldplayer_name(name: str) -> bool:
@@ -84,17 +173,23 @@ def restore_marks_health_passed(config: dict[str, Any]) -> bool:
 
 
 def load_health_settings(config: dict[str, Any]) -> dict[str, Any]:
+    """Recommended LDPlayer settings for Fix settings / post-restore health.
+
+    ``ld_health_preset=auto`` follows the active bot provider. ``gnbots`` and
+    ``frostguard`` pin that program's recommended display settings. ``custom``
+    (or a stored ``ldplayer_health_settings`` blob with no preset) merges
+    overrides onto the GnBots baseline.
+    """
+    preset = normalize_health_preset(config)
+    if preset != "custom":
+        return health_settings_for_program(active_health_program(config))
     custom = config.get("ldplayer_health_settings")
-    if not isinstance(custom, dict):
-        return dict(DEFAULT_LDPLAYER_HEALTH)
-    merged: dict[str, Any] = {
-        "modify": dict(DEFAULT_LDPLAYER_HEALTH.get("modify") or {}),
-        "config": dict(DEFAULT_LDPLAYER_HEALTH.get("config") or {}),
-    }
-    if isinstance(custom.get("modify"), dict):
-        merged["modify"].update(custom["modify"])
-    if isinstance(custom.get("config"), dict):
-        merged["config"].update(custom["config"])
+    merged = _clone_health(DEFAULT_LDPLAYER_HEALTH)
+    if isinstance(custom, dict):
+        if isinstance(custom.get("modify"), dict):
+            merged["modify"].update(custom["modify"])
+        if isinstance(custom.get("config"), dict):
+            merged["config"].update(custom["config"])
     return merged
 
 

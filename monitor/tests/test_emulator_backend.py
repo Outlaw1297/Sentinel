@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -34,6 +35,38 @@ def test_factory_defaults_to_ldplayer():
 def test_factory_auto_defaults_to_ldplayer():
     assert detect_emulator_provider({"emulator_provider": "auto"}) == "ldplayer"
     assert get_emulator_backend({"emulator_provider": "auto"}).id == "ldplayer"
+
+
+def test_auto_follows_frostguard_saved_emulator(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute(
+        "CREATE TABLE config (id integer, value text, config_key text, tp_config_id integer, profile_id integer)"
+    )
+    conn.execute(
+        "INSERT INTO config (id, value, config_key, tp_config_id, profile_id) "
+        "VALUES (1, 'LDPLAYER', 'CURRENT_EMULATOR_STRING', 1, NULL)"
+    )
+    conn.commit()
+    conn.close()
+    frostguard = {
+        "emulator_provider": "auto",
+        "bot_provider": "frostguard",
+        "frostguard_workspace": str(workspace),
+    }
+    assert detect_emulator_provider(frostguard) == "ldplayer"
+    conn = sqlite3.connect(workspace / "frostguard.db")
+    conn.execute("UPDATE config SET value = 'MUMU' WHERE config_key = 'CURRENT_EMULATOR_STRING'")
+    conn.commit()
+    conn.close()
+    assert detect_emulator_provider(frostguard) == "mumu"
+    gnbots = {
+        "emulator_provider": "auto",
+        "bot_provider": "gnbots",
+        "frostguard_workspace": str(workspace),
+    }
+    assert detect_emulator_provider(gnbots) == "ldplayer"
 
 
 def test_factory_explicit_providers():

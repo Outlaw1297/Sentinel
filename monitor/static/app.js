@@ -131,7 +131,27 @@ function normalizeWatcherForShutdown(watcher, stack) {
   };
 }
 
+function programName(payload = lastPayload) {
+  return payload?.botProvider === "frostguard" ? "Frostguard" : "GnBots";
+}
+
+function programExe(payload = lastPayload) {
+  const named = String(payload?.botProcess?.name || "").trim();
+  if (named) return named;
+  return payload?.botProvider === "frostguard" ? "Frostguard.exe" : "GnBots.exe";
+}
+
+function botControlsOffline(payload = lastPayload) {
+  if (payload?.botProvider === "frostguard") {
+    return !(payload.botOnline || payload.botProcess?.running);
+  }
+  return !payload?.gnbotsOnline;
+}
+
 function gnbotsRunningForShutdown(watcher, stack) {
+  if (lastPayload?.botProvider === "frostguard") {
+    return Boolean(lastPayload.botProcess?.running || lastPayload.botOnline);
+  }
   if (stack?.gnbotsExe?.stackActive === true) return true;
   if (stack?.gnbotsApi?.healthy) return true;
   if (stack?.gnbotsExe && typeof stack.gnbotsExe.running === "boolean" && stack.gnbotsExe.running) {
@@ -176,14 +196,15 @@ function renderShutdownCountdown(watcher, stack = null) {
     return;
   }
 
+  const name = programName();
   if (gnbotsRunningForShutdown(watcher, stack)) {
-    els.shutdownCountdown.textContent = `If the GnBots stack fully stops, the monitor shuts down after ${limitMinutes} minutes.`;
+    els.shutdownCountdown.textContent = `If the ${name} stack fully stops, the monitor shuts down after ${limitMinutes} minutes.`;
     return;
   }
 
   const remaining = shutdownRemainingSeconds(watcher, stack);
   if (remaining == null) {
-    els.shutdownCountdown.textContent = `The monitor shuts down after ${limitMinutes} minutes with no GnBots stack activity.`;
+    els.shutdownCountdown.textContent = `The monitor shuts down after ${limitMinutes} minutes with no ${name} stack activity.`;
     return;
   }
 
@@ -192,7 +213,7 @@ function renderShutdownCountdown(watcher, stack = null) {
     return;
   }
 
-  els.shutdownCountdown.textContent = `Sentinel shuts down in ${formatCountdown(remaining)} without GnBots stack activity.`;
+  els.shutdownCountdown.textContent = `Sentinel shuts down in ${formatCountdown(remaining)} without ${name} stack activity.`;
 }
 
 function scheduleShutdownCountdown(watcher, stack = null) {
@@ -232,26 +253,40 @@ function renderStack(stack) {
   const gnbots = stack?.gnbotsExe || {};
   const monitor = stack?.monitor || {};
   const watcher = stack?.watcher || {};
+  const frostguard = lastPayload?.botProvider === "frostguard";
+  const proc = lastPayload?.botProcess || {};
+  const procName = programExe();
+  const procRunning = frostguard ? Boolean(proc.running) : Boolean(gnbots.running);
+  const procPid = frostguard ? proc.pid : gnbots.pid;
+  const workspace = lastPayload?.frostguard?.workspace || {};
 
   const elevation = stack?.monitorElevation || stack?.elevatedTasks || {};
+  const linkPill = frostguard
+    ? {
+        label: workspace.dbPresent
+          ? workspace.lockPresent
+            ? "Workspace · active"
+            : "Workspace · ready"
+          : "Workspace · missing",
+        className: workspace.dbPresent ? (workspace.lockPresent ? "ok" : "warn") : "bad",
+      }
+    : {
+        label: stack?.gnbotsApi?.healthy
+          ? `API · :${stack?.gnbotsApi?.port ?? "?"}`
+          : gnbots.running
+            ? "API · not responding"
+            : "API · offline",
+        className: stack?.gnbotsApi?.healthy ? "ok" : gnbots.running ? "bad" : "warn",
+      };
   const pills = [
     ...(stack?.headless
       ? [{ label: "Headless · low power", className: "ok" }]
       : []),
     {
-      label: gnbots.running
-        ? `GnBots.exe · PID ${gnbots.pid ?? "?"}`
-        : "GnBots.exe · not running",
-      className: gnbots.running ? "ok" : "bad",
+      label: procRunning ? `${procName} · PID ${procPid ?? "?"}` : `${procName} · not running`,
+      className: procRunning ? "ok" : "bad",
     },
-    {
-      label: stack?.gnbotsApi?.healthy
-        ? `API · :${stack?.gnbotsApi?.port ?? "?"}`
-        : gnbots.running
-          ? "API · not responding"
-          : "API · offline",
-      className: stack?.gnbotsApi?.healthy ? "ok" : gnbots.running ? "bad" : "warn",
-    },
+    linkPill,
     {
       label: monitor.healthy ? `Sentinel · :${monitor.port}` : `Sentinel · down`,
       className: monitor.healthy ? "ok" : "bad",
@@ -344,28 +379,39 @@ function renderResources(resources) {
 }
 
 function updateHostButtons(stack) {
-  const gnbotsRunning = Boolean(
-    stack?.gnbotsExe?.running ||
-      stack?.gnbotsExe?.stackActive ||
-      lastPayload?.gnbotsProcessRunning
-  );
-  const elevationReady = stack?.capabilities?.gnbotsElevationReady ?? stack?.monitorElevation?.ready ?? true;
+  const name = programName();
+  const exe = programExe();
+  const frostguard = lastPayload?.botProvider === "frostguard";
+  const hostRunning = frostguard
+    ? Boolean(lastPayload?.botProcess?.running)
+    : Boolean(
+        stack?.gnbotsExe?.running ||
+          stack?.gnbotsExe?.stackActive ||
+          lastPayload?.gnbotsProcessRunning
+      );
+  const elevationReady = frostguard
+    ? true
+    : (stack?.capabilities?.gnbotsElevationReady ?? stack?.monitorElevation?.ready ?? true);
   document.querySelectorAll("[data-host-action]").forEach((btn) => {
     const action = btn.dataset.hostAction;
     const needsElevation = action === "start" && !elevationReady;
+    if (action === "start") btn.textContent = `Launch ${name}`;
+    if (action === "stop") btn.textContent = `Close ${name}`;
     btn.disabled =
       commandBusy ||
       needsElevation ||
-      (action === "start" && gnbotsRunning) ||
-      (action === "stop" && !gnbotsRunning);
+      (action === "start" && hostRunning) ||
+      (action === "stop" && !hostRunning);
     if (needsElevation) {
-      btn.title = "GnBots requires Administrator. Restart Sentinel elevated via StartGnBotStack.bat.";
-    } else if (action === "start" && gnbotsRunning) {
-      btn.title = "GnBots is already running.";
-    } else if (action === "stop" && !gnbotsRunning) {
-      btn.title = "GnBots is not running.";
+      btn.title = `${name} requires Administrator. Restart Sentinel elevated via StartGnBotStack.bat.`;
+    } else if (action === "start" && hostRunning) {
+      btn.title = `${name} is already running.`;
+    } else if (action === "stop" && !hostRunning) {
+      btn.title = `${name} is not running.`;
+    } else if (action === "start") {
+      btn.title = `Launch ${exe} on the bot PC`;
     } else {
-      btn.title = "";
+      btn.title = `Close ${exe} only. The monitor and watcher keep running.`;
     }
   });
 }
@@ -529,17 +575,20 @@ function renderRestoreRecommendation(accounts, payload) {
 function updateAddAccountShortcut(payload) {
   const link = els.addAccountOpen;
   if (!link) return;
+  const name = programName(payload);
   const botRunning = Boolean(payload?.botActive);
-  const offline = payload?.gnbotsOnline === false;
+  const offline = botControlsOffline(payload);
   const blocked = botRunning || offline;
   link.classList.toggle("disabled", blocked);
   link.setAttribute("aria-disabled", blocked ? "true" : "false");
   if (botRunning) {
     link.title = "Stop the bot before adding a new account";
   } else if (offline) {
-    link.title = "Launch GnBots first";
+    link.title = `Launch ${name} first`;
+  } else if (payload?.botProvider === "frostguard") {
+    link.title = "Create an LDPlayer instance and add a Frostguard account";
   } else {
-    link.title = "Create LDPlayer instance and add a GnBots account";
+    link.title = "Create an LDPlayer instance and add a GnBots account";
   }
 }
 
@@ -589,7 +638,7 @@ async function runCommand(path, options = {}) {
 }
 
 function updateControlsDisabled() {
-  const offline = !lastPayload?.gnbotsOnline;
+  const offline = botControlsOffline();
   document.querySelectorAll(".btn-command, .btn-action").forEach((btn) => {
     btn.disabled = offline || commandBusy;
   });
@@ -639,7 +688,10 @@ function renderAccountActions(container, account, catalog) {
     return;
   }
 
-  const codes = catalog?.sessionRunCodes || DEFAULT_COMMAND_CATALOG.sessionRunCodes;
+  const sessionExec = lastPayload?.botCapabilities?.supports_session_exec !== false;
+  const codes = sessionExec
+    ? catalog?.sessionRunCodes || DEFAULT_COMMAND_CATALOG.sessionRunCodes
+    : [];
   const actionButtons = codes
     .map((code) => {
       const tone = accountActionTone(code);
@@ -676,6 +728,10 @@ function renderStats(summary, status) {
   const logStats = summary.logStats || {};
   const errorCount = Number(logStats.errors || 0);
   const warnCount = Number(logStats.warnings || 0);
+  const botState =
+    lastPayload?.botProvider === "frostguard"
+      ? lastPayload.botState || status?.State || "—"
+      : status?.State || "—";
   const cards = [
     { key: "errors", label: "Errors today", value: errorCount, tone: errorCount > 0 ? "bad" : "" },
     { key: "warnings", label: "Warnings today", value: warnCount, tone: warnCount > 0 ? "warn" : "" },
@@ -688,7 +744,7 @@ function renderStats(summary, status) {
     },
     { key: "running", label: "Running", value: summary.running ?? 0, tone: (summary.running ?? 0) > 0 ? "ok" : "" },
     { key: "booting", label: "Booting", value: summary.booting ?? 0, tone: (summary.booting ?? 0) > 0 ? "warn" : "" },
-    { key: "state", label: "Bot state", value: status?.State || "—", tone: "" },
+    { key: "state", label: "Bot state", value: botState, tone: "" },
   ];
 
   els.stats.innerHTML = cards
@@ -856,6 +912,11 @@ function dismissAccountSwitchOcrNotice(event) {
 
 function renderAccountSwitchOcrNotice(payload) {
   if (!els.logOcrNotice) return;
+  if (payload?.botProvider === "frostguard") {
+    els.logOcrNotice.hidden = true;
+    els.logOcrNotice.innerHTML = "";
+    return;
+  }
   const recent = payload.accountSwitchOcr?.recent || [];
   const latest = recent.find((event) => {
     if (isAccountSwitchOcrNoticeDismissed(event)) return false;
@@ -1075,6 +1136,16 @@ function formatSwitchName(account) {
   return `${configured} → ${recommended}?`;
 }
 
+function setAccountMeta(node, className, label, value, hidden = false) {
+  const cell = node.querySelector(className);
+  const row = cell?.closest("div");
+  if (!row) return;
+  row.classList.toggle("hidden", Boolean(hidden));
+  const caption = row.querySelector("dt");
+  if (caption && label) caption.textContent = label;
+  if (cell && !hidden) cell.textContent = String(value);
+}
+
 function setAccountStatCell(node, className, value, tone) {
   const cell = node.querySelector(className);
   if (!cell) return;
@@ -1092,6 +1163,10 @@ function renderAccounts(accounts) {
     if (!query) return true;
     return (
       account.name.toLowerCase().includes(query) ||
+      String(account.characterName || "").toLowerCase().includes(query) ||
+      String(account.alliance || "").toLowerCase().includes(query) ||
+      String(account.playerId || "").toLowerCase().includes(query) ||
+      String(account.state || "").toLowerCase().includes(query) ||
       String(account.instanceId).includes(query) ||
       (account.activeAction || "").toLowerCase().includes(query)
     );
@@ -1139,21 +1214,31 @@ function renderAccounts(accounts) {
     }
 
     node.querySelector(".instance").textContent = account.instanceId ?? "—";
-    node.querySelector(".action").textContent = account.activeAction || "—";
     const stats = account.logStats || {};
-    setAccountStatCell(
-      node,
-      ".uptime-today",
-      formatUptimePercent(stats.uptimePercent),
-      uptimeTone(stats.uptimePercent),
-    );
-    setAccountStatCell(
-      node,
-      ".switch-name",
-      formatSwitchName(account),
-      switchNameTone(account),
-    );
-    node.querySelector(".runtime").textContent = formatRuntime(account.runtime, account);
+    const frostguard = lastPayload?.botProvider === "frostguard";
+    if (frostguard) {
+      const accountName = String(account.characterName || account.name || "").trim();
+      setAccountMeta(node, ".action", "Alliance", account.alliance || "—");
+      setAccountMeta(node, ".uptime-today", "State", account.state || "—");
+      setAccountMeta(node, ".switch-name", "Account name", accountName || "—");
+      setAccountMeta(node, ".runtime", "Player id", account.playerId || "—");
+      setAccountMeta(node, ".runs-today", "", "", true);
+    } else {
+      node.querySelector(".action").textContent = account.activeAction || "—";
+      setAccountStatCell(
+        node,
+        ".uptime-today",
+        formatUptimePercent(stats.uptimePercent),
+        uptimeTone(stats.uptimePercent),
+      );
+      setAccountStatCell(
+        node,
+        ".switch-name",
+        formatSwitchName(account),
+        switchNameTone(account),
+      );
+      node.querySelector(".runtime").textContent = formatRuntime(account.runtime, account);
+    }
     const runsToday = stats.runsToday || 0;
     const errorsToday = stats.errorsToday || 0;
     const warningsToday = stats.warningsToday || 0;
@@ -1380,24 +1465,36 @@ function renderError(message, payload) {
   const layout = document.querySelector(".layout");
   if (!layout) return;
 
-  const processUp = payload?.gnbotsProcessRunning;
+  const name = programName(payload);
+  const exe = programExe(payload);
+  const frostguard = payload?.botProvider === "frostguard";
+  const processUp = frostguard ? Boolean(payload?.botProcess?.running) : Boolean(payload?.gnbotsProcessRunning);
   const banner = document.createElement("div");
   banner.className = "error-banner";
-  if (processUp) {
+  if (frostguard) {
     banner.innerHTML = `
       <div class="alert-stripe" aria-hidden="true"></div>
       <div class="error-banner-copy">
-        <p><strong>GnBots is running but the API is not responding.</strong> ${escapeHtml(message)}</p>
+        <p><strong>${escapeHtml(name)} is offline.</strong> ${escapeHtml(message)}</p>
+        <p class="error-banner-actions">
+          <button class="btn btn-small btn-ghost" type="button" id="api-restart-btn">Restart ${escapeHtml(name)}</button>
+        </p>
+      </div>`;
+  } else if (processUp) {
+    banner.innerHTML = `
+      <div class="alert-stripe" aria-hidden="true"></div>
+      <div class="error-banner-copy">
+        <p><strong>${escapeHtml(name)} is running but the API is not responding.</strong> ${escapeHtml(message)}</p>
         <p class="error-banner-actions">
           <button class="btn btn-small btn-primary-soft" type="button" id="api-reconnect-btn">Recover API</button>
-          <button class="btn btn-small btn-ghost" type="button" id="api-restart-btn">Restart GnBots</button>
+          <button class="btn btn-small btn-ghost" type="button" id="api-restart-btn">Restart ${escapeHtml(name)}</button>
         </p>
       </div>`;
   } else {
     banner.innerHTML = `
       <div class="alert-stripe" aria-hidden="true"></div>
       <div class="error-banner-copy">
-        <p>GnBots API unreachable: ${escapeHtml(message)}. Showing profile/log data from disk.</p>
+        <p>${escapeHtml(name)} API unreachable: ${escapeHtml(message)}. Showing profile/log data from disk.</p>
       </div>`;
   }
 
@@ -1412,7 +1509,7 @@ function renderError(message, payload) {
   if (reconnectBtn) {
     reconnectBtn.addEventListener("click", async () => {
       reconnectBtn.disabled = true;
-      setCommandStatus("Recovering GnBots API (may restart GnBots)...", "warn");
+      setCommandStatus(`Recovering ${name} API (may restart ${name})...`, "warn");
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), 120000);
       try {
@@ -1427,7 +1524,7 @@ function renderError(message, payload) {
       } catch (error) {
         const message =
           error.name === "AbortError"
-            ? "Recovery timed out after 2 minutes. Check watcher.log and try Restart GnBots."
+            ? `Recovery timed out after 2 minutes. Check watcher.log and try Restart ${name}.`
             : error.message;
         setCommandStatus(`Recovery failed: ${message}`, "error");
       } finally {
@@ -1440,13 +1537,13 @@ function renderError(message, payload) {
   const restartBtn = banner.querySelector("#api-restart-btn");
   if (restartBtn) {
     restartBtn.addEventListener("click", async () => {
-      if (!window.confirm("Restart GnBots? This stops the current run and relaunches the app.")) return;
+      if (!window.confirm(`Restart ${name}? This stops the current run and relaunches ${exe}.`)) return;
       restartBtn.disabled = true;
       try {
         const response = await fetch("/api/host/gnbots/restart", { method: "POST" });
         const body = await response.json().catch(() => ({}));
         if (!body.ok) throw new Error(body.message || body.detail || `HTTP ${response.status}`);
-        setCommandStatus(body.message || "GnBots restart requested.", "ok");
+        setCommandStatus(body.message || `${name} restart requested.`, "ok");
         await burstRefresh({ delays: [0, 2000, 6000, 15000] });
       } catch (error) {
         setCommandStatus(`Restart failed: ${error.message}`, "error");
@@ -1462,23 +1559,48 @@ function render(payload) {
   if (window.GnBotsNotifications) {
     window.GnBotsNotifications.onDashboardUpdate(payload);
   }
-  els.profileLabel.textContent = `Profile: ${payload.profile}`;
+  const name = programName(payload);
+  if (payload.botProvider === "frostguard") {
+    els.profileLabel.textContent = payload.frostguard?.workspace?.channel
+      ? `${name} · ${payload.frostguard.workspace.channel}`
+      : name;
+  } else {
+    els.profileLabel.textContent = `Profile: ${payload.profile}`;
+  }
+  const note = document.getElementById("elevated-tasks-note");
+  if (note) {
+    note.innerHTML =
+      payload.botProvider === "frostguard"
+        ? `On the bot PC, run <code>StartGnBotStack.bat</code> to start the headless monitor, then launch ${name} from Application.`
+        : `On the bot PC, run <code>StartGnBotStack.bat</code> to start the headless monitor and ${name}.`;
+  }
 
-  const apiOnline = Boolean(payload.gnbotsOnline);
-  const processUp = Boolean(payload.gnbotsProcessRunning);
-  if (apiOnline) {
-    els.gnbotsStatus.textContent = "GnBots online";
+  const frostguard = payload.botProvider === "frostguard";
+  const apiOnline = frostguard ? Boolean(payload.botOnline || payload.botProcess?.running) : Boolean(payload.gnbotsOnline);
+  const processUp = frostguard ? Boolean(payload.botProcess?.running) : Boolean(payload.gnbotsProcessRunning);
+  if (apiOnline && processUp) {
+    els.gnbotsStatus.textContent = `${name} online`;
     els.gnbotsStatus.className = "status-pill online";
-  } else if (processUp) {
-    els.gnbotsStatus.textContent = "GnBots API down";
+  } else if (frostguard && apiOnline) {
+    els.gnbotsStatus.textContent = `${name} idle`;
+    els.gnbotsStatus.className = "status-pill warn";
+  } else if (!frostguard && processUp) {
+    els.gnbotsStatus.textContent = `${name} API down`;
     els.gnbotsStatus.className = "status-pill warn";
   } else {
-    els.gnbotsStatus.textContent = "GnBots offline";
+    els.gnbotsStatus.textContent = `${name} offline`;
     els.gnbotsStatus.className = "status-pill offline";
   }
   els.lastUpdated.textContent = `Updated ${formatTime(payload.updatedAt)}`;
 
-  renderError(apiOnline ? null : payload.gnbotsError, payload);
+  const statusError = frostguard
+    ? apiOnline
+      ? null
+      : payload.gnbotsError || `${name} is not running.`
+    : apiOnline
+      ? null
+      : payload.gnbotsError;
+  renderError(statusError, payload);
   renderStack(payload.stack || {});
   renderResources(payload.resources || {});
   renderStats(payload.summary || {}, payload.status || {});
@@ -1601,7 +1723,7 @@ async function refresh(options = {}) {
       render(await response.json());
     } while (refreshQueuedFresh);
   } catch (error) {
-    els.profileLabel.textContent = "Profile unavailable";
+    els.profileLabel.textContent = lastPayload?.botProvider === "frostguard" ? "Frostguard unavailable" : "Profile unavailable";
     renderError(error.message);
   } finally {
     els.refreshBtn.disabled = false;
@@ -1811,11 +1933,13 @@ function applyHostActionOptimistic(action, payload) {
 document.querySelectorAll("[data-host-action]").forEach((button) => {
   button.addEventListener("click", async () => {
     const action = button.dataset.hostAction;
-    const label = action === "start" ? "Launch GnBots" : "Close GnBots";
+    const name = programName();
+    const exe = programExe();
+    const label = action === "start" ? `Launch ${name}` : `Close ${name}`;
     const confirmText =
       action === "start"
-        ? "Launch GnBots.exe on the bot PC?"
-        : "Close GnBots.exe? This stops the application entirely.";
+        ? `Launch ${exe} on the bot PC?`
+        : `Close ${exe}? This stops the application entirely.`;
     if (!window.confirm(confirmText)) return;
 
     if (commandBusy) return;
@@ -1869,7 +1993,7 @@ els.accountsGrid.addEventListener("change", async (event) => {
   const actionLabel = active ? "enable" : "disable";
   if (
     !window.confirm(
-      `${active ? "Enable" : "Disable"} ${name} for bot runs?\n\nRestart GnBots before starting the bot so this takes effect.`
+      `${active ? "Enable" : "Disable"} ${name} for bot runs?\n\nRestart ${programName()} before starting the bot so this takes effect.`
     )
   ) {
     toggle.checked = !active;
@@ -1900,7 +2024,7 @@ els.accountsGrid.addEventListener("change", async (event) => {
       renderAccounts(lastPayload.accounts);
     }
 
-    setCommandStatus(payload.message || `${name} ${actionLabel}d. Restart GnBots to apply.`, "ok");
+    setCommandStatus(payload.message || `${name} ${actionLabel}d. Restart ${programName()} to apply.`, "ok");
   } catch (error) {
     toggle.checked = !active;
     setCommandStatus(`Could not ${actionLabel} ${name}: ${error.message}`, "error");
@@ -1951,7 +2075,9 @@ els.restartSentinelBtn?.addEventListener("click", async () => {
   if (commandBusy) return;
   if (
     !window.confirm(
-      "Restart Sentinel on the bot PC?\n\nThe dashboard will disconnect briefly. Refresh in about 30 seconds."
+      lastPayload?.botProvider === "frostguard" && lastPayload?.botProcess?.running
+        ? "Restart Sentinel on the bot PC?\n\nFrostguard is running, so it will close and start again with Sentinel. The dashboard will disconnect briefly."
+        : "Restart Sentinel on the bot PC?\n\nThe dashboard will disconnect briefly. Refresh in about 30 seconds."
     )
   ) {
     return;
@@ -2016,9 +2142,9 @@ els.addAccountOpen?.addEventListener("click", (event) => {
     setCommandStatus("Stop the bot before adding a new account.", "warn");
     return;
   }
-  if (lastPayload?.gnbotsOnline === false) {
+  if (botControlsOffline(lastPayload)) {
     event.preventDefault();
-    setCommandStatus("Launch GnBots first, then add accounts from Settings.", "warn");
+    setCommandStatus(`Launch ${programName()} first, then add accounts from Settings.`, "warn");
   }
 });
 

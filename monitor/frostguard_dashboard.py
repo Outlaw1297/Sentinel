@@ -26,13 +26,28 @@ def build_frostguard_dashboard_slice(config: dict[str, Any]) -> dict[str, Any]:
     profiles = list_profiles(workspace)
     incidents = list_incidents(workspace)
 
-    running: set[int] = set()
-    try:
-        from emulator_backend import get_emulator_backend
+    from frostguard_logs import frostguard_task_queue_running
+    import frostguard_bridge as bridge
 
-        running = set(get_emulator_backend(config).running_indexes(config) or set())
+    queue_running = False
+    process_up = False
+    try:
+        queue_running = frostguard_task_queue_running(config)
     except Exception:  # noqa: BLE001
-        running = set()
+        queue_running = False
+    try:
+        process_up = bridge.process_running(config)
+    except Exception:  # noqa: BLE001
+        process_up = False
+
+    running: set[int] = set()
+    if queue_running:
+        try:
+            from emulator_backend import get_emulator_backend
+
+            running = set(get_emulator_backend(config).running_indexes(config) or set())
+        except Exception:  # noqa: BLE001
+            running = set()
 
     incidents_by_profile: dict[str, list[dict[str, Any]]] = {}
     open_incidents: list[dict[str, Any]] = []
@@ -65,6 +80,10 @@ def build_frostguard_dashboard_slice(config: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": account_id,
                 "name": str(profile.get("name") or account_id or "Profile"),
+                "characterName": str(profile.get("characterName") or "").strip(),
+                "playerId": str(profile.get("playerId") or "").strip(),
+                "alliance": str(profile.get("alliance") or "").strip(),
+                "state": str(profile.get("state") or "").strip(),
                 "active": bool(profile.get("active", profile.get("enabled", True))),
                 "enabled": bool(profile.get("enabled", profile.get("active", True))),
                 "instanceId": index,
@@ -99,18 +118,18 @@ def build_frostguard_dashboard_slice(config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    bot_active = False
-    try:
-        from bot_backend import FrostguardBackend
-
-        bot_active = bool(FrostguardBackend().automation_active(config))
-    except Exception:  # noqa: BLE001
-        bot_active = bool(status.get("lockPresent"))
+    if queue_running:
+        bot_state = "Running"
+    elif process_up:
+        bot_state = "Open"
+    else:
+        bot_state = "Idle"
+    max_sessions = _max_concurrent_instances(workspace)
 
     return {
         "accounts": accounts,
-        "botActive": bot_active,
-        "botState": "Running" if bot_active else "Idle",
+        "botActive": queue_running,
+        "botState": bot_state,
         "workspace": status,
         "incidents": open_incidents[:50],
         "summary": {
@@ -119,5 +138,17 @@ def build_frostguard_dashboard_slice(config: dict[str, Any]) -> dict[str, Any]:
             "activeSessions": sum(1 for row in accounts if row.get("inSession")),
             "running": sum(1 for row in accounts if row.get("isRunning")),
             "booting": 0,
+            "maxSessions": max_sessions,
         },
     }
+
+
+def _max_concurrent_instances(workspace: Any) -> int:
+    """Frostguard Config → Instance Settings → Max Concurrent Instances."""
+    from frostguard_workspace import read_global_config_value
+
+    raw = read_global_config_value(workspace, "MAX_RUNNING_EMULATORS_INT")
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 0

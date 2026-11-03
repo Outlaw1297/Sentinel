@@ -1,4 +1,4 @@
-const SHELL_CACHE = "sentinel-shell-v8";
+const SHELL_CACHE = "sentinel-shell-v22";
 const NETWORK_FIRST_STATIC = new Set([
   "/static/settings.js",
   "/static/app.js",
@@ -10,11 +10,11 @@ const SHELL_ASSETS = [
   "/",
   "/favicon.ico",
   "/favicon.png?v=7",
-  "/static/styles.css?v=73",
-  "/static/app.js?v=75",
-  "/static/settings.js?v=61",
+  "/static/styles.css?v=77",
+  "/static/app.js?v=78",
+  "/static/settings.js?v=74",
   "/static/restore-shared.js?v=6",
-  "/static/notifications.js?v=8",
+  "/static/notifications.js?v=9",
   "/static/sentinel-icons.js?v=1",
   "/static/manifest.webmanifest",
   "/static/icons/sentinel-logo.png?v=5",

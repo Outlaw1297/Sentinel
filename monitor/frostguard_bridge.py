@@ -15,6 +15,7 @@ import httpx
 
 from frostguard_workspace import (
     default_local_port,
+    read_global_config_value,
     read_watcher_props,
     resolve_workspace,
     workspace_channel,
@@ -57,6 +58,8 @@ def resolve_bridge_endpoint(config: dict[str, Any]) -> dict[str, Any]:
             port = int(status.get("localPort") or default_local_port(identity))
     chat_override = str(config.get("frostguard_chat_id") or "").strip()
     chat_id = chat_override or str(props.get("chatId") or "").strip()
+    if not chat_id:
+        chat_id = read_global_config_value(workspace, "TELEGRAM_ALLOWED_CHAT_ID_STRING")
     return {
         "workspace": workspace,
         "channel": channel,
@@ -150,6 +153,49 @@ def post_command(
     return result
 
 
+def frostguard_exe_candidates(config: dict[str, Any]) -> list[Path]:
+    """Launcher paths to try when ``frostguard_exe`` is blank."""
+    candidates: list[Path] = []
+    try:
+        props = read_watcher_props(resolve_workspace(config))
+    except Exception:  # noqa: BLE001
+        props = {}
+    jar = str(props.get("botJarPath") or "").strip()
+    channel = str(config.get("frostguard_channel") or "stable").strip().lower()
+    names = ["Frostguard Nightly.exe", "Frostguard.exe"] if channel == "nightly" else ["Frostguard.exe"]
+    if jar:
+        app_dir = Path(jar).expanduser()
+        for name in names:
+            candidates.append(app_dir.parent.parent / name)
+            candidates.append(app_dir.parent / name)
+    local = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        base = Path(local)
+        if channel == "nightly":
+            candidates.append(base / "Frostguard Nightly" / "Frostguard Nightly.exe")
+        candidates.append(base / "Frostguard" / "Frostguard.exe")
+        if channel != "nightly":
+            candidates.append(base / "Frostguard Nightly" / "Frostguard Nightly.exe")
+    return candidates
+
+
+def resolve_frostguard_exe(config: dict[str, Any]) -> Path | None:
+    """Find Frostguard.exe from the watcher jar path or the per-user install folder."""
+    seen: set[str] = set()
+    for path in frostguard_exe_candidates(config):
+        try:
+            resolved = path.expanduser()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.is_file():
+            return resolved
+    return None
+
+
 def process_running(config: dict[str, Any]) -> bool:
     name = str(config.get("frostguard_process_name") or "Frostguard").strip() or "Frostguard"
     return bool(find_processes(name))
@@ -180,27 +226,23 @@ def host_start(config: dict[str, Any]) -> dict[str, Any]:
             "message": "Frostguard already running.",
             "pids": process_pids(config),
         }
-    exe = str(config.get("frostguard_exe") or "").strip()
-    if not exe:
-        props = read_watcher_props(resolve_workspace(config))
-        jar = str(props.get("botJarPath") or "").strip()
-        if jar and Path(jar).is_file():
+    explicit = str(config.get("frostguard_exe") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        if not path.is_file():
+            return {"ok": False, "action": "start", "message": f"frostguard_exe not found: {path}"}
+    else:
+        discovered = resolve_frostguard_exe(config)
+        if discovered is None:
             return {
                 "ok": False,
                 "action": "start",
                 "message": (
-                    "frostguard_exe is not set. Set it to the Frostguard launcher "
-                    "(botJarPath alone is not started by Sentinel)."
+                    "frostguard_exe is not set and Frostguard.exe was not found "
+                    "under %LOCALAPPDATA%\\Frostguard."
                 ),
             }
-        return {
-            "ok": False,
-            "action": "start",
-            "message": "frostguard_exe is not configured.",
-        }
-    path = Path(exe)
-    if not path.is_file():
-        return {"ok": False, "action": "start", "message": f"frostguard_exe not found: {path}"}
+        path = discovered
     try:
         subprocess.Popen(
             [str(path)],

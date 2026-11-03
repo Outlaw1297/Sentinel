@@ -119,10 +119,27 @@ def create_ldplayer_instance(config: dict[str, Any], name: str) -> tuple[int, st
 
 
 def provision_account_preview(config: dict[str, Any], profile_name: str) -> dict[str, Any]:
+    from bot_backend import detect_bot_provider
     from gnbots_emulator_health import read_selected_profile
     from ldplayer_restore import list_ld_instances
     from profile_accounts import list_profile_account_templates
     from profile_templates import list_profile_templates
+
+    if detect_bot_provider(config) == "frostguard":
+        instances = list_ld_instances(config)
+        ld_indexes = {int(row["index"]) for row in instances}
+        return {
+            "program": "frostguard",
+            "profile": None,
+            "requiresClone": False,
+            "ldInstanceCount": len(instances),
+            "ldIndexes": sorted(ld_indexes),
+            "usedInstanceIds": [],
+            "templateAccounts": [],
+            "profileTemplates": [],
+            "defaultTemplateAccountId": None,
+            "defaultCloneSource": None,
+        }
 
     gnbots_root = resolve_gnbots_root(config)
     profile = profile_name or read_selected_profile(gnbots_root)
@@ -141,6 +158,8 @@ def provision_account_preview(config: dict[str, Any], profile_name: str) -> dict
     elif profile_templates:
         default_clone_source = f"template:{profile_templates[0]['title']}"
     return {
+        "program": "gnbots",
+        "requiresClone": True,
         "profile": profile,
         "ldInstanceCount": len(instances),
         "ldIndexes": sorted(ld_indexes),
@@ -221,20 +240,30 @@ def _provision_worker(
     profile_name: str,
     clone_source: str | None = None,
     template_account_id: str | None = None,
+    player_id: str | None = None,
+    character_name: str | None = None,
+    alliance: str | None = None,
+    state: str | None = None,
 ) -> None:
     from gnbots_emulator_health import fix_ldplayer_instance_settings, read_selected_profile
     from ldplayer_restore import ensure_ldplayer_instance_stopped, list_ld_instances, resolve_ldconsole, run_ldconsole
     from profile_accounts import append_profile_account
     from whiteout_apk import ensure_latest_whiteout_apk, install_whiteout_apk, wait_for_android_boot
 
-    gnbots_root = resolve_gnbots_root(config)
-    profile_name = profile_name or read_selected_profile(gnbots_root)
-    source_type, source_id = _resolve_clone_source(
-        config,
-        profile_name,
-        clone_source=clone_source,
-        template_account_id=template_account_id,
-    )
+    from bot_backend import detect_bot_provider
+
+    frostguard = detect_bot_provider(config) == "frostguard"
+    source_type = ""
+    source_id = ""
+    if not frostguard:
+        gnbots_root = resolve_gnbots_root(config)
+        profile_name = profile_name or read_selected_profile(gnbots_root)
+        source_type, source_id = _resolve_clone_source(
+            config,
+            profile_name,
+            clone_source=clone_source,
+            template_account_id=template_account_id,
+        )
     finished_at: str | None = None
 
     try:
@@ -299,6 +328,10 @@ def _provision_worker(
                 workspace,
                 instance_index=index,
                 name=account_name,
+                player_id=player_id,
+                character_name=character_name,
+                alliance=alliance,
+                state=state,
             )
             if not created.get("ok"):
                 raise RuntimeError(
@@ -363,31 +396,40 @@ def start_provision_account(
     profile_name: str,
     clone_source: str | None = None,
     template_account_id: str | None = None,
+    player_id: str | None = None,
+    character_name: str | None = None,
+    alliance: str | None = None,
+    state: str | None = None,
 ) -> dict[str, Any]:
+    from bot_backend import detect_bot_provider
     from profile_accounts import profile_name_exists
 
     clean_name = str(account_name or "").strip()
     if not clean_name:
         raise ValueError("Account name is required.")
-    source_type, source_id = _resolve_clone_source(
-        config,
-        profile_name,
-        clone_source=clone_source,
-        template_account_id=template_account_id,
-    )
+    frostguard = detect_bot_provider(config) == "frostguard"
+    source_type = ""
+    source_id = ""
+    if not frostguard:
+        source_type, source_id = _resolve_clone_source(
+            config,
+            profile_name,
+            clone_source=clone_source,
+            template_account_id=template_account_id,
+        )
 
-    gnbots_root = resolve_gnbots_root(config)
-    if profile_name_exists(gnbots_root, profile_name, clean_name):
-        raise ValueError(f"Profile already has an account named {clean_name!r}.")
+        gnbots_root = resolve_gnbots_root(config)
+        if profile_name_exists(gnbots_root, profile_name, clean_name):
+            raise ValueError(f"Profile already has an account named {clean_name!r}.")
 
-    if source_type == "account":
-        from profile_accounts import read_profile_account_by_id
+        if source_type == "account":
+            from profile_accounts import read_profile_account_by_id
 
-        read_profile_account_by_id(gnbots_root, profile_name, source_id)
-    else:
-        from profile_templates import read_profile_template
+            read_profile_account_by_id(gnbots_root, profile_name, source_id)
+        else:
+            from profile_templates import read_profile_template
 
-        read_profile_template(config, source_id)
+            read_profile_template(config, source_id)
 
     from ldplayer_restore import list_ld_instances
 
@@ -397,11 +439,12 @@ def start_provision_account(
 
     job_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(timezone.utc).isoformat()
-    clone_source_value = clone_source or f"{source_type}:{source_id}"
+    clone_source_value = None if frostguard else (clone_source or f"{source_type}:{source_id}")
     job = {
         "id": job_id,
         "accountName": clean_name,
         "profileName": profile_name,
+        "program": "frostguard" if frostguard else "gnbots",
         "cloneSource": clone_source_value,
         "templateAccountId": source_id if source_type == "account" else None,
         "profileTemplateTitle": source_id if source_type == "template" else None,
@@ -420,6 +463,10 @@ def start_provision_account(
             "profile_name": profile_name,
             "clone_source": clone_source_value,
             "template_account_id": template_account_id,
+            "player_id": player_id,
+            "character_name": character_name,
+            "alliance": alliance,
+            "state": state,
         },
         name=f"provision-{job_id}",
         daemon=True,

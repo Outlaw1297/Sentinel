@@ -76,7 +76,28 @@ def test_load_health_settings_merges_custom_overrides():
 def test_ld_health_flat_from_config_without_overrides():
     flat = ld_health_flat_from_config({})
     assert flat["ld_health_use_defaults"] is True
+    assert flat["ld_health_preset"] == "auto"
+    assert flat["ld_health_preset_resolved"] == "gnbots"
     assert flat["ld_health_width"] == 400
+
+
+def test_load_health_settings_follows_active_frostguard_program():
+    merged = load_health_settings({"bot_provider": "frostguard"})
+    assert merged["modify"]["resolution"] == "720,1280,320"
+    assert merged["modify"]["cpu"] == "4"
+    assert merged["modify"]["memory"] == "2048"
+    assert merged["config"]["advancedSettings.resolutionDpi"] == 320
+    flat = ld_health_flat_from_config({"bot_provider": "frostguard"})
+    assert flat["ld_health_preset"] == "auto"
+    assert flat["ld_health_preset_resolved"] == "frostguard"
+    assert flat["ld_health_width"] == 720
+    assert flat["ld_health_memory_mb"] == 2048
+
+
+def test_pinned_gnbots_preset_ignores_frostguard_provider():
+    merged = load_health_settings({"bot_provider": "frostguard", "ld_health_preset": "gnbots"})
+    assert merged["modify"]["resolution"] == "400,652,120"
+    assert merged["modify"]["cpu"] == "2"
 
 
 def test_ld_health_flat_from_config_with_overrides():
@@ -144,4 +165,27 @@ def test_update_monitor_config_value_clears_overrides_with_use_defaults(tmp_path
 
     ui = monitor_config_for_ui()
     assert ui["ld_health_use_defaults"] is True
+    assert ui["ld_health_preset"] == "auto"
     assert ui["ld_health_width"] == 400
+
+
+def test_update_monitor_config_value_pins_frostguard_preset(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"bot_provider":"gnbots"}', encoding="utf-8")
+    monkeypatch.setattr(monitor_config, "CONFIG_PATH", config_path)
+
+    value, message = update_monitor_config_value("ld_health_preset", "frostguard")
+    assert value == "frostguard"
+    assert "720" in message
+
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["ld_health_preset"] == "frostguard"
+    assert "ldplayer_health_settings" not in stored
+
+    ui = monitor_config_for_ui()
+    assert ui["ld_health_width"] == 720
+    assert ui["ld_health_height"] == 1280
+    assert ui["ld_health_dpi"] == 320
+    assert ui["ld_health_cpu"] == 4
+    assert ui["ld_health_memory_mb"] == 2048
+    assert ui["ld_health_fps"] == 30

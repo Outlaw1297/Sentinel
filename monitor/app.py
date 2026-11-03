@@ -28,6 +28,24 @@ from pydantic import BaseModel, Field
 
 from bot_activity import bot_activity_from_status, normalize_bot_state, profile_settings_locked_from_activity
 from bot_backend import detect_bot_provider, get_bot_backend
+from frostguard_account_settings import (
+    PROFILE_NAME as FROSTGUARD_PROFILE_NAME,
+    PROGRAM as FROSTGUARD_PROGRAM,
+    FrostguardSettingsError,
+    bulk_update_field as frostguard_bulk_update_field,
+    list_account_actions as frostguard_list_account_actions,
+    list_accounts as frostguard_list_accounts,
+    list_field_catalog as frostguard_list_field_catalog,
+    list_global_settings as frostguard_list_global_settings,
+    list_identities as frostguard_list_identities,
+    read_field_rows as frostguard_read_field_rows,
+    reject_gnbots_only,
+    set_account_enabled as frostguard_set_account_enabled,
+    update_account_action as frostguard_update_account_action,
+    update_global_setting as frostguard_update_global_setting,
+    update_identities as frostguard_update_identities,
+    workspace_for as frostguard_workspace_for,
+)
 from emulator_backend import detect_emulator_provider, get_emulator_backend
 from gnbots_cache import (
     cached_api_status,
@@ -247,11 +265,12 @@ from account_stats import (
 )
 from monitor_config import (
     LD_HEALTH_UI_KEYS,
-    MONITOR_SETTING_GROUPS,
     default_ld_health_flat,
     ensure_absolute_paths_in_config_file,
     ld_health_flat_from_config,
+    ld_health_preset_catalog,
     monitor_config_for_ui,
+    monitor_groups_for_config,
     monitor_resolved_paths,
     monitor_field_meta,
     normalize_monitor_config_paths,
@@ -588,6 +607,25 @@ def write_gnbots_config_setting(config: dict[str, Any], key: str, value: str) ->
     return coerced
 
 
+def _summary_max_sessions(
+    bot_provider: str,
+    frostguard_slice: dict[str, Any] | None,
+    settings: dict[str, Any],
+    config: dict[str, Any],
+) -> int:
+    if bot_provider == "frostguard":
+        raw = ((frostguard_slice or {}).get("summary") or {}).get("maxSessions")
+        if raw is not None:
+            try:
+                return max(0, int(raw))
+            except (TypeError, ValueError):
+                return 0
+    try:
+        return int(settings.get("Sessions") or config.get("sessions") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def bot_activity_from_payload(status: dict[str, Any], sessions: list[Any] | None = None) -> dict[str, Any]:
     return bot_activity_from_status(status, sessions or [])
 
@@ -597,6 +635,29 @@ def profile_edit_locked(activity: dict[str, Any]) -> bool:
 
 
 def resolve_bot_activity_sync(config: dict[str, Any]) -> dict[str, Any]:
+    if detect_bot_provider(config) == "frostguard":
+        active = False
+        try:
+            active = bool(get_bot_backend(config).automation_active(config))
+        except Exception:  # noqa: BLE001
+            active = False
+        state = "Running" if active else "Idle"
+        if not active:
+            try:
+                import frostguard_bridge as bridge
+
+                if bridge.process_running(config):
+                    state = "Open"
+            except Exception:  # noqa: BLE001
+                state = "Idle"
+        return {
+            "botActive": active,
+            "botState": state,
+            "runningSessions": 1 if active else 0,
+            "bootingSessions": 0,
+            "pausedSessions": 0,
+        }
+
     try:
         gnbots = fetch_gnbots_sync(config)
         return bot_activity_from_payload(
@@ -642,6 +703,19 @@ def profile_status(file_settings: dict[str, Any], api_settings: dict[str, Any] |
         "runtimeProfile": runtime,
         "profileInUse": runtime or configured,
     }
+
+
+def _using_frostguard(monitor_config: dict[str, Any]) -> bool:
+    return detect_bot_provider(monitor_config) == "frostguard"
+
+
+def _raise_frostguard(exc: FrostguardSettingsError) -> None:
+    raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+def _stop_before_edit_detail(monitor_config: dict[str, Any], feature: str) -> str:
+    program = "Frostguard" if _using_frostguard(monitor_config) else "the bot"
+    return f"Stop {program} before editing {feature}."
 
 
 def refresh_profiles_manifest() -> None:
@@ -1831,6 +1905,11 @@ class ProfileAccountActionUpdateRequest(BaseModel):
 class ProfileSwitchNameUpdateItem(BaseModel):
     accountId: str = Field(..., min_length=1)
     switchAccountName: str = ""
+    name: str | None = None
+    characterName: str | None = None
+    playerId: str | None = None
+    alliance: str | None = None
+    state: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -1861,6 +1940,10 @@ class ProvisionAccountRequest(BaseModel):
     cloneSource: str | None = None
     templateAccountId: str | None = None
     profile: str | None = None
+    playerId: str | None = None
+    characterName: str | None = None
+    alliance: str | None = None
+    state: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -2311,11 +2394,14 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
         cleared_at=cleared_at,
         id_by_name=id_by_name,
     )
-    ocr_events = process_queued_ocr_events(
-        config,
-        profile_name,
-        name_by_id=name_by_id,
-    )
+    if detect_bot_provider(config) == "frostguard":
+        ocr_events = []
+    else:
+        ocr_events = process_queued_ocr_events(
+            config,
+            profile_name,
+            name_by_id=name_by_id,
+        )
     if ocr_events:
         invalidate_dashboard_cache()
         if push_enabled(config):
@@ -2461,6 +2547,7 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
         bot_online = gnbots is not None
 
     bot_provider = detect_bot_provider(config)
+    fg_log_stats: dict[str, Any] | None = None
     bot_active = bool(activity.get("botActive"))
     bot_state = activity.get("botState") or "Unknown"
     frostguard_slice: dict[str, Any] | None = None
@@ -2491,20 +2578,44 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
                 bot_active = bool(bot_backend.automation_active(config))
             except Exception:  # noqa: BLE001
                 bot_active = bool(frostguard_slice.get("botActive"))
-            bot_state = "Running" if bot_active else str(frostguard_slice.get("botState") or "Idle")
-            if not recent_logs:
-                fg_logs = collect_frostguard_log_entries(config)
-                recent_logs = fg_logs.get("logs") or []
-                error_logs = fg_logs.get("errorLog") or error_logs
+            bot_state = str(frostguard_slice.get("botState") or ("Running" if bot_active else "Idle"))
+            fg_logs = collect_frostguard_log_entries(config)
+            recent_logs = list(fg_logs.get("logs") or [])
+            error_logs = list(fg_logs.get("errorLog") or [])
+            fg_log_stats = fg_logs.get("logStats") or global_log_stats
+            recent_ocr_events = []
             if not profile_name:
                 profile_name = "frostguard"
         except Exception:  # noqa: BLE001
             frostguard_slice = None
 
+    exe_info = stack.get("gnbotsExe") or {}
+    bot_process: dict[str, Any] = {
+        "name": "GnBots.exe",
+        "running": bool(gnbots_process_running(config, stack=stack)),
+        "pid": exe_info.get("pid"),
+    }
+    if bot_provider == "frostguard":
+        try:
+            from frostguard_bridge import process_pids
+
+            fg_name = str(config.get("frostguard_process_name") or "Frostguard").strip() or "Frostguard"
+            if not fg_name.lower().endswith(".exe"):
+                fg_name = f"{fg_name}.exe"
+            fg_pids = process_pids(config)
+            bot_process = {
+                "name": fg_name,
+                "running": bool(fg_pids),
+                "pid": fg_pids[0] if fg_pids else None,
+            }
+        except Exception:  # noqa: BLE001
+            bot_process = {"name": "Frostguard.exe", "running": False, "pid": None}
+
     payload: dict[str, Any] = {
         "gnbotsOnline": gnbots is not None,
         "gnbotsError": gnbots_error,
         "gnbotsProcessRunning": gnbots_process_running(config, stack=stack),
+        "botProcess": bot_process,
         "gnbotsApi": api_status,
         "gnbotsApiFailures": int(_GNBOTS_API_STATE.get("failures") or 0),
         "botProvider": bot_provider,
@@ -2527,8 +2638,13 @@ def build_dashboard_payload(config: dict[str, Any], gnbots: dict[str, Any] | Non
             "activeSessions": active_count,
             "running": running_count,
             "booting": booting_count,
-            "maxSessions": int(settings.get("Sessions") or config.get("sessions") or 0),
-            "logStats": global_log_stats,
+            "maxSessions": _summary_max_sessions(
+                bot_provider,
+                frostguard_slice,
+                settings,
+                config,
+            ),
+            "logStats": fg_log_stats or global_log_stats,
         },
         "accounts": accounts,
         "logs": recent_logs,
@@ -3828,6 +3944,31 @@ async def assistant_suggestions(
     return suggestions
 
 
+@app.get("/api/automation/scripts")
+async def automation_scripts() -> dict[str, Any]:
+    from frostguard_scripts import list_script_catalog
+
+    return await asyncio.to_thread(list_script_catalog, config)
+
+
+@app.post("/api/automation/scripts/check")
+async def automation_scripts_check(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    from frostguard_scripts import check_script
+
+    try:
+        report = await asyncio.to_thread(
+            check_script,
+            config,
+            script_id=str(payload.get("id") or ""),
+            raw_json=str(payload.get("json") or ""),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return report
+
+
 @app.get("/api/automation/stuck-rules")
 async def automation_stuck_rules() -> dict[str, Any]:
     return await asyncio.to_thread(stuck_rules_status, config)
@@ -3969,6 +4110,10 @@ async def provision_account_route(body: ProvisionAccountRequest) -> dict[str, An
             profile_name=profile_name,
             clone_source=(body.cloneSource or "").strip() or None,
             template_account_id=(body.templateAccountId or "").strip() or None,
+            player_id=(body.playerId or "").strip() or None,
+            character_name=(body.characterName or "").strip() or None,
+            alliance=(body.alliance or "").strip() or None,
+            state=(body.state or "").strip() or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3982,7 +4127,12 @@ async def provision_account_route(body: ProvisionAccountRequest) -> dict[str, An
         "ok": True,
         "job": job,
         "requiresRestart": True,
-        "message": "Provisioning started. Restart GnBots when the job completes.",
+        "program": job.get("program") or ("frostguard" if _using_frostguard(config) else "gnbots"),
+        "message": (
+            "Provisioning started. The new Frostguard account is saved in the workspace when the job completes."
+            if _using_frostguard(config)
+            else "Provisioning started. Restart GnBots when the job completes."
+        ),
     }
 
 
@@ -4437,16 +4587,34 @@ async def profiles() -> dict[str, Any]:
 
 @app.get("/api/profile/accounts")
 async def list_profile_accounts() -> dict[str, Any]:
+    activity = await resolve_bot_activity(config)
+    locked = profile_edit_locked(activity)
+    if _using_frostguard(config):
+        try:
+            accounts = await asyncio.to_thread(frostguard_list_accounts, frostguard_workspace_for(config))
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        enabled_count = sum(1 for row in accounts if row.get("active"))
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "botActive": locked,
+            "accounts": accounts,
+            "totalAccounts": len(accounts),
+            "activeProfileAccounts": enabled_count,
+            "writable": not locked,
+        }
+
     file_settings = read_gnbots_config_file(config)
     profile_name = active_profile_name(config, file_settings=file_settings)
     gnbots_root = resolve_gnbots_root(config)
     accounts = read_all_profile_accounts(gnbots_root, profile_name)
-    activity = await resolve_bot_activity(config)
-    locked = profile_edit_locked(activity)
     enabled_count = sum(1 for row in accounts if row.get("active"))
     return {
         "ok": True,
         "profile": profile_name,
+        "program": "gnbots",
         "botActive": locked,
         "accounts": accounts,
         "totalAccounts": len(accounts),
@@ -4457,10 +4625,40 @@ async def list_profile_accounts() -> dict[str, Any]:
 
 @app.get("/api/profile/switch-names")
 async def get_profile_switch_names() -> dict[str, Any]:
-    file_settings = read_gnbots_config_file(config)
-    profile_name = active_profile_name(config, file_settings=file_settings)
     activity = await resolve_bot_activity(config)
     locked = profile_edit_locked(activity)
+    if _using_frostguard(config):
+        try:
+            accounts = await asyncio.to_thread(
+                frostguard_list_identities,
+                frostguard_workspace_for(config),
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "botActive": locked,
+            "writable": not locked,
+            "accounts": [
+                {
+                    "accountId": row["id"],
+                    "accountName": row["name"],
+                    "characterName": row.get("characterName") or "",
+                    "playerId": row.get("playerId") or "",
+                    "alliance": row.get("alliance") or "",
+                    "state": row.get("state") or "",
+                    "instanceId": row.get("instanceId", -1),
+                    "active": row.get("active", True),
+                }
+                for row in accounts
+            ],
+            "totalAccounts": len(accounts),
+            "message": "Frostguard accounts store a name, player id, alliance, and state. There is no GnBots profile.",
+        }
+    file_settings = read_gnbots_config_file(config)
+    profile_name = active_profile_name(config, file_settings=file_settings)
     accounts = read_profile_switch_name_settings(config, profile_name)
     return {
         "ok": True,
@@ -4476,11 +4674,49 @@ async def get_profile_switch_names() -> dict[str, Any]:
 async def update_profile_switch_names(
     body: ProfileSwitchNamesBulkUpdateRequest,
 ) -> dict[str, Any]:
+    if _using_frostguard(config):
+        activity = await resolve_bot_activity(config)
+        if profile_edit_locked(activity):
+            raise HTTPException(
+                status_code=403,
+                detail=_stop_before_edit_detail(config, "account names"),
+            )
+        if not body.updates:
+            raise HTTPException(status_code=400, detail="No account updates were provided.")
+        try:
+            accounts = await asyncio.to_thread(
+                frostguard_update_identities,
+                frostguard_workspace_for(config),
+                [item.model_dump() for item in body.updates],
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        invalidate_dashboard_cache()
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "requiresRestart": False,
+            "message": "Frostguard account names saved.",
+            "accounts": [
+                {
+                    "accountId": row["id"],
+                    "accountName": row["name"],
+                    "characterName": row.get("characterName") or "",
+                    "playerId": row.get("playerId") or "",
+                    "alliance": row.get("alliance") or "",
+                    "state": row.get("state") or "",
+                    "instanceId": row.get("instanceId", -1),
+                    "active": row.get("active", True),
+                }
+                for row in accounts
+            ],
+        }
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before editing switch account names.",
+            detail=_stop_before_edit_detail(config, "switch account names"),
         )
     if not body.updates:
         raise HTTPException(status_code=400, detail="No switch name updates were provided.")
@@ -4504,12 +4740,33 @@ async def get_profile_action_fields(
     script_suffix: str | None = Query(None, alias="scriptSuffix"),
     field_key: str | None = Query(None, alias="fieldKey"),
 ) -> dict[str, Any]:
-    file_settings = read_gnbots_config_file(config)
-    profile_name = active_profile_name(config, file_settings=file_settings)
     activity = await resolve_bot_activity(config)
     locked = profile_edit_locked(activity)
     suffix = str(script_suffix or "").strip().lower()
     key = str(field_key or "").strip()
+
+    if _using_frostguard(config):
+        workspace = frostguard_workspace_for(config)
+        try:
+            if suffix and key:
+                payload = await asyncio.to_thread(frostguard_read_field_rows, workspace, suffix, key)
+            else:
+                payload = {
+                    "actions": await asyncio.to_thread(frostguard_list_field_catalog, workspace),
+                }
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "botActive": locked,
+            "writable": not locked,
+            **payload,
+        }
+
+    file_settings = read_gnbots_config_file(config)
+    profile_name = active_profile_name(config, file_settings=file_settings)
 
     if suffix and key:
         payload = await asyncio.to_thread(
@@ -4522,6 +4779,7 @@ async def get_profile_action_fields(
         return {
             "ok": True,
             "profile": profile_name,
+            "program": "gnbots",
             "botActive": locked,
             "writable": not locked,
             **payload,
@@ -4531,6 +4789,7 @@ async def get_profile_action_fields(
     return {
         "ok": True,
         "profile": profile_name,
+        "program": "gnbots",
         "botActive": locked,
         "writable": not locked,
         "actions": actions,
@@ -4545,15 +4804,36 @@ async def update_profile_action_fields_bulk(
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before editing action settings.",
+            detail=_stop_before_edit_detail(config, "action settings"),
         )
     if not body.updates:
         raise HTTPException(status_code=400, detail="No action field updates were provided.")
 
+    updates = [item.model_dump() for item in body.updates]
+    if _using_frostguard(config):
+        try:
+            payload = await asyncio.to_thread(
+                frostguard_bulk_update_field,
+                frostguard_workspace_for(config),
+                body.scriptSuffix,
+                body.fieldKey,
+                updates,
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        invalidate_dashboard_cache()
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "requiresRestart": False,
+            "message": "Frostguard task settings saved.",
+            **payload,
+        }
+
     file_settings = read_gnbots_config_file(config)
     profile_name = active_profile_name(config, file_settings=file_settings)
     invalidate_dashboard_cache()
-    updates = [item.model_dump() for item in body.updates]
     payload = await asyncio.to_thread(
         write_profile_action_field_settings_bulk,
         config,
@@ -4576,6 +4856,11 @@ async def delete_switch_name_history_entry(
     account_id: str,
     name: str = Query(..., min_length=1),
 ) -> dict[str, Any]:
+    if _using_frostguard(config):
+        try:
+            reject_gnbots_only("Switch account names")
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
     clean_name = str(name or "").strip()
     if not clean_name:
         raise HTTPException(status_code=400, detail="Name is required.")
@@ -4599,11 +4884,29 @@ async def delete_switch_name_history_entry(
 
 @app.get("/api/profile/accounts/{account_id}/actions")
 async def get_profile_account_actions(account_id: str) -> dict[str, Any]:
+    activity = await resolve_bot_activity(config)
+    writable = not profile_edit_locked(activity)
+    if _using_frostguard(config):
+        try:
+            account = await asyncio.to_thread(
+                frostguard_list_account_actions,
+                frostguard_workspace_for(config),
+                account_id,
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "account": account,
+            "writable": writable,
+            "readOnly": not writable,
+        }
+
     file_settings = read_gnbots_config_file(config)
     profile_name = active_profile_name(config, file_settings=file_settings)
     gnbots_root = resolve_gnbots_root(config)
-    activity = await resolve_bot_activity(config)
-    writable = not profile_edit_locked(activity)
     try:
         max_sessions = int(file_settings.get("Sessions") or 8)
     except (TypeError, ValueError):
@@ -4614,6 +4917,7 @@ async def get_profile_account_actions(account_id: str) -> dict[str, Any]:
     return {
         "ok": True,
         "profile": profile_name,
+        "program": "gnbots",
         "account": account,
         "writable": writable,
         "readOnly": not writable,
@@ -4625,11 +4929,16 @@ async def update_profile_account_settings(
     account_id: str,
     body: ProfileAccountSettingsUpdateRequest,
 ) -> dict[str, Any]:
+    if _using_frostguard(config):
+        try:
+            reject_gnbots_only("Session, shuffle, and custom")
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before editing account settings.",
+            detail=_stop_before_edit_detail(config, "account settings"),
         )
     if body.sessionId is None and body.shuffle is None and body.custom is None:
         raise HTTPException(status_code=400, detail="No account setting changes were provided.")
@@ -4667,11 +4976,16 @@ async def apply_profile_template(
     account_id: str,
     body: ProfileTemplateApplyRequest,
 ) -> dict[str, Any]:
+    if _using_frostguard(config):
+        try:
+            reject_gnbots_only("Profile templates")
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before applying a template.",
+            detail=_stop_before_edit_detail(config, "a template"),
         )
 
     file_settings = read_gnbots_config_file(config)
@@ -4696,11 +5010,16 @@ async def apply_profile_template(
 
 @app.post("/api/profile/templates")
 async def create_profile_template(body: ProfileTemplateCreateRequest) -> dict[str, Any]:
+    if _using_frostguard(config):
+        try:
+            reject_gnbots_only("Profile templates")
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before creating a template.",
+            detail=_stop_before_edit_detail(config, "a template"),
         )
 
     file_settings = read_gnbots_config_file(config)
@@ -4750,10 +5069,35 @@ async def update_profile_account_action(
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before editing account actions.",
+            detail=_stop_before_edit_detail(config, "account actions"),
         )
     if body.isActive is None and not body.fields and body.scheduleRules is None and not body.resetScheduleTimers:
         raise HTTPException(status_code=400, detail="No action changes were provided.")
+
+    if _using_frostguard(config):
+        try:
+            updated_action = await asyncio.to_thread(
+                frostguard_update_account_action,
+                frostguard_workspace_for(config),
+                account_id,
+                action_id,
+                is_active=body.isActive,
+                fields=body.fields,
+                schedule_rules=body.scheduleRules,
+                reset_schedule_timers=body.resetScheduleTimers,
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        invalidate_dashboard_cache()
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "accountId": account_id,
+            "action": updated_action,
+            "requiresRestart": False,
+            "message": "Frostguard task settings saved.",
+        }
 
     file_settings = read_gnbots_config_file(config)
     profile_name = active_profile_name(config, file_settings=file_settings)
@@ -4787,8 +5131,28 @@ async def update_profile_account_active(
     if profile_edit_locked(activity):
         raise HTTPException(
             status_code=403,
-            detail="Stop the bot before enabling or disabling accounts.",
+            detail=_stop_before_edit_detail(config, "accounts"),
         )
+
+    if _using_frostguard(config):
+        try:
+            updated = await asyncio.to_thread(
+                frostguard_set_account_enabled,
+                frostguard_workspace_for(config),
+                account_id,
+                body.active,
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        invalidate_dashboard_cache()
+        return {
+            "ok": True,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "program": FROSTGUARD_PROGRAM,
+            "account": updated,
+            "requiresRestart": False,
+            "message": "Frostguard account saved.",
+        }
 
     file_settings = read_gnbots_config_file(config)
     profile_name = active_profile_name(config, file_settings=file_settings)
@@ -4833,6 +5197,41 @@ async def get_bot_activity_route() -> dict[str, Any]:
 
 @app.get("/api/settings")
 async def get_all_settings() -> dict[str, Any]:
+    if _using_frostguard(config):
+        activity = await resolve_bot_activity(config)
+        locked = profile_edit_locked(activity)
+        try:
+            payload = await asyncio.to_thread(
+                frostguard_list_global_settings,
+                frostguard_workspace_for(config),
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        try:
+            online = bool(get_bot_backend(config).is_process_running(config))
+        except Exception:  # noqa: BLE001
+            online = bool(activity.get("botActive"))
+        return {
+            "ok": True,
+            "program": FROSTGUARD_PROGRAM,
+            "profile": FROSTGUARD_PROFILE_NAME,
+            "profiles": [],
+            "configuredProfile": "",
+            "runtimeProfile": "",
+            "profileInUse": "",
+            "settings": payload["settings"],
+            "groups": payload["groups"],
+            **activity,
+            "gnbotsOnline": online,
+            "writable": not locked,
+            "requiresRestart": False,
+            "source": "frostguard",
+            "warning": (
+                "These are Frostguard's Config settings. "
+                "Workbench pages such as Alliance and Gather are edited on each account."
+            ),
+        }
+
     write_profiles_manifest(STATIC_DIR, config)
     file_settings = read_gnbots_config_file(config)
     profiles = list_gnbots_profiles(config)
@@ -4911,6 +5310,34 @@ async def update_setting(setting_key: str, value: str = Query(..., min_length=0)
     if setting_key.lower() == "license":
         raise HTTPException(status_code=403, detail="License cannot be changed via the monitor API.")
 
+    if _using_frostguard(config):
+        activity = await resolve_bot_activity(config)
+        if profile_edit_locked(activity):
+            raise HTTPException(
+                status_code=403,
+                detail=_stop_before_edit_detail(config, "Frostguard settings"),
+            )
+        try:
+            stored = await asyncio.to_thread(
+                frostguard_update_global_setting,
+                frostguard_workspace_for(config),
+                setting_key,
+                value,
+            )
+        except FrostguardSettingsError as exc:
+            _raise_frostguard(exc)
+        return {
+            "ok": True,
+            "status": 200,
+            "data": "OK",
+            "program": FROSTGUARD_PROGRAM,
+            "setting": setting_key,
+            "value": stored,
+            "applied": "frostguard",
+            "requiresRestart": False,
+            "message": f"Saved {setting_key}.",
+        }
+
     activity = await resolve_bot_activity(config)
     if profile_edit_locked(activity):
         raise HTTPException(
@@ -4972,11 +5399,12 @@ async def get_monitor_config_settings() -> dict[str, Any]:
         "ok": True,
         "config": monitor_config_for_ui(),
         "resolved": monitor_resolved_paths(),
-        "groups": MONITOR_SETTING_GROUPS,
+        "groups": monitor_groups_for_config(config),
         "configPath": str(CONFIG_PATH),
         "writable": True,
         "capabilities": capabilities,
         "ldHealthDefaults": ld_health_defaults,
+        "ldHealthPresets": await asyncio.to_thread(ld_health_preset_catalog),
         "ldHealthEffective": ld_health_effective,
     }
 
@@ -5009,10 +5437,12 @@ async def update_monitor_config_setting(setting_key: str, value: str = Query(...
         "message": message,
         "resolved": monitor_resolved_paths(),
     }
-    if setting_key in LD_HEALTH_UI_KEYS:
+    if setting_key in LD_HEALTH_UI_KEYS or setting_key == "bot_provider":
         raw = await asyncio.to_thread(read_raw_monitor_config)
         payload["ldHealthEffective"] = await asyncio.to_thread(ld_health_flat_from_config, raw)
         payload["config"] = await asyncio.to_thread(monitor_config_for_ui)
+    if setting_key == "bot_provider":
+        payload["groups"] = monitor_groups_for_config(config)
     return payload
 
 

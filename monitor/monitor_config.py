@@ -56,7 +56,7 @@ LD_HEALTH_FLAT_KEYS = frozenset(
         "ld_health_auto_rotate",
     }
 )
-LD_HEALTH_UI_KEYS = LD_HEALTH_FLAT_KEYS | {"ld_health_use_defaults"}
+LD_HEALTH_UI_KEYS = LD_HEALTH_FLAT_KEYS | {"ld_health_use_defaults", "ld_health_preset"}
 
 
 def normalize_config_path(value: str, *, base: Path | None = None) -> str:
@@ -89,6 +89,40 @@ def ensure_absolute_paths_in_config_file() -> dict[str, Any]:
     if any(data.get(key) != normalized.get(key) for key in PATH_CONFIG_KEYS):
         save_raw_monitor_config(normalized)
     return normalized
+
+
+_GNBOTS_ONLY_GROUPS = {"gnbots"}
+_GNBOTS_ONLY_FIELDS = {"gnbots_root", "gnbots_exe", "gnbots_process_name"}
+_FROSTGUARD_ONLY_FIELDS = {
+    "frostguard_workspace",
+    "frostguard_exe",
+    "frostguard_process_name",
+    "frostguard_channel",
+    "frostguard_bridge_mode",
+}
+
+
+def monitor_groups_for_config(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Hide the inactive program's install fields. Auto keeps both."""
+    provider = str(config.get("bot_provider") or "gnbots").strip().lower()
+    groups: list[dict[str, Any]] = []
+    for group in MONITOR_SETTING_GROUPS:
+        if provider == "frostguard" and group.get("id") in _GNBOTS_ONLY_GROUPS:
+            continue
+        fields: list[dict[str, Any]] = []
+        for field in group.get("fields") or []:
+            key = str(field.get("key") or "")
+            if provider == "frostguard" and key in _GNBOTS_ONLY_FIELDS:
+                continue
+            if provider == "gnbots" and key in _FROSTGUARD_ONLY_FIELDS:
+                continue
+            fields.append(field)
+        if not fields:
+            continue
+        copied = dict(group)
+        copied["fields"] = fields
+        groups.append(copied)
+    return groups
 
 
 MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
@@ -148,7 +182,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "type": "text",
                 "label": "Frostguard.exe path",
                 "hint": "Optional launcher for host start/stop. Leave blank if you only observe via workspace files.",
-                "placeholder": "C:\\Games\\Frostguard\\Frostguard.exe",
+                "placeholder": "C:\\Users\\You\\AppData\\Local\\Frostguard\\Frostguard.exe",
             },
             {
                 "key": "frostguard_process_name",
@@ -186,7 +220,7 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
                 "type": "select",
                 "label": "Emulator provider",
                 "options": ["auto", "ldplayer", "memu", "nox", "mumu"],
-                "hint": "Auto follows GnBots Emulator/UID and installed console paths; defaults to LDPlayer.",
+                "hint": "Auto follows Frostguard's saved emulator when Frostguard is the active program, otherwise GnBots. Defaults to LDPlayer.",
             },
             {
                 "key": "ldplayer_path",
@@ -281,8 +315,8 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
             {
                 "key": "restore_run_health_check",
                 "type": "boolean",
-                "label": "Apply GnBots health settings after restore",
-                "hint": "Renames LDPlayer back to the account name and applies recommended emulator settings.",
+                "label": "Apply recommended emulator settings after restore",
+                "hint": "Renames the instance back to the account name and applies the preset for the active program.",
                 "requiresAdmin": True,
             },
         ],
@@ -292,16 +326,26 @@ MONITOR_SETTING_GROUPS: list[dict[str, Any]] = [
         "title": "Emulator health settings",
         "description": (
             "Recommended LDPlayer settings applied by Fix settings on the Restore tab "
-            "and after backup restore when health check is enabled."
+            "and after backup restore when health check is enabled. "
+            "Auto uses GnBots settings (400×652 @ 120 DPI, 2 CPU, 4096 MB) or Frostguard settings "
+            "(720×1280 @ 320 DPI, 4 CPU, 2048 MB) based on the active bot program."
         ),
         "restart": "immediate",
         "requiresAdmin": True,
         "fields": [
             {
+                "key": "ld_health_preset",
+                "type": "select",
+                "label": "Recommended preset",
+                "options": ["auto", "gnbots", "frostguard", "custom"],
+                "hint": "Auto follows Bot provider. GnBots and Frostguard pin that program's recommended display settings. Custom keeps the values below.",
+            },
+            {
                 "key": "ld_health_use_defaults",
                 "type": "boolean",
-                "label": "Use GnBots defaults",
-                "hint": "When enabled, clears custom overrides and uses built-in recommended settings.",
+                "label": "Follow active program",
+                "hint": "Clears custom overrides and uses the preset for the active bot program.",
+                "hidden": True,
             },
             {
                 "key": "ld_health_width",
@@ -683,7 +727,18 @@ def default_ld_health_flat() -> dict[str, Any]:
 
     flat = _ld_health_flat_from_merged(DEFAULT_LDPLAYER_HEALTH)
     flat["ld_health_use_defaults"] = True
+    flat["ld_health_preset"] = "auto"
+    flat["ld_health_preset_resolved"] = "gnbots"
     return flat
+
+
+def ld_health_preset_catalog() -> dict[str, Any]:
+    from gnbots_emulator_health import DEFAULT_LDPLAYER_HEALTH, FROSTGUARD_LDPLAYER_HEALTH
+
+    return {
+        "gnbots": _ld_health_flat_from_merged(DEFAULT_LDPLAYER_HEALTH),
+        "frostguard": _ld_health_flat_from_merged(FROSTGUARD_LDPLAYER_HEALTH),
+    }
 
 
 def ld_health_flat_from_merged(merged: dict[str, Any]) -> dict[str, Any]:
@@ -691,12 +746,14 @@ def ld_health_flat_from_merged(merged: dict[str, Any]) -> dict[str, Any]:
 
 
 def ld_health_flat_from_config(raw: dict[str, Any]) -> dict[str, Any]:
-    from gnbots_emulator_health import load_health_settings
+    from gnbots_emulator_health import active_health_program, load_health_settings, normalize_health_preset
 
     merged = load_health_settings(raw)
     flat = _ld_health_flat_from_merged(merged)
-    custom = raw.get("ldplayer_health_settings")
-    flat["ld_health_use_defaults"] = not isinstance(custom, dict) or not custom
+    preset = normalize_health_preset(raw)
+    flat["ld_health_preset"] = preset
+    flat["ld_health_use_defaults"] = preset != "custom"
+    flat["ld_health_preset_resolved"] = active_health_program(raw)
     return flat
 
 
@@ -745,13 +802,26 @@ def _is_ld_health_key(key: str) -> bool:
 
 
 def _update_ld_health_setting(key: str, coerced: Any, data: dict[str, Any]) -> None:
-    flat = ld_health_flat_from_config(data)
-    flat[key] = coerced
+    if key == "ld_health_preset":
+        preset = str(coerced or "").strip().lower()
+        if preset in {"auto", "gnbots", "frostguard"}:
+            data.pop("ldplayer_health_settings", None)
+            data["ld_health_preset"] = preset
+            return
+        if preset == "custom":
+            flat = ld_health_flat_from_config(data)
+            data["ldplayer_health_settings"] = ldplayer_health_settings_from_flat(flat)
+            data["ld_health_preset"] = "custom"
+            return
+        raise ValueError("Recommended preset must be auto, gnbots, frostguard, or custom.")
     if key == "ld_health_use_defaults" and coerced:
         data.pop("ldplayer_health_settings", None)
+        data["ld_health_preset"] = "auto"
         return
-    flat["ld_health_use_defaults"] = False
+    flat = ld_health_flat_from_config(data)
+    flat[key] = coerced
     data["ldplayer_health_settings"] = ldplayer_health_settings_from_flat(flat)
+    data["ld_health_preset"] = "custom"
 
 
 def clear_ldplayer_health_settings(data: dict[str, Any]) -> None:
@@ -964,7 +1034,15 @@ def update_monitor_config_value(key: str, raw_value: str) -> tuple[Any, str]:
     elif restart == "tray":
         message = f"Saved {key}. Restart the tray icon to apply."
     elif key == "ld_health_use_defaults" and coerced:
-        message = "Cleared custom LDPlayer health overrides; using GnBots defaults."
+        message = "Cleared custom emulator overrides. Recommended settings follow the active program."
+    elif key == "ld_health_preset" and coerced == "auto":
+        message = "Recommended emulator settings now follow the active program."
+    elif key == "ld_health_preset" and coerced == "gnbots":
+        message = "Using GnBots recommended emulator settings (400×652 @ 120 DPI, 2 CPU, 4096 MB)."
+    elif key == "ld_health_preset" and coerced == "frostguard":
+        message = "Using Frostguard recommended emulator settings (720×1280 @ 320 DPI, 4 CPU, 2048 MB)."
+    elif key == "ld_health_preset" and coerced == "custom":
+        message = "Using custom emulator settings."
     else:
         message = f"Saved {key}."
 
@@ -1011,4 +1089,19 @@ def monitor_resolved_paths(config: dict[str, Any] | None = None) -> dict[str, st
             resolved["ldplayer_path"] = str(resolve_ldplayer_base(data))
         except (FileNotFoundError, OSError, ValueError):
             resolved["ldplayer_path"] = ""
+    if not str(data.get("frostguard_exe") or "").strip():
+        try:
+            from frostguard_bridge import resolve_frostguard_exe
+
+            found = resolve_frostguard_exe(data)
+            resolved["frostguard_exe"] = str(found) if found else ""
+        except Exception:  # noqa: BLE001
+            resolved["frostguard_exe"] = ""
+    if not str(data.get("frostguard_workspace") or "").strip():
+        try:
+            from frostguard_workspace import resolve_workspace
+
+            resolved["frostguard_workspace"] = str(resolve_workspace(data))
+        except Exception:  # noqa: BLE001
+            resolved["frostguard_workspace"] = ""
     return resolved

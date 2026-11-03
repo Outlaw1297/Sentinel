@@ -338,7 +338,7 @@ $script:Steps = @(
     @{ Pattern = "Stack start|Preparing"; Percent = 12; Status = "INITIALIZING SYSTEM..." }
     @{ Pattern = "watcher"; Percent = 35; Status = "STARTING WATCHER..." }
     @{ Pattern = "monitor on port"; Percent = 58; Status = "STARTING DASHBOARD..." }
-    @{ Pattern = "Launching GnBots"; Percent = 78; Status = "LAUNCHING GNBOTS..." }
+    @{ Pattern = "Launching GnBots|Launching Frostguard"; Percent = 78; Status = "LAUNCHING BOT..." }
     @{ Pattern = "Tray icon|Stack is up"; Percent = 95; Status = "FINALIZING..." }
 )
 

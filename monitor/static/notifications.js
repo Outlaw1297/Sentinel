@@ -237,39 +237,59 @@ async function showLocalNotification(title, body, tag) {
   });
 }
 
+function notificationProgram(payload) {
+  return payload?.botProvider === "frostguard" ? "Frostguard" : "GnBots";
+}
+
+function notificationProcessRunning(payload) {
+  if (payload?.botProvider === "frostguard") return Boolean(payload.botProcess?.running);
+  return Boolean(payload?.gnbotsProcessRunning);
+}
+
+function notificationOnline(payload) {
+  if (payload?.botProvider === "frostguard") return Boolean(payload?.botOnline || payload?.botProcess?.running);
+  return Boolean(payload?.gnbotsOnline);
+}
+
 function detectClientEvents(previous, current) {
   if (!previous || !current) return [];
 
   const events = [];
+  const name = notificationProgram(current);
+  const exe = String(current.botProcess?.name || (current.botProvider === "frostguard" ? "Frostguard.exe" : "GnBots.exe"));
   const prevState = previous.botState || "Unknown";
   const curState = current.botState || "Unknown";
   if (prevState !== curState) {
     if (curState === "Running") {
-      events.push({ tag: "bot_started", title: "Bot started", body: "GnBots run loop is active." });
+      events.push({ tag: "bot_started", title: "Bot started", body: `${name} run loop is active.` });
     } else if (curState === "Paused") {
-      events.push({ tag: "bot_paused", title: "Bot paused", body: "GnBots run loop is paused." });
+      events.push({ tag: "bot_paused", title: "Bot paused", body: `${name} run loop is paused.` });
     } else if (curState === "Stopped" && (prevState === "Running" || prevState === "Paused")) {
-      events.push({ tag: "bot_stopped", title: "Bot stopped", body: "GnBots run loop has stopped." });
+      events.push({ tag: "bot_stopped", title: "Bot stopped", body: `${name} run loop has stopped.` });
     }
   }
 
-  const prevProc = Boolean(previous.gnbotsProcessRunning);
-  const curProc = Boolean(current.gnbotsProcessRunning);
+  const prevProc = notificationProcessRunning(previous);
+  const curProc = notificationProcessRunning(current);
   if (prevProc !== curProc) {
     events.push(
       curProc
-        ? { tag: "gnbots_launched", title: "GnBots launched", body: "GnBots.exe is running." }
-        : { tag: "gnbots_closed", title: "GnBots closed", body: "GnBots.exe is no longer running." },
+        ? { tag: "gnbots_launched", title: `${name} launched`, body: `${exe} is running.` }
+        : { tag: "gnbots_closed", title: `${name} closed`, body: `${exe} is no longer running.` },
     );
   }
 
-  const prevApi = Boolean(previous.gnbotsOnline);
-  const curApi = Boolean(current.gnbotsOnline);
+  const prevApi = notificationOnline(previous);
+  const curApi = notificationOnline(current);
   if (prevApi !== curApi) {
     events.push(
       curApi
-        ? { tag: "api_recovered", title: "GnBots online", body: "Dashboard reconnected to GnBots." }
-        : { tag: "api_down", title: "GnBots offline", body: current.gnbotsError || "Dashboard lost API connection." },
+        ? { tag: "api_recovered", title: `${name} online`, body: `Dashboard reconnected to ${name}.` }
+        : {
+            tag: "api_down",
+            title: `${name} offline`,
+            body: current.botProvider === "frostguard" ? `${name} is not running.` : current.gnbotsError || "Dashboard lost API connection.",
+          },
     );
   }
 

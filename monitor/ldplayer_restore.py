@@ -116,13 +116,37 @@ def infer_abi_from_ldplayer_path(path: Path | str | None) -> str | None:
     return None
 
 
+def _ldplayer_path_from_frostguard(config: dict[str, Any]) -> Path | None:
+    try:
+        from bot_backend import detect_bot_provider
+
+        if detect_bot_provider(config) != "frostguard":
+            return None
+        from frostguard_workspace import read_global_config_value, resolve_workspace
+
+        raw = read_global_config_value(resolve_workspace(config), "LDPLAYER_PATH_STRING")
+    except Exception:  # noqa: BLE001
+        return None
+    text = str(raw or "").strip().strip('"')
+    if not text:
+        return None
+    path = Path(text)
+    return path if path.exists() else None
+
+
 def resolve_ldplayer_base(config: dict[str, Any]) -> Path:
     override = str(config.get("ldplayer_path") or "").strip()
     if override:
         base = Path(override)
     else:
-        gnbots_root = resolve_gnbots_root(config)
-        base = read_ldplayer_path(gnbots_root)
+        base = None
+        try:
+            gnbots_root = resolve_gnbots_root(config)
+            base = read_ldplayer_path(gnbots_root)
+        except Exception:  # noqa: BLE001
+            base = None
+        if base is None:
+            base = _ldplayer_path_from_frostguard(config)
         if base is None:
             raise FileNotFoundError("LDPlayer path not configured in GnBots config.json")
     if not base.is_absolute():
@@ -827,8 +851,48 @@ def resolve_backup_for_instance(
     return None
 
 
+def _frostguard_instance_indexes(config: dict[str, Any]) -> list[int]:
+    try:
+        from frostguard_account_settings import list_accounts
+        from frostguard_workspace import resolve_workspace
+
+        indexes: set[int] = set()
+        for account in list_accounts(resolve_workspace(config)):
+            try:
+                instance_id = int(account.get("instanceId", -1))
+            except (TypeError, ValueError):
+                continue
+            if instance_id >= 0:
+                indexes.add(instance_id)
+        return sorted(indexes)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def profile_backup_name_candidates(config: dict[str, Any], index: int) -> list[str]:
-    """All GnBots account names on an instance — matches .ldbk files named after alts."""
+    """Account names on an instance — matches .ldbk files named after alts."""
+    from bot_backend import detect_bot_provider
+
+    if detect_bot_provider(config) == "frostguard":
+        try:
+            from frostguard_account_settings import list_accounts
+            from frostguard_workspace import resolve_workspace
+
+            names: list[str] = []
+            for account in list_accounts(resolve_workspace(config)):
+                try:
+                    instance_id = int(account.get("instanceId", -1))
+                except (TypeError, ValueError):
+                    continue
+                if instance_id != index:
+                    continue
+                for value in (account.get("name"), account.get("characterName")):
+                    text = str(value or "").strip()
+                    if text and text not in names:
+                        names.append(text)
+            return names
+        except Exception:  # noqa: BLE001
+            return []
     try:
         from gnbots_emulator_health import read_profile_account_names_for_instance, read_selected_profile
 
@@ -840,7 +904,12 @@ def profile_backup_name_candidates(config: dict[str, Any], index: int) -> list[s
 
 
 def list_expected_instance_indexes(config: dict[str, Any]) -> list[int]:
-    """Indexes we expect from backup_ld_names.json and the active GnBots profile."""
+    """Indexes we expect from the active program's accounts."""
+    from bot_backend import detect_bot_provider
+
+    if detect_bot_provider(config) == "frostguard":
+        return _frostguard_instance_indexes(config)
+
     gnbots_root = resolve_gnbots_root(config)
     indexes: set[int] = set(load_index_name_hints(gnbots_root).keys())
     try:

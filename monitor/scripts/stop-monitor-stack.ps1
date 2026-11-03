@@ -1,5 +1,6 @@
-# Stops the GnBots monitor dashboard and background watcher.
-# GnBots.exe is left running unless -IncludeGnBots is passed.
+# Stops the Sentinel dashboard and background watcher.
+# The active bot is left running unless -IncludeGnBots is passed.
+# When Frostguard is the active program, that switch closes Frostguard.exe.
 
 param(
     [switch]$IncludeGnBots,
@@ -12,6 +13,7 @@ $ConfigPath = Join-Path $MonitorRoot "config.json"
 $LogDir = Join-Path $MonitorRoot "logs"
 $LockFile = Join-Path $LogDir "watcher.lock"
 $GnBotsScript = Join-Path $PSScriptRoot "gnbots-process.ps1"
+$FrostguardScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
 
 function Write-Info([string]$Message) {
     if (-not $Quiet) {
@@ -74,9 +76,23 @@ if (Test-Path $dismissed) {
     Remove-Item $dismissed -Force -ErrorAction SilentlyContinue
 }
 
-if ($IncludeGnBots -and (Test-Path $GnBotsScript)) {
-    Write-Info "Stopping GnBots ..."
-    & $GnBotsScript -Action Stop | Out-Null
+if ($IncludeGnBots) {
+    $handledFrostguard = $false
+    if (Test-Path $FrostguardScript) {
+        try {
+            $frostguard = & $FrostguardScript -Action StopIfActive | ConvertFrom-Json
+            $handledFrostguard = [bool]$frostguard.handled
+            if ($frostguard.stopped) {
+                Write-Info "Stopping Frostguard ..."
+            }
+        } catch {
+            Write-Info "  Frostguard stop check failed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $handledFrostguard -and (Test-Path $GnBotsScript)) {
+        Write-Info "Stopping GnBots ..."
+        & $GnBotsScript -Action Stop | Out-Null
+    }
 }
 
 Write-Info "Monitor stack stopped."

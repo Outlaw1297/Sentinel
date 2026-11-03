@@ -150,12 +150,22 @@ Optional enrichment with an OpenAI-compatible chat API:
 
 Pass `?llm=1` to request enrichment. Without keys, Sentinel returns playbook suggestions only.
 
+### 6. Frostguard script check
+
+When Frostguard is the active program, the Automation tab reads Task Builder JSON. Each flow is a list of steps (`TAP_POINT`, `WAIT`, `SWIPE`, `BACK_BUTTON`, `OCR_READ`, `TEMPLATE_SEARCH`, `NAVIGATE`) linked by `successorId` (match / next) and `alternateId` (miss). Sentinel reports a step that would fail before the flow is run: missing template file, unknown built-in template name, branch pointing at a missing step, tap or swipe outside the 720×1280 screen, or an OCR step with no region or expected text.
+
+Frostguard’s Debugging page searches `modules/vision/src/main/resources/templates` under its app folder. The installed images live in `app/templates`, so that page reports “Template directory not found.” Script check uses `app/templates` and each task’s own `templates` folder.
+
+Saved flows come from the install `app/custom_tasks` examples and the workspace `custom-tasks` folder. A pasted JSON body is checked the same way and is not written back.
+
 ## APIs
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/automation/status` | Toggles + last tick state |
 | POST | `/api/automation/tick` | Run one automation pass now |
+| GET | `/api/automation/scripts` | Frostguard Task Builder flows and the Debugging template-folder check |
+| POST | `/api/automation/scripts/check` | Check one saved flow or a pasted Task Builder JSON body |
 | GET | `/api/automation/stuck-rules` | List learned/seed stuck-screen rules |
 | POST | `/api/automation/stuck-rules/learn` | Learn rules from issue history (`?days=1..90`) |
 | POST | `/api/automation/stuck-rules` | Create a manual rule |

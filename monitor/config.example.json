@@ -22,6 +22,7 @@
   "apk_third_party_abi": "arm64-v8a",
   "restore_install_apk": true,
   "restore_run_health_check": true,
+  "ld_health_preset": "auto",
   "restore_mark_health_passed": false,
   "gnbots_requires_admin": "auto",
   "gnbots_use_scheduled_tasks": false,

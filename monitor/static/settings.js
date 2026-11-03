@@ -153,6 +153,11 @@ const els = {
   provisionForm: document.getElementById("provision-form"),
   provisionSummaryGrid: document.getElementById("provision-summary-grid"),
   provisionAccountName: document.getElementById("provision-account-name"),
+  provisionIdentityRow: document.getElementById("provision-identity-row"),
+  provisionPlayerId: document.getElementById("provision-player-id"),
+  provisionAlliance: document.getElementById("provision-alliance"),
+  provisionState: document.getElementById("provision-state"),
+  provisionCloneRow: document.getElementById("provision-clone-row"),
   provisionTemplateSelect: document.getElementById("provision-template-select"),
   provisionTemplateHint: document.getElementById("provision-template-hint"),
   provisionStartBtn: document.getElementById("provision-start-btn"),
@@ -215,6 +220,12 @@ const els = {
   automationPageStatus: document.getElementById("automation-page-status"),
   automationToggles: document.getElementById("automation-toggles"),
   automationMeta: document.getElementById("automation-meta"),
+  automationScriptsPanel: document.getElementById("automation-scripts-panel"),
+  automationScriptsDebugger: document.getElementById("automation-scripts-debugger"),
+  automationScriptsList: document.getElementById("automation-scripts-list"),
+  automationScriptJson: document.getElementById("automation-script-json"),
+  automationScriptCheckBtn: document.getElementById("automation-script-check-btn"),
+  automationScriptFindings: document.getElementById("automation-script-findings"),
   automationStuckRulesBody: document.getElementById("automation-stuck-rules-body"),
   automationStuckLearnBtn: document.getElementById("automation-stuck-learn-btn"),
   automationReportBody: document.getElementById("automation-report-body"),
@@ -250,6 +261,9 @@ let busyKeys = new Set();
 let activeSettingsTab = "bot";
 let profileAccounts = [];
 let selectedAccountId = "";
+let accountProgram = "gnbots";
+let settingsProgram = "gnbots";
+let activeSettingsGroups = SETTINGS_GROUPS;
 let accountActionsWritable = true;
 let currentAccountActions = [];
 let currentAccountAdvanced = null;
@@ -274,6 +288,7 @@ let monitorGroups = [];
 let currentMonitorConfig = {};
 let monitorResolvedPaths = {};
 let ldHealthDefaults = {};
+let ldHealthPresets = {};
 let ldHealthEffective = {};
 let monitorBusyKeys = new Set();
 
@@ -437,6 +452,9 @@ function applyProvisionLockState() {
 }
 
 function provisionHasCloneSources() {
+  if (provisionPreview?.program === "frostguard" || provisionPreview?.requiresClone === false) {
+    return true;
+  }
   const accounts = provisionPreview?.templateAccounts || [];
   const templates = provisionPreview?.profileTemplates || [];
   return accounts.length > 0 || templates.length > 0;
@@ -444,8 +462,23 @@ function provisionHasCloneSources() {
 
 function renderProvisionSummary() {
   if (!els.provisionSummaryGrid || !provisionPreview) return;
-  const profile = provisionPreview.profile || "—";
   const ldCount = Number(provisionPreview.ldInstanceCount || 0);
+  const frostguard = provisionPreview.program === "frostguard";
+  if (els.provisionIdentityRow) {
+    els.provisionIdentityRow.classList.toggle("hidden", !frostguard);
+  }
+  if (els.provisionCloneRow) {
+    els.provisionCloneRow.classList.toggle("hidden", frostguard);
+  }
+  if (frostguard) {
+    els.provisionSummaryGrid.innerHTML = `
+      <div><span class="label">Program</span><strong>Frostguard</strong></div>
+      <div><span class="label">Workspace</span><strong>Accounts, not profiles</strong></div>
+      <div><span class="label">LDPlayer instances</span><strong>${ldCount}</strong></div>
+    `;
+    return;
+  }
+  const profile = provisionPreview.profile || "—";
   const accounts = provisionPreview.templateAccounts || [];
   const templates = provisionPreview.profileTemplates || [];
   els.provisionSummaryGrid.innerHTML = `
@@ -616,7 +649,7 @@ function scheduleProvisionPoll(jobId) {
           await loadProvisionHistory();
           if (status === "completed") {
             setProvisionPageStatus(
-              `${body.job.message || "Provisioning completed."} Restart GnBots to pick up the new account.`,
+              `${body.job.message || "Provisioning completed."} Restart ${programName()} to pick up the new account.`,
               "ok",
             );
           }
@@ -663,9 +696,12 @@ async function loadProvisionTab() {
 
     botActive = Boolean(preview.botActive);
     profileEditLocked = preview.writable === false;
-    setGnbotsStatus(true, { writable: !profileEditLocked });
+    if (profileEditLocked) {
+      setGnbotsStatus(true, { writable: false });
+    }
 
     provisionPreview = preview;
+    applyProgramChrome(preview.program || "gnbots");
     if (els.provisionFormLoading) els.provisionFormLoading.classList.add("hidden");
     if (els.provisionForm) els.provisionForm.classList.remove("hidden");
 
@@ -677,6 +713,11 @@ async function loadProvisionTab() {
 
     if (provisionLocked()) {
       setProvisionPageStatus("Provisioning is disabled while the bot is running. Stop the bot to continue.", "warn");
+    } else if (settingsProgram === "frostguard") {
+      setProvisionPageStatus(
+        "Enter the account name, and optionally the player id, alliance, and state. Frostguard does not use a GnBots profile.",
+        "ok",
+      );
     } else if (!provisionHasCloneSources()) {
       setProvisionPageStatus("No profile accounts or action templates available to clone from.", "error");
     } else {
@@ -708,23 +749,29 @@ async function startProvisionAccount(event) {
 
   const accountName = els.provisionAccountName?.value.trim() || "";
   const cloneSource = els.provisionTemplateSelect?.value.trim() || "";
+  const frostguard = settingsProgram === "frostguard";
   if (!accountName) {
     setProvisionPageStatus("Account name is required.", "error");
     return;
   }
-  if (!cloneSource) {
+  if (!frostguard && !cloneSource) {
     setProvisionPageStatus("Pick a profile account or action template to clone settings from.", "error");
     return;
   }
 
   const templateLabel = provisionCloneSourceLabel(cloneSource);
   const sourceKind = cloneSource.startsWith("template:") ? "action template" : "profile account";
-  const message = [
-    `Create LDPlayer instance "${accountName}" with recommended settings?`,
-    `Clone action settings from ${sourceKind} "${templateLabel}".`,
-    "Install the latest Whiteout Survival APK and add the account to the GnBots profile.",
-    "Restart GnBots when the job completes.",
-  ].join("\n");
+  const message = frostguard
+    ? [
+        `Create LDPlayer instance "${accountName}" with the active program's recommended settings?`,
+        "Install the latest Whiteout Survival APK and add the Frostguard account.",
+      ].join("\n")
+    : [
+        `Create LDPlayer instance "${accountName}" with recommended settings?`,
+        `Clone action settings from ${sourceKind} "${templateLabel}".`,
+        "Install the latest Whiteout Survival APK and add the account to the GnBots profile.",
+        `Restart ${programName()} when the job completes.`,
+      ].join("\n");
   if (!window.confirm(message)) return;
 
   provisionBusy = true;
@@ -737,7 +784,10 @@ async function startProvisionAccount(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         accountName,
-        cloneSource,
+        cloneSource: frostguard ? null : cloneSource,
+        playerId: frostguard ? els.provisionPlayerId?.value.trim() || "" : "",
+        alliance: frostguard ? els.provisionAlliance?.value.trim() || "" : "",
+        state: frostguard ? els.provisionState?.value.trim() || "" : "",
       }),
     });
     const body = await response.json().catch(() => ({}));
@@ -764,6 +814,7 @@ let emulatorHealthLoadError = "";
 let emulatorHealthLoading = false;
 let fixSettingsBusyIndex = null;
 let restoreAllBusy = false;
+let restoreSelectedBusy = false;
 let fixAllSettingsBusy = false;
 let emulatorApkByIndex = {};
 let emulatorApkLoadError = "";
@@ -837,6 +888,14 @@ function selectedInstanceIndexes() {
   return [...apkUpdateSelectedIndexes]
     .map((value) => Number(value))
     .filter((index) => !Number.isNaN(index) && index >= 0)
+    .sort((a, b) => a - b);
+}
+
+function selectedRestoreIndexes() {
+  const selected = new Set(selectedInstanceIndexes());
+  return restoreRows
+    .filter((row) => selected.has(Number(row.index)) && row.backupAvailable)
+    .map((row) => Number(row.index))
     .sort((a, b) => a - b);
 }
 
@@ -1369,12 +1428,13 @@ function renderRestoreSummary(rows) {
           : "Cache incomplete"
     : "—";
   const troubledWithBackup = rows.filter((row) => row.troubled && row.backupAvailable);
+  const restoreBatchBusy = restoreAllBusy || restoreSelectedBusy;
   const fixAllDisabled =
-    fixSettingsLocked() || restoreBusy || restoreAllBusy || fixAllSettingsBusy || fixSettingsBusyIndex != null;
+    fixSettingsLocked() || restoreBusy || restoreBatchBusy || fixAllSettingsBusy || fixSettingsBusyIndex != null;
   const updateAllDisabled =
     restoreLocked() ||
     restoreBusy ||
-    restoreAllBusy ||
+    restoreBatchBusy ||
     updateAllApksBusy ||
     updateSelectedApksBusy ||
     forceUpdateSelectedApksBusy ||
@@ -1382,7 +1442,9 @@ function renderRestoreSummary(rows) {
     updateApkBusyIndex != null ||
     fixAllSettingsBusy ||
     fixSettingsBusyIndex != null;
-  const restoreAllDisabled = restoreLocked() || restoreBusy || restoreAllBusy || !troubledWithBackup.length;
+  const selectedRestoreCount = selectedRestoreIndexes().length;
+  const restoreAllDisabled = restoreLocked() || restoreBusy || restoreBatchBusy || !troubledWithBackup.length;
+  const restoreSelectedDisabled = restoreLocked() || restoreBusy || restoreBatchBusy || !selectedRestoreCount;
   const actionButtons = [];
   if (troubledWithBackup.length > 0) {
     actionButtons.push(
@@ -1394,6 +1456,14 @@ function renderRestoreSummary(rows) {
       >${restoreAllBusy ? "Restoring all…" : `Restore all recommended (${troubledWithBackup.length})`}</button>`,
     );
   }
+  actionButtons.push(
+    `<button
+      type="button"
+      class="btn btn-small btn-restore-selected"
+      id="restore-selected-btn"
+      ${restoreSelectedDisabled ? "disabled" : ""}
+    >${restoreSelectedBusy ? "Restoring selected…" : `Restore selected (${selectedRestoreCount})`}</button>`,
+  );
   if (apkUpdateInstances > 0) {
     actionButtons.push(
       `<button
@@ -1711,7 +1781,8 @@ function renderRestoreInstanceList(rows) {
     .map((row) => {
       const reasons = (row.troubleReasons || []).join("; ");
       const accounts = (row.accounts || []).join(", ");
-      const disabled = locked || row.restoreBusy || restoreBusy || !row.backupAvailable;
+      const disabled =
+        locked || row.restoreBusy || restoreBusy || restoreAllBusy || restoreSelectedBusy || !row.backupAvailable;
       const tone = row.troubled ? "troubled" : "";
       const missingBadge = row.missing
         ? '<span class="badge state-badge bad">Missing in LDPlayer</span>'
@@ -1918,7 +1989,11 @@ async function loadRestoreTab({ forceApk = false } = {}) {
 
     botActive = Boolean(payload.botActive);
     botState = payload.botState || botState;
-    gnbotsOnline = payload.gnbotsOnline !== false;
+    if (payload.botProvider) applyProgramChrome(payload.botProvider);
+    gnbotsOnline =
+      payload.botProvider === "frostguard"
+        ? Boolean(payload.botOnline || payload.botProcess?.running)
+        : payload.gnbotsOnline !== false;
     setGnbotsStatus(gnbotsOnline, { writable: !botActive });
     dashboardAccounts = payload.accounts || [];
     availableBackups = emulatorsPayload.backups || [];
@@ -2116,7 +2191,7 @@ async function fixSettingsForIndex(index) {
   if (
     !window.confirm(
       [
-        `Apply GnBots health settings to ${label} (#${index})?`,
+        `Apply ${programName()} health settings to ${label} (#${index})?`,
         accountName ? `Account: ${accountName}` : "",
         "",
         "The emulator will be stopped briefly while settings are applied.",
@@ -2225,6 +2300,66 @@ async function restoreAllTroubled() {
   }
 }
 
+async function restoreSelectedInstances() {
+  if (restoreLocked()) {
+    setRestorePageStatus("Stop the bot before restoring emulators.", "warn");
+    return;
+  }
+
+  const selected = selectedInstanceIndexes();
+  const indexes = selectedRestoreIndexes();
+  if (!indexes.length) {
+    setRestorePageStatus("Select instances that have a backup, then restore them.", "warn");
+    return;
+  }
+  const skipped = selected.filter((index) => !indexes.includes(index));
+
+  if (
+    !window.confirm(
+      [
+        `Queue restore for ${indexes.length} selected instance${indexes.length === 1 ? "" : "s"}?`,
+        `Instances: ${indexes.map((index) => `#${index}`).join(", ")}`,
+        skipped.length
+          ? `Skipped ${skipped.length} selected instance${skipped.length === 1 ? "" : "s"} with no backup: ${skipped.map((index) => `#${index}`).join(", ")}`
+          : "",
+        "",
+        "Restores run one instance at a time. Leave emulators alone during resource-pack download.",
+      ]
+        .filter((line) => line !== "")
+        .join("\n"),
+    )
+  ) {
+    return;
+  }
+
+  restoreSelectedBusy = true;
+  applyRestoreLockState();
+  renderRestoreSummary(restoreRows);
+  renderRestoreInstanceList(restoreRows);
+  setRestorePageStatus(`Queueing restore for ${indexes.length} selected instance(s)…`, "pending");
+
+  try {
+    const response = await fetch(
+      `/api/emulators/restore-all?indexes=${encodeURIComponent(indexes.join(","))}`,
+      { method: "POST" },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.detail || payload.message || `HTTP ${response.status}`;
+      throw new Error(typeof detail === "string" ? detail : "Could not queue restore jobs.");
+    }
+    setRestorePageStatus(payload.message || `Queued ${payload.queued || 0} restore job(s).`, "ok");
+    await loadRestoreTab();
+  } catch (error) {
+    setRestorePageStatus(error.message || "Failed to queue restore jobs.", "error");
+  } finally {
+    restoreSelectedBusy = false;
+    applyRestoreLockState();
+    renderRestoreSummary(restoreRows);
+    renderRestoreInstanceList(restoreRows);
+  }
+}
+
 async function fixAllSettings() {
   if (fixSettingsLocked()) {
     if (restoreLocked()) {
@@ -2248,7 +2383,7 @@ async function fixAllSettings() {
   if (
     !window.confirm(
       [
-        `Apply GnBots health settings to ${indexes.length} LDPlayer instance${indexes.length === 1 ? "" : "s"}?`,
+        `Apply ${programName()} health settings to ${indexes.length} LDPlayer instance${indexes.length === 1 ? "" : "s"}?`,
         `Instances: ${indexes.map((index) => `#${index}`).join(", ")}`,
         "",
         "Each emulator will be stopped briefly while settings are applied.",
@@ -2668,7 +2803,12 @@ async function checkRemoteApk({ sync = false } = {}) {
         "ok",
       );
     } else if (payload.updateAvailable) {
-      setRestorePageStatus("A newer Whiteout game.zip is available on the GnBots server.", "warn");
+      setRestorePageStatus(
+        settingsProgram === "frostguard"
+          ? "A newer Whiteout game.zip is available."
+          : "A newer Whiteout game.zip is available on the GnBots server.",
+        "warn",
+      );
     } else {
       const thirdPartyError = payload.thirdParty?.error;
       setRestorePageStatus(
@@ -2765,31 +2905,7 @@ function setActiveSettingsTab(tabId) {
   els.tabRestore?.classList.toggle("hidden", tabId !== "restore");
   els.tabAutomation?.classList.toggle("hidden", tabId !== "automation");
   els.tabMonitor?.classList.toggle("hidden", tabId !== "monitor");
-  if (els.settingsSubtitle) {
-    if (tabId === "accounts") {
-      els.settingsSubtitle.innerHTML =
-        "Per-account Action Editor settings, templates, and schedule rules from the active profile";
-    } else if (tabId === "names") {
-      els.settingsSubtitle.innerHTML =
-        "Bulk edit switch account names for every profile account at once";
-    } else if (tabId === "bulk") {
-      els.settingsSubtitle.innerHTML =
-        "Change one action setting across selected profile accounts";
-    } else if (tabId === "provision") {
-      els.settingsSubtitle.innerHTML =
-        "Create a new LDPlayer instance, install Whiteout Survival, and add a GnBots account";
-    } else if (tabId === "restore") {
-      els.settingsSubtitle.innerHTML = "Restore LDPlayer backups and reinstall Whiteout Survival";
-    } else if (tabId === "automation") {
-      els.settingsSubtitle.innerHTML =
-        "Background automation, common-issue reports, and fix suggestions";
-    } else if (tabId === "monitor") {
-      els.settingsSubtitle.innerHTML = "Sentinel and watcher options from <code>monitor/config.json</code>";
-    } else {
-      els.settingsSubtitle.innerHTML =
-        'Remote configuration via the GnBots <code>/settings</code> API';
-    }
-  }
+  updateSettingsSubtitle(tabId);
   if (tabId === "accounts" && !profileAccounts.length) {
     loadProfileAccounts();
   }
@@ -2817,10 +2933,47 @@ function setActiveSettingsTab(tabId) {
   scheduleSettingsActivityPoll();
 }
 
+function updateSettingsSubtitle(tabId = activeSettingsTab) {
+  if (!els.settingsSubtitle) return;
+  const frostguard = settingsProgram === "frostguard";
+  if (tabId === "accounts") {
+    els.settingsSubtitle.textContent = frostguard
+      ? "Task settings for each Frostguard account"
+      : "Per-account Action Editor settings, templates, and schedule rules from the active profile";
+  } else if (tabId === "names") {
+    els.settingsSubtitle.textContent = frostguard
+      ? "Account name, player id, alliance, and state"
+      : "Bulk edit switch account names for every profile account at once";
+  } else if (tabId === "bulk") {
+    els.settingsSubtitle.textContent = frostguard
+      ? "Change one Frostguard task setting across selected accounts"
+      : "Change one action setting across selected profile accounts";
+  } else if (tabId === "provision") {
+    els.settingsSubtitle.textContent = frostguard
+      ? "Create an LDPlayer instance and a Frostguard account"
+      : "Create a new LDPlayer instance, install Whiteout Survival, and add a GnBots account";
+  } else if (tabId === "restore") {
+    els.settingsSubtitle.textContent = frostguard
+      ? "Restore LDPlayer backups for Frostguard accounts"
+      : "Restore LDPlayer backups and reinstall Whiteout Survival";
+  } else if (tabId === "automation") {
+    els.settingsSubtitle.textContent =
+      "Background automation, common-issue reports, and fix suggestions";
+  } else if (tabId === "monitor") {
+    els.settingsSubtitle.innerHTML = "Sentinel and watcher options from <code>monitor/config.json</code>";
+  } else {
+    els.settingsSubtitle.innerHTML = frostguard
+      ? "Frostguard Config: emulators, instances, game version, and analytics"
+      : 'Remote configuration via the GnBots <code>/settings</code> API';
+  }
+}
+
 function renderAccountSelectOptions() {
   if (!els.accountSelect) return;
   if (!profileAccounts.length) {
-    els.accountSelect.innerHTML = `<option value="">No accounts in profile</option>`;
+    els.accountSelect.innerHTML = `<option value="">${
+      accountProgram === "frostguard" ? "No Frostguard accounts" : "No accounts in profile"
+    }</option>`;
     els.accountSelect.disabled = true;
     return;
   }
@@ -2828,7 +2981,14 @@ function renderAccountSelectOptions() {
   const options = profileAccounts
     .map((account) => {
       const suffix = account.active ? "" : " · disabled";
-      return `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)} (${account.instanceId})${suffix}</option>`;
+      const identity =
+        accountProgram === "frostguard"
+          ? [account.alliance, account.state ? `state ${account.state}` : ""].filter(Boolean).join(" · ")
+          : "";
+      const label = identity
+        ? `${account.name} · ${identity} (${account.instanceId})`
+        : `${account.name} (${account.instanceId})`;
+      return `<option value="${escapeHtml(account.id)}">${escapeHtml(label)}${suffix}</option>`;
     })
     .join("");
   els.accountSelect.innerHTML = options;
@@ -2854,7 +3014,7 @@ function updateAccountLockedBanner() {
     return;
   }
   banner.textContent =
-    "Account actions are read-only while bot sessions are running. Stop the bot from the dashboard, edit here, then restart GnBots.";
+    `Account actions are read-only while bot sessions are running. Stop the bot from the dashboard, edit here, then restart ${programName()}.`;
   banner.classList.remove("hidden");
 }
 
@@ -2866,6 +3026,102 @@ function applyAccountLockState() {
   renderAccountTemplateOptions();
   if (currentAccountAdvanced) {
     renderAccountAdvancedPanel(currentAccountAdvanced);
+  }
+}
+
+function programName(program = settingsProgram) {
+  return program === "frostguard" ? "Frostguard" : "GnBots";
+}
+
+function rememberBanner(node) {
+  if (node && !node.dataset.gnbotsHtml) {
+    node.dataset.gnbotsHtml = node.innerHTML;
+  }
+  return node;
+}
+
+function setBanner(id, frostguardText) {
+  const node = rememberBanner(document.getElementById(id));
+  if (!node) return;
+  if (settingsProgram === "frostguard") {
+    node.textContent = frostguardText;
+  } else if (node.dataset.gnbotsHtml) {
+    node.innerHTML = node.dataset.gnbotsHtml;
+  }
+}
+
+function applyProgramChrome(program = settingsProgram) {
+  settingsProgram = program === "frostguard" ? "frostguard" : "gnbots";
+  accountProgram = settingsProgram;
+  const frostguard = settingsProgram === "frostguard";
+  if (els.restartGnBotsBtn) {
+    els.restartGnBotsBtn.textContent = frostguard ? "Restart Frostguard" : "Restart GnBots";
+    els.restartGnBotsBtn.title = frostguard
+      ? "Close and relaunch Frostguard"
+      : "Close and relaunch GnBots.exe";
+  }
+  setBanner(
+    "bot-settings-banner-text",
+    "These are Frostguard's Config settings: emulator, instance, game version, and analytics. City, rally, gather, alliance, and the other account pages are on Account Settings. Stop Frostguard before editing.",
+  );
+  setBanner(
+    "account-settings-banner-text",
+    "Edit each Frostguard account's task settings. The account name, player id, alliance, and state are on the Account Names tab. Stop Frostguard before saving.",
+  );
+  setBanner(
+    "account-names-banner-text",
+    "Each Frostguard account stores a name, player id, alliance code, and state. There is no GnBots profile or switch-account name. Stop Frostguard before saving.",
+  );
+  setBanner(
+    "provision-banner-text",
+    "Create a new LDPlayer instance and add a Frostguard account with its name, player id, alliance, and state. Stop Frostguard before starting.",
+  );
+  setBanner(
+    "restore-banner-text",
+    "Restore LDPlayer instances used by the Frostguard accounts. Instance names come from those accounts. Stop Frostguard before restoring.",
+  );
+  const stuck = rememberBanner(document.getElementById("automation-stuck-desc"));
+  if (stuck) {
+    if (frostguard) {
+      stuck.textContent =
+        "When Frostguard stays on the same screen, Sentinel can learn a rule and press Back, restart the emulator, or warn you — once Auto-fix is on.";
+    } else if (stuck.dataset.gnbotsHtml) {
+      stuck.innerHTML = stuck.dataset.gnbotsHtml;
+    }
+  }
+  syncActiveProgramCopy(settingsProgram);
+  updateSettingsSubtitle();
+}
+
+function syncActiveProgramCopy(program = accountProgram) {
+  const frostguard = program === "frostguard";
+  const advancedTitle = document.getElementById("account-advanced-title");
+  const advancedDesc = document.getElementById("account-advanced-desc");
+  const actionsTitle = document.getElementById("account-actions-title");
+  const actionsDesc = document.getElementById("account-actions-desc");
+  const bulkBanner = document.getElementById("bulk-actions-banner-text");
+  if (advancedTitle) advancedTitle.textContent = frostguard ? "Task settings" : "Advanced settings";
+  if (advancedDesc) {
+    advancedDesc.textContent = frostguard
+      ? "Frostguard task settings for this account live in the workspace database."
+      : "Assigned session and account menu rules (shuffle / custom).";
+  }
+  if (actionsTitle) actionsTitle.textContent = frostguard ? "Account pages" : "Actions";
+  if (actionsDesc) {
+    actionsDesc.textContent = frostguard
+      ? "The same pages Frostguard shows for one account: City, Rally, Shop, Gather, Alliance, and the rest."
+      : "Per-action settings, schedules, and last-used times.";
+  }
+  if (bulkBanner) {
+    if (!bulkBanner.dataset.gnbotsHtml) {
+      bulkBanner.dataset.gnbotsHtml = bulkBanner.innerHTML;
+    }
+    if (frostguard) {
+      bulkBanner.textContent =
+        "Change one Frostguard task setting across many accounts at once. Stop Frostguard before saving. Values are written to the workspace database.";
+    } else {
+      bulkBanner.innerHTML = bulkBanner.dataset.gnbotsHtml;
+    }
   }
 }
 
@@ -2881,6 +3137,16 @@ function updateAccountSettingsMeta(profileName = "") {
     return;
   }
   const enabled = account.active ? "enabled in profile" : "disabled in profile";
+  if (accountProgram === "frostguard") {
+    const parts = [profileName || "Frostguard"];
+    if (Number(account.instanceId) >= 0) parts.push(`emulator ${account.instanceId}`);
+    if (account.playerId) parts.push(`id ${account.playerId}`);
+    if (account.alliance) parts.push(account.alliance);
+    if (account.state) parts.push(`state ${account.state}`);
+    parts.push(enabled);
+    els.accountSettingsMeta.textContent = parts.join(" · ");
+    return;
+  }
   const health = account.healthCheckPassed ? "health check passed" : "health check not passed";
   els.accountSettingsMeta.textContent = `${profileName || profileInUse || "Profile"} · instance ${account.instanceId} · ${enabled} · ${health}`;
 }
@@ -2929,6 +3195,11 @@ function showAccountDetailPanels(show) {
 
 function renderAccountAdvancedPanel(advanced = null) {
   if (!els.accountAdvancedBody) return;
+  if (accountProgram === "frostguard" && selectedAccountId) {
+    currentAccountAdvanced = null;
+    els.accountAdvancedBody.innerHTML = `<p class="settings-loading">Frostguard stores this account's task settings in the workspace database. Edit them in the actions below. Session, shuffle, and custom apply only while GnBots is the active program.</p>`;
+    return;
+  }
   currentAccountAdvanced = advanced && typeof advanced === "object" ? advanced : null;
   if (!selectedAccountId || !currentAccountAdvanced) {
     els.accountAdvancedBody.innerHTML = `<p class="settings-loading">Select an account to view advanced settings.</p>`;
@@ -3555,7 +3826,9 @@ function updateNamesLockedBanner() {
     return;
   }
   banner.textContent =
-    "Switch account names are read-only while bot sessions are running. Stop the bot from the dashboard, then edit here.";
+    settingsProgram === "frostguard"
+      ? "Account name, player id, alliance, and state are read-only while Frostguard automation is running. Stop Frostguard from the dashboard, then edit here."
+      : "Switch account names are read-only while bot sessions are running. Stop the bot from the dashboard, then edit here.";
   banner.classList.remove("hidden");
 }
 
@@ -3640,7 +3913,54 @@ function setSwitchNameInputValue(accountId, value) {
   }
 }
 
+function renderIdentityInput(accountId, key, label, value, locked, extra = "") {
+  return `
+    <label class="account-names-field" for="account-names-${key}-${escapeHtml(accountId)}">
+      <span class="account-names-field-label">${label}</span>
+      <input
+        id="account-names-${key}-${escapeHtml(accountId)}"
+        class="setting-input account-names-input"
+        type="text"
+        data-account-id="${escapeHtml(accountId)}"
+        data-identity-key="${key}"
+        value="${escapeHtml(value || "")}"
+        autocomplete="off"
+        spellcheck="false"
+        ${extra}
+        ${locked ? "disabled" : ""}
+      >
+    </label>
+  `;
+}
+
+function renderFrostguardIdentityRow(row) {
+  const locked = switchNamesLocked();
+  const accountId = String(row.accountId);
+  const statusLabel = row.active ? "enabled" : "disabled";
+  const emulator = Number(row.instanceId) >= 0 ? `emulator ${row.instanceId}` : "no emulator";
+  return `
+    <article class="account-names-row" data-account-id="${escapeHtml(accountId)}">
+      <div class="account-names-row-meta">
+        <div class="account-names-row-title">
+          <strong>${escapeHtml(row.accountName || accountId)}</strong>
+          <span class="account-names-row-sub">${emulator} · ${statusLabel}</span>
+        </div>
+      </div>
+      <div class="account-names-row-edit">
+        ${renderIdentityInput(accountId, "name", "Account name", row.accountName, locked)}
+        ${renderIdentityInput(accountId, "characterName", "Character name", row.characterName, locked)}
+        ${renderIdentityInput(accountId, "playerId", "Player id", row.playerId, locked)}
+        ${renderIdentityInput(accountId, "alliance", "Alliance", row.alliance, locked, 'maxlength="3"')}
+        ${renderIdentityInput(accountId, "state", "State", row.state, locked)}
+      </div>
+    </article>
+  `;
+}
+
 function renderAccountNameRow(row) {
+  if (settingsProgram === "frostguard") {
+    return renderFrostguardIdentityRow(row);
+  }
   const locked = switchNamesLocked();
   const accountId = String(row.accountId);
   const value = row.switchAccountName == null ? "" : String(row.switchAccountName);
@@ -3702,7 +4022,11 @@ function renderAccountNameRow(row) {
 function renderAccountNamesList() {
   if (!els.accountNamesList) return;
   if (!switchNameRows.length) {
-    els.accountNamesList.innerHTML = `<p class="settings-loading">No account switch actions found in this profile.</p>`;
+    els.accountNamesList.innerHTML = `<p class="settings-loading">${
+      settingsProgram === "frostguard"
+        ? "No Frostguard accounts found."
+        : "No account switch actions found in this profile."
+    }</p>`;
     applySwitchNamesLockState();
     return;
   }
@@ -3711,6 +4035,19 @@ function renderAccountNamesList() {
 }
 
 function collectSwitchNameUpdates() {
+  if (settingsProgram === "frostguard") {
+    return switchNameRows.map((row) => {
+      const accountId = String(row.accountId);
+      const update = { accountId };
+      for (const key of ["name", "characterName", "playerId", "alliance", "state"]) {
+        const input = document.querySelector(
+          `.account-names-input[data-account-id="${CSS.escape(accountId)}"][data-identity-key="${key}"]`,
+        );
+        update[key] = input ? input.value.trim() : String(row[key] || row.accountName || "").trim();
+      }
+      return update;
+    });
+  }
   return switchNameRows.map((row) => {
     const accountId = String(row.accountId);
     const input = document.querySelector(
@@ -3735,21 +4072,35 @@ async function loadAccountNamesTab() {
     if (!response.ok) {
       throw new Error(body.detail || "Could not load switch account names.");
     }
+    applyProgramChrome(body.program || "gnbots");
     switchNameRows = Array.isArray(body.accounts) ? body.accounts : [];
     switchNamesWritable = body.writable !== false;
     profileEditLocked = body.writable === false;
     applySwitchNamesLockState();
     if (els.accountNamesMeta) {
-      const profile = body.profile || profileInUse || "Profile";
-      els.accountNamesMeta.textContent = `${profile} · ${switchNameRows.length} account${switchNameRows.length === 1 ? "" : "s"} with Account Switch`;
+      if (settingsProgram === "frostguard") {
+        els.accountNamesMeta.textContent = `${switchNameRows.length} Frostguard account${switchNameRows.length === 1 ? "" : "s"}`;
+      } else {
+        const profile = body.profile || profileInUse || "Profile";
+        els.accountNamesMeta.textContent = `${profile} · ${switchNameRows.length} account${switchNameRows.length === 1 ? "" : "s"} with Account Switch`;
+      }
     }
     renderAccountNamesList();
-    setNamesPageStatus(
-      switchNamesLocked()
-        ? "Switch account names are read-only while bot sessions are running."
-        : `Loaded ${switchNameRows.length} switch account name${switchNameRows.length === 1 ? "" : "s"}. Edit any row, then Save all names.`,
-      switchNamesLocked() ? "warn" : "ok",
-    );
+    if (settingsProgram === "frostguard") {
+      setNamesPageStatus(
+        switchNamesLocked()
+          ? "Account names are read-only while Frostguard is running."
+          : `Loaded ${switchNameRows.length} account${switchNameRows.length === 1 ? "" : "s"}. Edit the name, player id, alliance, and state, then save.`,
+        switchNamesLocked() ? "warn" : "ok",
+      );
+    } else {
+      setNamesPageStatus(
+        switchNamesLocked()
+          ? "Switch account names are read-only while bot sessions are running."
+          : `Loaded ${switchNameRows.length} switch account name${switchNameRows.length === 1 ? "" : "s"}. Edit any row, then Save all names.`,
+        switchNamesLocked() ? "warn" : "ok",
+      );
+    }
   } catch (error) {
     switchNameRows = [];
     els.accountNamesList.innerHTML = `<p class="settings-loading error">${escapeHtml(error.message || "Failed to load account names.")}</p>`;
@@ -3841,7 +4192,9 @@ function updateBulkLockedBanner() {
     return;
   }
   banner.textContent =
-    "Bulk action settings are read-only while bot sessions are running. Stop the bot from the dashboard, then edit here.";
+    settingsProgram === "frostguard"
+      ? "Bulk task settings are read-only while Frostguard automation is running. Stop Frostguard from the dashboard, then edit here."
+      : "Bulk action settings are read-only while bot sessions are running. Stop the bot from the dashboard, then edit here.";
   banner.classList.remove("hidden");
 }
 
@@ -4145,6 +4498,17 @@ function renderBulkFieldInput(field, value, { inputId = "bulk-apply-value", disa
     return `<select class="setting-select bulk-field-input" data-bulk-field-input="1"${accountAttr} ${disabled ? "disabled" : ""}>${options}</select>`;
   }
 
+  const priorityItems = priorityItemsFor(field.key, value);
+  if (priorityItems) {
+    const accountAttr = dataAccountId ? ` data-bulk-account-id="${escapeHtml(dataAccountId)}"` : "";
+    return renderPriorityEditor(priorityItems, {
+      key: field.key,
+      label: field.label || field.key,
+      disabled,
+      hiddenAttrs: `id="${escapeHtml(inputId)}" class="setting-input bulk-field-input" data-bulk-field-input="1"${accountAttr}`,
+    });
+  }
+
   const inputType = field.type === "number" ? "number" : "text";
   return `<input ${common} type="${inputType}" value="${escapeHtml(formatBulkFieldValue(field, value))}" ${disabled ? "disabled" : ""}>`;
 }
@@ -4251,6 +4615,15 @@ function renderBulkActionFieldRow(row) {
           })}
         </details>
       </div>`
+    : priorityItemsFor(bulkFieldMeta?.key, row.value)
+    ? `<div class="bulk-actions-row-edit">
+        <span class="bulk-actions-field-label">New value</span>
+        ${renderBulkFieldInput(bulkFieldMeta, row.value, {
+          inputId,
+          disabled: locked,
+          dataAccountId: accountId,
+        })}
+      </div>`
     : `<label class="bulk-actions-row-edit" for="${escapeHtml(inputId)}">
         <span class="bulk-actions-field-label">New value</span>
         ${renderBulkFieldInput(bulkFieldMeta, row.value, {
@@ -4353,6 +4726,7 @@ async function loadBulkActionCatalog() {
     if (!response.ok) {
       throw new Error(formatApiError(body, "Could not load action catalog."));
     }
+    applyProgramChrome(body.program || accountProgram);
     bulkActionCatalog = Array.isArray(body.actions) ? body.actions : [];
     bulkFieldsWritable = body.writable !== false;
     const profile = body.profile ? String(body.profile) : "";
@@ -4591,15 +4965,282 @@ function renderSwitchAccountNameField(action, field) {
   `;
 }
 
-function renderAccountActionField(action, field) {
+const PRIORITY_CATALOGS = {
+  ALLIANCE_SHOP_PRIORITIES_STRING: [
+    ["TRANSFER_PASS", "Transfer Pass", false],
+    ["ADVANCED_TELEPORT", "Advanced Teleport", false],
+    ["MARCH_RECALL", "March Recall", false],
+    ["MYTHIC_HERO_SHARDS", "Mythic Hero Shards", false],
+    ["PET_CHEST", "Pet Chest", false],
+    ["PET_FOOD", "Pet Food", false],
+    ["TERRITORY_TELEPORT", "Territory Teleport", false],
+    ["VIP_XP_10", "10 VIP XP", false],
+    ["VIP_XP_100", "100 VIP XP", false],
+  ],
+  RESEARCH_PRIORITIES_STRING: [
+    ["growth", "Growth", true],
+    ["economy", "Economy", true],
+    ["battle", "Battle", true],
+  ],
+};
+
+function parsePriorityList(raw) {
+  const text = String(raw || "").trim();
+  if (!text || !text.includes("|") && !text.includes(":")) return null;
+  const items = [];
+  for (const part of text.split("|")) {
+    const bits = part.split(":");
+    if (bits.length < 4) return null;
+    const enabled = bits[bits.length - 1];
+    const order = bits[bits.length - 2];
+    const body = bits.slice(0, -2).join(":");
+    const splitAt = body.indexOf(":");
+    if (splitAt <= 0) return null;
+    if (!/^\d+$/.test(order) || (enabled !== "true" && enabled !== "false")) return null;
+    items.push({
+      id: body.slice(0, splitAt),
+      label: body.slice(splitAt + 1),
+      enabled: enabled === "true",
+      order: Number(order),
+    });
+  }
+  items.sort((left, right) => left.order - right.order);
+  return items.length ? items : null;
+}
+
+function serializePriorityList(items) {
+  return items
+    .map((item, index) => `${item.id}:${item.label}:${index + 1}:${item.enabled ? "true" : "false"}`)
+    .join("|");
+}
+
+function priorityItemsFor(key, raw) {
+  const parsed = parsePriorityList(raw);
+  if (parsed) return parsed;
+  const catalog = PRIORITY_CATALOGS[String(key || "")];
+  if (!catalog || String(raw || "").trim()) return null;
+  return catalog.map(([id, label, enabled], index) => ({ id, label, enabled, order: index + 1 }));
+}
+
+function priorityEditorNote(key) {
+  if (String(key || "").includes("SHOP")) {
+    return "Checked items are bought first. Move an item up to buy it sooner.";
+  }
+  return "Checked items come first. Move an item up to raise its priority.";
+}
+
+let priorityEditorsBound = false;
+let priorityDragIndex = null;
+
+function ensurePriorityEditorsBound() {
+  if (priorityEditorsBound) return;
+  priorityEditorsBound = true;
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-priority-move]");
+    if (!button || button.disabled) return;
+    const editor = button.closest("[data-priority-editor]");
+    const row = button.closest(".priority-item");
+    if (!editor || !row) return;
+    event.preventDefault();
+    const index = [...row.parentElement.children].indexOf(row);
+    const delta = button.getAttribute("data-priority-move") === "up" ? -1 : 1;
+    movePriorityItem(editor, index, delta);
+  });
+  document.addEventListener("change", (event) => {
+    if (!event.target.classList?.contains("priority-enabled")) return;
+    const editor = event.target.closest("[data-priority-editor]");
+    if (!editor) return;
+    writePriorityEditor(editor, readPriorityItems(editor));
+  });
+  document.addEventListener("dragstart", (event) => {
+    const row = event.target.closest?.(".priority-item");
+    if (!row || row.closest("[data-priority-editor]")?.hasAttribute("data-priority-locked")) return;
+    priorityDragIndex = [...row.parentElement.children].indexOf(row);
+  });
+  document.addEventListener("dragover", (event) => {
+    if (priorityDragIndex == null) return;
+    if (!event.target.closest?.(".priority-item")) return;
+    event.preventDefault();
+  });
+  document.addEventListener("drop", (event) => {
+    const row = event.target.closest?.(".priority-item");
+    const editor = row?.closest("[data-priority-editor]");
+    if (!row || !editor || priorityDragIndex == null || editor.hasAttribute("data-priority-locked")) {
+      priorityDragIndex = null;
+      return;
+    }
+    event.preventDefault();
+    const target = [...row.parentElement.children].indexOf(row);
+    const from = priorityDragIndex;
+    priorityDragIndex = null;
+    if (from === target) return;
+    const items = readPriorityItems(editor);
+    const [item] = items.splice(from, 1);
+    items.splice(target, 0, item);
+    writePriorityEditor(editor, items);
+  });
+}
+
+function readPriorityItems(editor) {
+  return [...editor.querySelectorAll(".priority-item")].map((row) => ({
+    id: row.getAttribute("data-id") || "",
+    label: row.getAttribute("data-label") || "",
+    enabled: row.querySelector(".priority-enabled")?.checked === true,
+  }));
+}
+
+function writePriorityEditor(editor, items) {
+  const list = editor.querySelector(".priority-list");
+  const hidden = editor.querySelector("[data-priority-value]");
+  if (!list || !hidden) return;
+  const locked = editor.hasAttribute("data-priority-locked");
+  let rank = 0;
+  list.innerHTML = items
+    .map((item, index) => {
+      const rankText = item.enabled ? `${++rank}.` : "Off";
+      return `
+        <li class="priority-item${item.enabled ? " is-on" : ""}" draggable="${locked ? "false" : "true"}" data-id="${escapeHtml(item.id)}" data-label="${escapeHtml(item.label)}">
+          <span class="priority-moves">
+            <button type="button" class="priority-move" data-priority-move="up" aria-label="Move ${escapeHtml(item.label)} up" ${locked || index === 0 ? "disabled" : ""}>Up</button>
+            <button type="button" class="priority-move" data-priority-move="down" aria-label="Move ${escapeHtml(item.label)} down" ${locked || index === items.length - 1 ? "disabled" : ""}>Down</button>
+          </span>
+          <label class="priority-check">
+            <input type="checkbox" class="priority-enabled" ${item.enabled ? "checked" : ""} ${locked ? "disabled" : ""}>
+            <span class="priority-rank">${escapeHtml(rankText)}</span>
+            <span class="priority-name">${escapeHtml(item.label)}</span>
+          </label>
+        </li>
+      `;
+    })
+    .join("");
+  hidden.value = serializePriorityList(items);
+}
+
+function movePriorityItem(editor, index, delta) {
+  const items = readPriorityItems(editor);
+  const next = index + delta;
+  if (next < 0 || next >= items.length) return;
+  const [item] = items.splice(index, 1);
+  items.splice(next, 0, item);
+  writePriorityEditor(editor, items);
+}
+
+function renderPriorityEditor(items, { key, label, hiddenAttrs, disabled }) {
+  ensurePriorityEditorsBound();
+  const serialized = serializePriorityList(items);
+  return `
+    <div class="priority-editor" data-priority-editor ${disabled ? "data-priority-locked" : ""}>
+      <span class="account-action-field-label">${escapeHtml(label || "Priorities")}</span>
+      <div class="priority-editor-panel">
+        <p class="priority-editor-note">${escapeHtml(priorityEditorNote(key))}</p>
+        <ol class="priority-list">
+          ${items
+            .map((item, index) => {
+              const rank = item.enabled ? `${items.slice(0, index + 1).filter((row) => row.enabled).length}.` : "Off";
+              return `
+                <li class="priority-item${item.enabled ? " is-on" : ""}" draggable="${disabled ? "false" : "true"}" data-id="${escapeHtml(item.id)}" data-label="${escapeHtml(item.label)}">
+                  <span class="priority-moves">
+                    <button type="button" class="priority-move" data-priority-move="up" aria-label="Move ${escapeHtml(item.label)} up" ${disabled || index === 0 ? "disabled" : ""}>Up</button>
+                    <button type="button" class="priority-move" data-priority-move="down" aria-label="Move ${escapeHtml(item.label)} down" ${disabled || index === items.length - 1 ? "disabled" : ""}>Down</button>
+                  </span>
+                  <label class="priority-check">
+                    <input type="checkbox" class="priority-enabled" ${item.enabled ? "checked" : ""} ${disabled ? "disabled" : ""}>
+                    <span class="priority-rank">${escapeHtml(rank)}</span>
+                    <span class="priority-name">${escapeHtml(item.label)}</span>
+                  </label>
+                </li>
+              `;
+            })
+            .join("")}
+        </ol>
+        <input type="hidden" data-priority-value="1" value="${escapeHtml(serialized)}" ${hiddenAttrs}>
+      </div>
+    </div>
+  `;
+}
+
+function renderAccountCompanion(action, field) {
+  const actionId = String(action.id);
+  const disabled = accountActionsLocked() || accountActionBusyIds.has(actionId);
+  const fieldId = `account-action-${actionId}-${field.key.replaceAll(".", "-")}`;
+  const fieldKey = escapeHtml(field.key);
+  const caption = escapeHtml(field.label || "Offset");
+  if (field.type === "select") {
+    const current = field.value == null ? "" : String(field.value);
+    const options = (field.options || []).map((option) => {
+      const value = String(option);
+      const selected = value === current ? " selected" : "";
+      return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value)}</option>`;
+    }).join("");
+    return `
+      <label class="account-action-companion" for="${fieldId}">
+        <span>${caption}</span>
+        <select id="${fieldId}" class="setting-select" data-action-id="${actionId}" data-field-key="${fieldKey}" data-field-type="select" ${disabled ? "disabled" : ""}>${options}</select>
+      </label>
+    `;
+  }
+  const inputType = field.type === "number" ? "number" : "text";
+  const value = field.value == null ? "" : String(field.value);
+  return `
+    <label class="account-action-companion" for="${fieldId}">
+      <span>${caption}</span>
+      <input id="${fieldId}" class="setting-input" type="${inputType}" data-action-id="${actionId}" data-field-key="${fieldKey}" data-field-type="${escapeHtml(field.type || "text")}" value="${escapeHtml(value)}" ${disabled ? "disabled" : ""}>
+    </label>
+  `;
+}
+
+function renderAccountFieldBlocks(action, fields) {
+  const companions = new Map();
+  fields.forEach((field) => {
+    if (!field.beside) return;
+    const list = companions.get(field.beside) || [];
+    list.push(field);
+    companions.set(field.beside, list);
+  });
+  const parentKeys = new Set(fields.map((field) => field.key));
+  const visible = fields.filter((field) => !field.beside || !parentKeys.has(field.beside));
+  const sectionOrder = [];
+  const bySection = new Map();
+  visible.forEach((field) => {
+    const title = field.section || "";
+    if (!bySection.has(title)) {
+      bySection.set(title, []);
+      sectionOrder.push(title);
+    }
+    bySection.get(title).push(field);
+  });
+  return sectionOrder
+    .map((title) => {
+      const rows = bySection
+        .get(title)
+        .map((field) => renderAccountActionField(action, field, companions.get(field.key) || []))
+        .join("");
+      const heading = title ? `<h4 class="account-action-section">${escapeHtml(title)}</h4>` : "";
+      return `${heading}<div class="account-action-fields">${rows}</div>`;
+    })
+    .join("");
+}
+
+function renderAccountActionField(action, field, companions = []) {
   const actionId = String(action.id);
   const disabled = accountActionsLocked() || accountActionBusyIds.has(actionId);
   const fieldId = `account-action-${actionId}-${field.key.replaceAll(".", "-")}`;
   const label = escapeHtml(field.label || field.key);
   const fieldKey = escapeHtml(field.key);
+  const companionHtml = companions.map((item) => renderAccountCompanion(action, item)).join("");
 
   if (field.key === "switchAccountName") {
     return renderSwitchAccountNameField(action, field);
+  }
+
+  const priorityItems = priorityItemsFor(field.key, field.value);
+  if (priorityItems) {
+    return renderPriorityEditor(priorityItems, {
+      key: field.key,
+      label,
+      disabled,
+      hiddenAttrs: `class="setting-input" data-action-id="${actionId}" data-field-key="${fieldKey}" data-field-type="text"`,
+    });
   }
 
   if (field.type === "boolean") {
@@ -4617,6 +5258,7 @@ function renderAccountActionField(action, field) {
             ${checked ? "checked" : ""}
             ${disabled ? "disabled" : ""}
           >
+          ${companionHtml}
         </span>
       </label>
     `;
@@ -4641,6 +5283,7 @@ function renderAccountActionField(action, field) {
             data-field-type="select"
             ${disabled ? "disabled" : ""}
           >${options}</select>
+          ${companionHtml}
         </span>
       </label>
     `;
@@ -4662,6 +5305,7 @@ function renderAccountActionField(action, field) {
           value="${escapeHtml(value)}"
           ${disabled ? "disabled" : ""}
         >
+        ${companionHtml}
       </span>
     </label>
   `;
@@ -4759,22 +5403,14 @@ function renderAccountActions(actions = []) {
       const disabled = locked || busy;
       const badgeClass = action.isActive ? "on" : "off";
       const badgeLabel = action.isActive ? "On" : "Off";
-      const scheduleMeta = renderScheduleMeta(action.schedule);
-      const scheduleRules = renderScheduleRulesBlock(action);
-      const lastUsed = renderActionLastUsed(action.schedule);
-      const hasSchedule = Number(action.schedule?.rulesCount || 0) > 0;
-      const fields = Array.isArray(action.fields) ? action.fields : [];
-      const fieldRows = fields
-        .map((field) => renderAccountActionField(action, field))
-        .join("");
-      const fieldsBlock = fieldRows
-        ? `<div class="account-action-fields">${fieldRows}</div>`
-        : `<p class="account-action-empty">No configurable fields for this action.</p>`;
-
-      return `
-        <article class="account-action-card${locked ? " is-disabled" : ""}" data-action-id="${escapeHtml(actionId)}">
-          <header class="account-action-head">
-            <label class="account-action-active-toggle account-action-toggle-main">
+      const frostguardAccount = accountProgram === "frostguard";
+      const canToggle = action.hasToggle !== false;
+      const scheduleMeta = frostguardAccount ? "" : renderScheduleMeta(action.schedule);
+      const scheduleRules = frostguardAccount ? "" : renderScheduleRulesBlock(action);
+      const lastUsed = frostguardAccount ? "" : renderActionLastUsed(action.schedule);
+      const hasSchedule = !frostguardAccount && Number(action.schedule?.rulesCount || 0) > 0;
+      const toggleHtml = canToggle
+        ? `<label class="account-action-active-toggle account-action-toggle-main">
               <input
                 type="checkbox"
                 data-action-active="${escapeHtml(actionId)}"
@@ -4782,9 +5418,23 @@ function renderAccountActions(actions = []) {
                 ${disabled ? "disabled" : ""}
               >
               <span class="account-action-badge ${badgeClass}">${badgeLabel}</span>
-            </label>
+            </label>`
+        : `<span class="account-action-badge">Settings</span>`;
+      const fields = Array.isArray(action.fields) ? action.fields : [];
+      const fieldsBlock = fields.length
+        ? renderAccountFieldBlocks(action, fields)
+        : `<p class="account-action-empty">No configurable fields for this action.</p>`;
+      const description = frostguardAccount && action.description
+        ? `<p class="account-action-description">${escapeHtml(action.description)}</p>`
+        : "";
+
+      return `
+        <article class="account-action-card${locked ? " is-disabled" : ""}" data-action-id="${escapeHtml(actionId)}">
+          <header class="account-action-head">
+            ${toggleHtml}
             <div class="account-action-title-wrap">
               <h3 class="account-action-title">${escapeHtml(action.title || action.scriptId || "Action")}</h3>
+              ${description}
               ${hasSchedule ? `<span class="account-action-schedule-icon" title="Has schedule rules">⏱</span>` : ""}
             </div>
             <span class="account-action-last-used">${escapeHtml(lastUsed)}</span>
@@ -4798,7 +5448,7 @@ function renderAccountActions(actions = []) {
               class="btn btn-small account-action-save"
               data-save-action-id="${escapeHtml(actionId)}"
               ${disabled ? "disabled" : ""}
-            >${busy ? "Saving…" : "Save action"}</button>
+            >${busy ? "Saving…" : frostguardAccount ? "Save page" : "Save action"}</button>
           </footer>
         </article>
       `;
@@ -4820,6 +5470,7 @@ async function loadProfileAccounts() {
     if (!response.ok) {
       throw new Error(body.detail || "Could not load profile accounts.");
     }
+    applyProgramChrome(body.program || "gnbots");
     profileAccounts = Array.isArray(body.accounts) ? body.accounts : [];
     accountActionsWritable = body.writable !== false;
     profileEditLocked = body.writable === false;
@@ -4867,9 +5518,13 @@ async function loadAccountActions(accountId, profileName = "") {
       throw new Error(body.detail || "Could not load account actions.");
     }
     const account = body.account || {};
+    accountProgram = body.program || account.program || accountProgram;
     accountActionsWritable = body.writable !== false && body.readOnly !== true;
     applyAccountLockState();
     showAccountDetailPanels(true);
+    if (els.accountTemplatesPanel) {
+      els.accountTemplatesPanel.classList.toggle("hidden", accountProgram === "frostguard");
+    }
     currentAccountAdvanced = account.advanced || null;
     currentSwitchNameHistory = Array.isArray(account.switchNameHistory)
       ? account.switchNameHistory
@@ -4887,10 +5542,11 @@ async function loadAccountActions(accountId, profileName = "") {
         ? ` · ${scheduledCount} action${scheduledCount === 1 ? "" : "s"} with schedule rules`
         : "";
     const modeLabel = accountActionsLocked() ? "read-only" : "editable";
-    setAccountPageStatus(
-      `${account.name || "Account"}: ${activeCount} of ${count} actions enabled (${modeLabel})${scheduleNote}.`,
-      accountActionsLocked() ? "warn" : "ok",
-    );
+    const statusText =
+      accountProgram === "frostguard"
+        ? `${account.name || "Account"}: ${activeCount} of ${count} Frostguard task groups on (${modeLabel}).`
+        : `${account.name || "Account"}: ${activeCount} of ${count} actions enabled (${modeLabel})${scheduleNote}.`;
+    setAccountPageStatus(statusText, accountActionsLocked() ? "warn" : "ok");
   } catch (error) {
     if (els.accountActionsList) {
       els.accountActionsList.innerHTML = `<p class="settings-loading error">${escapeHtml(error.message || "Failed to load actions.")}</p>`;
@@ -4910,18 +5566,19 @@ function setPageStatus(message, tone = "") {
 function setGnbotsStatus(online, options = {}) {
   gnbotsOnline = online;
   if (!els.gnbotsStatus) return;
+  const name = programName();
   if (online && options.writable === false) {
-    els.gnbotsStatus.textContent = "GnBots running · API busy";
+    els.gnbotsStatus.textContent = `${name} running · editing locked`;
     els.gnbotsStatus.className = "status-pill warn";
     return;
   }
-  els.gnbotsStatus.textContent = online ? "GnBots online" : "GnBots offline";
+  els.gnbotsStatus.textContent = online ? `${name} online` : `${name} offline`;
   els.gnbotsStatus.className = `status-pill ${online ? "online" : "offline"}`;
 }
 
 function schemaKeys() {
   const keys = new Set();
-  for (const group of SETTINGS_GROUPS) {
+  for (const group of activeSettingsGroups) {
     for (const field of group.fields) {
       keys.add(field.key);
     }
@@ -5054,7 +5711,7 @@ function renderEmulatorStatusBanner() {
       </div>
       ${
         mismatch
-          ? `<p class="setting-hint">Emulator label is <strong>${escapeHtml(label)}</strong> but UID <code>${escapeHtml(uid)}</code> expects <strong>${escapeHtml(expectedLabel)}</strong>. Save the corrected label and restart GnBots.</p>`
+          ? `<p class="setting-hint">Emulator label is <strong>${escapeHtml(label)}</strong> but UID <code>${escapeHtml(uid)}</code> expects <strong>${escapeHtml(expectedLabel)}</strong>. Save the corrected label and restart ${programName()}.</p>`
           : `<p class="setting-hint">UID <code>${escapeHtml(uid || "—")}</code> matches label <strong>${escapeHtml(label || "—")}</strong>.</p>`
       }
     </div>
@@ -5075,8 +5732,8 @@ function renderProfileInUseBanner() {
       </div>
       ${
         mismatch
-          ? `<p class="setting-hint">Saved selection is <span class="setting-profile-status-value">${escapeHtml(saved)}</span>. Restart GnBots to switch the active profile.</p>`
-          : `<p class="setting-hint">Matches the active profile after restart. Change below, save, then restart GnBots.</p>`
+          ? `<p class="setting-hint">Saved selection is <span class="setting-profile-status-value">${escapeHtml(saved)}</span>. Restart ${programName()} to switch the active profile.</p>`
+          : `<p class="setting-hint">Matches the active profile after restart. Change below, save, then restart ${programName()}.</p>`
       }
     </div>
   `;
@@ -5085,11 +5742,12 @@ function renderProfileInUseBanner() {
 function renderGroups() {
   if (!els.settingsGroups) return;
 
-  const html = SETTINGS_GROUPS.map((group) => {
+  const html = activeSettingsGroups.map((group) => {
     const fields = group.fields
       .map((field) => renderField(group.id, field))
       .join("");
-    const profileBanner = group.id === "run" ? renderProfileInUseBanner() : "";
+    const profileBanner =
+      settingsProgram === "frostguard" || group.id !== "run" ? "" : renderProfileInUseBanner();
     const emulatorBanner = group.id === "emulator" ? renderEmulatorStatusBanner() : "";
     return `
       <section class="panel settings-group" data-group="${group.id}">
@@ -5125,7 +5783,7 @@ function renderRawSettings() {
 }
 
 function fieldMeta(key) {
-  for (const group of SETTINGS_GROUPS) {
+  for (const group of activeSettingsGroups) {
     const field = group.fields.find((item) => item.key === key);
     if (field) return field;
   }
@@ -5187,7 +5845,7 @@ async function saveSetting(key) {
       throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
     }
     if (body.data === "Error") {
-      throw new Error(`GnBots rejected the update to ${key}.`);
+      throw new Error(`${programName()} rejected the update to ${key}.`);
     }
 
     if (body.value !== undefined) {
@@ -5201,7 +5859,7 @@ async function saveSetting(key) {
     }
 
     setPageStatus(
-      body.message || `Saved ${key}. Restart GnBots to apply.`,
+      body.message || `Saved ${key}. Restart ${programName()} to apply.`,
       "warn",
     );
     renderRawSettings();
@@ -5277,9 +5935,12 @@ async function loadProfiles(settingsBody = null) {
 
 async function restartGnBots() {
   if (restartBusy) return;
+  const name = programName();
   if (
     !window.confirm(
-      "Restart GnBots? This stops the bot, closes GnBots.exe, waits a few seconds, then launches it again.",
+      settingsProgram === "frostguard"
+        ? "Restart Frostguard? This closes Frostguard and launches it again."
+        : "Restart GnBots? This stops the bot, closes GnBots.exe, waits a few seconds, then launches it again.",
     )
   ) {
     return;
@@ -5289,7 +5950,7 @@ async function restartGnBots() {
   if (els.restartGnBotsBtn) {
     els.restartGnBotsBtn.disabled = true;
   }
-  setPageStatus("Restarting GnBots…", "pending");
+  setPageStatus(`Restarting ${name}…`, "pending");
 
   try {
     const response = await fetch("/api/host/gnbots/restart", { method: "POST" });
@@ -5297,10 +5958,10 @@ async function restartGnBots() {
     if (!response.ok) {
       throw new Error(body.detail || body.message || `HTTP ${response.status}`);
     }
-    setPageStatus(body.message || "GnBots restarted.", "ok");
+    setPageStatus(body.message || `${programName()} restarted.`, "ok");
     await loadSettings();
   } catch (error) {
-    setPageStatus(error.message || "Failed to restart GnBots.", "error");
+    setPageStatus(error.message || `Failed to restart ${programName()}.`, "error");
   } finally {
     restartBusy = false;
     if (els.restartGnBotsBtn) {
@@ -5334,6 +5995,8 @@ async function loadSettings() {
 
     await loadProfiles(body);
 
+    applyProgramChrome(body.program || "gnbots");
+    activeSettingsGroups = Array.isArray(body.groups) && body.groups.length ? body.groups : SETTINGS_GROUPS;
     profileInUse = body.profileInUse || "";
     configuredProfile = body.configuredProfile || "";
     runtimeProfile = body.runtimeProfile || "";
@@ -5350,10 +6013,14 @@ async function loadSettings() {
     renderGroups();
     renderRawSettings();
 
-    if (body.warning) {
+    const frostguardReady =
+      settingsProgram === "frostguard" && body.gnbotsOnline !== false && body.writable !== false;
+    if (body.warning && !frostguardReady) {
       if (body.gnbotsOnline === false && body.writable !== false) {
         setPageStatus(
-          "GnBots is offline — showing saved config. You can edit now; restart GnBots after saving.",
+          settingsProgram === "frostguard"
+            ? "Frostguard is not running. You can edit the shared defaults now."
+            : "GnBots is offline — showing saved config. You can edit now; restart GnBots after saving.",
           "ok",
         );
       } else {
@@ -5363,9 +6030,19 @@ async function loadSettings() {
       setPageStatus("Settings are read-only while bot sessions are running. Stop the bot to edit.", "warn");
     } else if (body.gnbotsOnline !== false) {
       const source = body.source ? ` (${body.source})` : "";
-      setPageStatus(`Settings loaded${source}. Stop the bot before editing; restart GnBots after saving.`, "ok");
+      setPageStatus(
+        settingsProgram === "frostguard"
+          ? `Frostguard defaults loaded${source}. Stop Frostguard before editing.`
+          : `Settings loaded${source}. Stop the bot before editing; restart GnBots after saving.`,
+        "ok",
+      );
     } else {
-      setPageStatus("GnBots is offline — you can edit settings before the next launch.", "ok");
+      setPageStatus(
+        settingsProgram === "frostguard"
+          ? "Frostguard is offline — you can edit shared defaults before the next launch."
+          : "GnBots is offline — you can edit settings before the next launch.",
+        "ok",
+      );
     }
     els.lastUpdated.textContent = `Loaded ${new Date().toLocaleTimeString()}`;
 
@@ -5657,28 +6334,56 @@ function formatLdHealthResolution(summary) {
   return `${width}×${height} @ ${dpi} DPI`;
 }
 
+function formatLdHealthSummary(summary) {
+  const resolution = formatLdHealthResolution(summary);
+  if (!resolution) return "";
+  const cpu = summary.ld_health_cpu;
+  const memory = summary.ld_health_memory_mb;
+  const fps = summary.ld_health_fps;
+  const extras = [];
+  if (cpu != null) extras.push(`${cpu} CPU`);
+  if (memory != null) extras.push(`${memory} MB`);
+  if (fps != null) extras.push(`${fps} FPS`);
+  return extras.length ? `${resolution}, ${extras.join(", ")}` : resolution;
+}
+
+function ldHealthSourceLabel(effective) {
+  const preset = String(effective?.ld_health_preset || "auto");
+  const resolved = String(effective?.ld_health_preset_resolved || "");
+  if (preset === "custom") return "custom overrides";
+  if (preset === "frostguard") return "Frostguard preset";
+  if (preset === "gnbots") return "GnBots preset";
+  return resolved === "frostguard"
+    ? "Frostguard preset (active program)"
+    : "GnBots preset (active program)";
+}
+
 function ldHealthGroupHeaderHtml() {
-  const effective = formatLdHealthResolution(ldHealthEffective);
-  const defaults = formatLdHealthResolution(ldHealthDefaults);
-  const usingDefaults = parseStoredBoolean(ldHealthEffective.ld_health_use_defaults);
+  const effective = formatLdHealthSummary(ldHealthEffective);
+  const gnbots = formatLdHealthSummary(ldHealthPresets.gnbots || ldHealthDefaults);
+  const frostguard = formatLdHealthSummary(ldHealthPresets.frostguard);
+  const source = ldHealthSourceLabel(ldHealthEffective);
   const effectiveLine = effective
-    ? `<p class="ld-health-effective">Effective: <strong>${escapeHtml(effective)}</strong>${
-        usingDefaults ? " (GnBots defaults)" : " (custom overrides)"
-      }</p>`
+    ? `<p class="ld-health-effective">Effective: <strong>${escapeHtml(effective)}</strong> (${escapeHtml(source)})</p>`
     : "";
-  const defaultsLine = defaults
-    ? `<p class="setting-hint ld-health-defaults-hint">Built-in defaults: ${escapeHtml(defaults)}</p>`
+  const gnbotsLine = gnbots
+    ? `<p class="setting-hint ld-health-defaults-hint">GnBots: ${escapeHtml(gnbots)}</p>`
+    : "";
+  const frostguardLine = frostguard
+    ? `<p class="setting-hint ld-health-defaults-hint">Frostguard: ${escapeHtml(frostguard)}</p>`
     : "";
   return `
     <div class="ld-health-group-note">
       <p class="setting-hint">
         Applied by <strong>Fix settings</strong> on the Restore tab and by the post-restore health check
         when enabled. Requires Administrator elevation to commit LDPlayer config.
+        Auto switches when Bot provider changes.
       </p>
       ${effectiveLine}
-      ${defaultsLine}
+      ${gnbotsLine}
+      ${frostguardLine}
       <button class="btn btn-small ld-health-reset-btn" type="button" id="ld-health-reset-btn">
-        Reset to defaults
+        Use active program
       </button>
     </div>
   `;
@@ -5693,11 +6398,17 @@ function monitorFieldMeta(key) {
 }
 
 function monitorFieldEffectiveNote(field) {
-  if (field.key !== "ldplayer_path") return "";
-  const override = String(currentMonitorConfig.ldplayer_path || "").trim();
-  const resolved = String(monitorResolvedPaths.ldplayer_path || "").trim();
+  const notes = {
+    ldplayer_path: "Using GnBots LDPath64",
+    frostguard_exe: "Found Frostguard install",
+    frostguard_workspace: "Default Frostguard workspace",
+  };
+  const label = notes[field.key];
+  if (!label) return "";
+  const override = String(currentMonitorConfig[field.key] || "").trim();
+  const resolved = String(monitorResolvedPaths[field.key] || "").trim();
   if (override || !resolved) return "";
-  return `<span class="setting-effective">Using GnBots <code>LDPath64</code>: <code>${escapeHtml(resolved)}</code></span>`;
+  return `<span class="setting-effective">${escapeHtml(label)}: <code>${escapeHtml(resolved)}</code></span>`;
 }
 
 function renderMonitorField(groupId, field) {
@@ -5792,7 +6503,10 @@ function renderMonitorGroups() {
 
   const html = monitorGroups
     .map((group) => {
-      const fields = (group.fields || []).map((field) => renderMonitorField(group.id, field)).join("");
+      const fields = (group.fields || [])
+        .filter((field) => !field.hidden)
+        .map((field) => renderMonitorField(group.id, field))
+        .join("");
       const healthHeader = group.id === "emulator-health" ? ldHealthGroupHeaderHtml() : "";
       return `
         <section class="panel settings-group" data-group="${group.id}">
@@ -5894,6 +6608,12 @@ async function saveMonitorSetting(key) {
     if (body.config && typeof body.config === "object") {
       currentMonitorConfig = body.config;
     }
+    if (Array.isArray(body.groups)) {
+      monitorGroups = body.groups;
+    }
+    if (key === "bot_provider") {
+      applyProgramChrome(currentMonitorConfig.bot_provider === "frostguard" ? "frostguard" : "gnbots");
+    }
 
     setMonitorPageStatus(body.message || `Saved ${key}.`, body.message?.includes("Restart") ? "warn" : "ok");
     renderMonitorRawSettings();
@@ -5928,7 +6648,7 @@ async function resetLdHealthSettings() {
   if (monitorBusyKeys.size) return;
   monitorBusyKeys.add("ld_health_use_defaults");
   renderMonitorGroups();
-  setMonitorPageStatus("Resetting LDPlayer health settings…", "pending");
+  setMonitorPageStatus("Using the active program's recommended emulator settings…", "pending");
   try {
     const response = await fetch(
       `/api/monitor-config/${encodeURIComponent("ld_health_use_defaults")}/update?value=${encodeURIComponent("true")}`,
@@ -5971,7 +6691,12 @@ async function loadMonitorConfig() {
     monitorGroups = Array.isArray(body.groups) ? body.groups : [];
     currentMonitorConfig = body.config || {};
     monitorResolvedPaths = body.resolved || {};
+    const pinnedProvider = String(currentMonitorConfig.bot_provider || "").toLowerCase();
+    if (pinnedProvider === "frostguard" || pinnedProvider === "gnbots") {
+      applyProgramChrome(pinnedProvider);
+    }
     ldHealthDefaults = body.ldHealthDefaults || {};
+    ldHealthPresets = body.ldHealthPresets || {};
     ldHealthEffective = body.ldHealthEffective || {};
     if (body.capabilities) {
       monitorCapabilities = body.capabilities;
@@ -6018,6 +6743,12 @@ els.restoreSummaryPanel?.addEventListener("click", async (event) => {
   const restoreAllButton = event.target.closest("#restore-all-btn, .btn-restore-all");
   if (restoreAllButton && restoreAllButton.id === "restore-all-btn" && !restoreAllButton.disabled) {
     await restoreAllTroubled();
+    return;
+  }
+
+  const restoreSelectedButton = event.target.closest("#restore-selected-btn, .btn-restore-selected");
+  if (restoreSelectedButton && !restoreSelectedButton.disabled) {
+    await restoreSelectedInstances();
     return;
   }
 
@@ -6290,6 +7021,95 @@ function remediationLabel(value) {
   return map[value] || value || "Warn user";
 }
 
+async function loadFrostguardScripts() {
+  if (!els.automationScriptsPanel) return;
+  try {
+    const response = await fetch("/api/automation/scripts", { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.provider !== "frostguard") {
+      els.automationScriptsPanel.classList.add("hidden");
+      return;
+    }
+    els.automationScriptsPanel.classList.remove("hidden");
+    renderFrostguardDebugger(body.debugger || {});
+    renderFrostguardScriptList(body.scripts || []);
+  } catch (_error) {
+    els.automationScriptsPanel.classList.add("hidden");
+  }
+}
+
+function renderFrostguardDebugger(debuggerStatus) {
+  if (!els.automationScriptsDebugger) return;
+  const count = Number(debuggerStatus.packagedCount) || 0;
+  const folder = debuggerStatus.packagedTemplates || "app/templates";
+  els.automationScriptsDebugger.innerHTML = `
+    <p class="settings-group-desc">${escapeHtml(debuggerStatus.summary || "")}</p>
+    <p class="automation-stuck-meta">Installed templates: ${escapeHtml(folder)} · ${count} image(s)</p>`;
+}
+
+function renderFrostguardScriptList(scripts) {
+  if (!els.automationScriptsList) return;
+  if (!scripts.length) {
+    els.automationScriptsList.innerHTML =
+      `<p class="settings-group-desc">No Task Builder JSON files were found in the install examples or the workspace custom-tasks folder.</p>`;
+    return;
+  }
+  els.automationScriptsList.innerHTML = `
+    <ul class="automation-script-list">
+      ${scripts
+        .map(
+          (script) => `
+        <li class="automation-script-row">
+          <div>
+            <strong>${escapeHtml(script.title || script.file || "Flow")}</strong>
+            <div class="automation-stuck-meta">${escapeHtml(script.source || "")} · ${escapeHtml(script.file || "")} · ${Number(script.stepCount) || 0} steps</div>
+          </div>
+          <button class="btn btn-small" type="button" data-script-id="${escapeHtml(script.id)}">Check</button>
+        </li>`,
+        )
+        .join("")}
+    </ul>`;
+}
+
+function renderScriptFindings(report) {
+  if (!els.automationScriptFindings) return;
+  const findings = report?.findings || [];
+  const heading = report?.ok
+    ? `${report.title || "Flow"} can run. ${Number(report.warnings) || 0} warning(s).`
+    : `${report.title || "Flow"} has ${Number(report.errors) || 0} problem(s) and ${Number(report.warnings) || 0} warning(s).`;
+  const rows = findings
+    .filter((row) => row.level !== "info")
+    .map((row) => {
+      const where = row.stepId ? `Step ${row.stepId}${row.name ? ` · ${row.name}` : ""}` : row.name || "Flow";
+      return `<div class="automation-script-finding ${escapeHtml(row.level || "")}"><strong>${escapeHtml(where)}</strong> — ${escapeHtml(row.message || "")}</div>`;
+    })
+    .join("");
+  const hints = (report?.logHints || [])
+    .map((line) => `<div class="automation-script-finding">${escapeHtml(line)}</div>`)
+    .join("");
+  els.automationScriptFindings.innerHTML = `
+    <p class="settings-group-desc">${escapeHtml(heading)}</p>
+    ${rows || `<p class="settings-group-desc">No step problems.</p>`}
+    ${hints ? `<h3 class="automation-subhead">Recent Frostguard log</h3>${hints}` : ""}`;
+}
+
+async function checkFrostguardScript(payload) {
+  setAutomationPageStatus("Checking Frostguard flow…", "pending");
+  try {
+    const response = await fetch("/api/automation/scripts/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+    renderScriptFindings(body);
+    setAutomationPageStatus(body.ok ? "Flow check finished." : "Flow check found problems.", body.ok ? "ok" : "error");
+  } catch (error) {
+    setAutomationPageStatus(error.message || "Could not check the flow.", "error");
+  }
+}
+
 function renderStuckRules(payload) {
   if (!els.automationStuckRulesBody) return;
   const rules = payload?.rules || [];
@@ -6450,6 +7270,7 @@ async function loadAutomationTab() {
       currentMonitorConfig = configPayload.config || currentMonitorConfig;
     }
     renderAutomationToggles(status, currentMonitorConfig);
+    await loadFrostguardScripts();
     if (stuckRes.ok) renderStuckRules(stuck);
     if (reportRes.ok) renderIssueReport(report);
     if (suggestRes.ok) renderAssistantSuggestions(suggestions);
@@ -6461,6 +7282,16 @@ async function loadAutomationTab() {
 
 els.automationRefreshBtn?.addEventListener("click", () => {
   loadAutomationTab();
+});
+
+els.automationScriptsList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-script-id]");
+  if (!button) return;
+  void checkFrostguardScript({ id: button.dataset.scriptId });
+});
+
+els.automationScriptCheckBtn?.addEventListener("click", () => {
+  void checkFrostguardScript({ json: els.automationScriptJson?.value || "" });
 });
 
 els.automationRunTickBtn?.addEventListener("click", async () => {

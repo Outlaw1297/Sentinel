@@ -298,39 +298,19 @@ class FrostguardBackend:
         }
 
     def automation_active(self, config: dict[str, Any]) -> bool:
-        """botActive signal: bridge pid online, workspace lock, or an executing task."""
-        import frostguard_bridge as bridge
-        from frostguard_workspace import (
-            any_task_executing,
-            resolve_workspace,
-            workspace_channel,
-            workspace_status,
-        )
+        """True only after Start Bot. An open Frostguard window is not automation."""
+        from frostguard_logs import frostguard_task_queue_running
+        from frostguard_workspace import any_task_executing, resolve_workspace
 
-        if bridge.pid_online(config):
-            return True
-        if bridge.process_running(config):
-            # Process alone is weak; require lock or an executing task too.
-            try:
-                workspace = resolve_workspace(config)
-                status = workspace_status(workspace, channel=workspace_channel(config, workspace))
-                if status.get("lockPresent"):
-                    return True
-                if any_task_executing(workspace):
-                    return True
-            except Exception:  # noqa: BLE001
-                pass
-            return False
         try:
-            workspace = resolve_workspace(config)
-            status = workspace_status(workspace, channel=workspace_channel(config, workspace))
-            if status.get("lockPresent") and status.get("dbPresent"):
-                return True
-            if any_task_executing(workspace):
+            if frostguard_task_queue_running(config):
                 return True
         except Exception:  # noqa: BLE001
+            pass
+        try:
+            return any_task_executing(resolve_workspace(config))
+        except Exception:  # noqa: BLE001
             return False
-        return False
 
 
 _BACKENDS: dict[str, BotBackend] = {

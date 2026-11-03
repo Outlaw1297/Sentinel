@@ -38,6 +38,19 @@ function Invoke-MonitorScript {
 
 Write-StackLog "Tray restart requested (admin=$(Test-IsAdmin))."
 
+$FrostguardScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
+if (Test-Path $FrostguardScript) {
+    try {
+        $marked = & $FrostguardScript -Action MarkRestartIfRunning | ConvertFrom-Json
+        if ($marked.marked) {
+            Write-StackLog "Frostguard was running; it will start again after Sentinel."
+            Write-Host "Frostguard is running. It will close and start again with Sentinel."
+        }
+    } catch {
+        Write-StackLog "Frostguard restart check failed: $($_.Exception.Message)"
+    }
+}
+
 if (Test-IsAdmin) {
     $stopTrayScript = Join-Path $PSScriptRoot "stop-tray.ps1"
     Invoke-MonitorScript -ScriptPath $stopTrayScript -ScriptArgs @("-Quiet") | Out-Null

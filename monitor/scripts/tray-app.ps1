@@ -50,6 +50,17 @@ function Get-Config {
     }
 }
 
+function Get-TrayBotProvider {
+    $scriptPath = Join-Path $ScriptsDir "frostguard-process.ps1"
+    if (Test-Path $scriptPath) {
+        try {
+            $info = & $scriptPath -Action Provider | ConvertFrom-Json
+            if ($info.provider) { return [string]$info.provider }
+        } catch {}
+    }
+    return "gnbots"
+}
+
 function Test-AnotherTrayRunning {
     if (-not (Test-Path $TrayLock)) { return $false }
     try {
@@ -535,7 +546,8 @@ function Invoke-TrayAction([string]$Action) {
             }
             "stop" { Start-TrayScript "stop-monitor-stack.ps1" @("-Quiet") | Out-Null }
             "stop_all" {
-                Send-MonitorNotification "Stack stopping" "Monitor, watcher, and GnBots are being closed." "stack_stopped"
+                $closing = if ((Get-TrayBotProvider) -eq "frostguard") { "Frostguard" } else { "GnBots" }
+                Send-MonitorNotification "Stack stopping" "Monitor, watcher, and $closing are being closed." "stack_stopped"
                 Start-TrayScript "stop-monitor-stack.ps1" @("-IncludeGnBots", "-Quiet") | Out-Null
                 Start-Sleep -Seconds 1
                 Exit-TrayApp
@@ -577,7 +589,11 @@ $restartItem.Add_Click({
         "Restart the monitor stack?"
         ""
         "The tray icon will disappear briefly while the watcher and dashboard restart."
-        "GnBots keeps running."
+        $(if ((Get-TrayBotProvider) -eq "frostguard") {
+            "Frostguard closes and starts again when it is running."
+        } else {
+            "GnBots keeps running."
+        })
         ""
         $uacNote
     ) -join "`n"
@@ -596,7 +612,8 @@ $stopItem.Add_Click({
 
 $stopAllItem = $menu.Items.Add("Stop everything")
 $stopAllItem.Add_Click({
-    if (Confirm-TrayAction "Stop everything?`n`nMonitor, watcher, and GnBots will be closed.") {
+    $closing = if ((Get-TrayBotProvider) -eq "frostguard") { "Frostguard" } else { "GnBots" }
+    if (Confirm-TrayAction "Stop everything?`n`nMonitor, watcher, and $closing will be closed.") {
         Invoke-TrayAction "stop_all"
     }
 })

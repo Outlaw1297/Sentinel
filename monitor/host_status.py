@@ -852,9 +852,27 @@ def monitor_elevation_status(config: dict[str, Any]) -> dict[str, Any]:
     is_admin = is_windows_admin()
     source = "config" if config.get("gnbots_launch_elevated") is not None else "auto"
 
+    program = "GnBots"
+    try:
+        from bot_backend import detect_bot_provider
+
+        if detect_bot_provider(config) == "frostguard":
+            program = "Frostguard"
+            requires_admin = False
+    except Exception:  # noqa: BLE001
+        program = "GnBots"
+
     ready = (not requires_admin) or is_admin
-    message = "Monitor elevation matches GnBots requirements."
-    if requires_admin and not is_admin:
+    message = f"Monitor elevation matches {program} requirements."
+    if program == "Frostguard":
+        if is_admin:
+            message = "Sentinel is elevated. Frostguard does not require Administrator to launch."
+        else:
+            message = (
+                "Frostguard does not require Administrator. "
+                "Elevate Sentinel only when a locked LDPlayer setting needs to be changed."
+            )
+    elif requires_admin and not is_admin:
         message = "GnBots requires Administrator. Restart the monitor elevated (approve UAC once via run.bat or watcher restart)."
     elif requires_admin and is_admin:
         message = "Monitor running elevated for GnBots."

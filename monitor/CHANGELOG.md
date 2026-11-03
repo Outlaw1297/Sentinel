@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Frostguard alignment
+- Recommended emulator preset follows the active program: GnBots 400×652 @ 120 DPI / 2 CPU / 4096 MB, or Frostguard 720×1280 @ 320 DPI / 4 CPU / 2048 MB
+- Frostguard 3 profile and task tables (`profile_name`, `emulator_number`, `tp_daily_task`) are read correctly
+- Blank Frostguard launcher path is discovered from the per-user install; watcher property escapes and global Telegram chat id are honored
+- Account Settings and Bulk Actions follow the active program: GnBots profile JSON, or Frostguard workspace `config` rows
+- Settings tabs follow the active program: Frostguard has no profile picker, and account names include player id, alliance, and state
+- Dashboard status, stack pills, Launch/Close, Start/Stop, the elevation tip, and Logs follow the active program. Frostguard reads `logs/frostguard.log` and hides GnBots session buttons and the switch-account name.
+- Bot Settings for Frostguard is the Config window (emulators, instances, game version, and analytics). Workbench pages such as Alliance stay on each account.
+- Dashboard account cards show the Frostguard account name, alliance, state, and player id.
+- Alliance shop, research, and other Frostguard priority lists use a checklist with up/down order instead of the raw encoded string.
+- Frostguard Account Settings follows the operator sidebar: Dummy Task, City Upgrades, City Events, Extra City Events, Rally, Shop, Gather, Intel, Alliance, and the rest of the per-account pages.
+- Exiting Sentinel closes Frostguard when it is the active program. Restarting Sentinel closes it and starts it again when it was running.
+- Frostguard status distinguishes an open window from Start Bot. Active sessions use Max Concurrent Instances, and the accounts count follows each profile's enable switch.
+- Automation can check Frostguard Task Builder flows for missing templates, broken branches, and OCR steps that cannot match, using the installed template folder the Debugging page does not see.
+- Emulator Restore can queue a backup restore for the instances you select, alongside update-selected and fix-all-settings
+
 ## 0.2.7 — 2026-10-28
 
 ### Installer

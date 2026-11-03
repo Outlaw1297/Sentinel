@@ -22,7 +22,15 @@ LOGS_DIR_NAME = "logs"
 
 _PROFILE_TABLE_CANDIDATES = ("Profile", "Profiles", "profiles")
 _INCIDENT_TABLE_CANDIDATES = ("Incident", "Incidents", "incidents", "ActionRequired", "action_required")
-_TASK_TABLE_CANDIDATES = ("Task", "Tasks", "tasks", "ScheduledTask", "scheduled_tasks")
+_TASK_TABLE_CANDIDATES = (
+    "tp_daily_task",
+    "Task",
+    "Tasks",
+    "tasks",
+    "ScheduledTask",
+    "scheduled_tasks",
+    "daily_task",
+)
 
 _db_backup_done: set[str] = set()
 _db_write_lock = threading.Lock()
@@ -76,6 +84,42 @@ def default_local_port(identity: str) -> int:
     return 20000 + (value % 40000)
 
 
+def _unescape_properties_value(value: str) -> str:
+    """Undo Java ``Properties.store`` escapes (``\\\\``, ``\\:``, ``\\uXXXX``)."""
+    out: list[str] = []
+    index = 0
+    text = value or ""
+    simple = {"n": "\n", "r": "\r", "t": "\t", "f": "\f", "\\": "\\"}
+    while index < len(text):
+        char = text[index]
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(text):
+            out.append("\\")
+            break
+        nxt = text[index]
+        if nxt in simple:
+            out.append(simple[nxt])
+            index += 1
+            continue
+        if nxt == "u" and index + 4 < len(text):
+            hex_part = text[index + 1 : index + 5]
+            try:
+                out.append(chr(int(hex_part, 16)))
+            except ValueError:
+                out.append(nxt)
+                index += 1
+                continue
+            index += 5
+            continue
+        out.append(nxt)
+        index += 1
+    return "".join(out)
+
+
 def _parse_properties(text: str) -> dict[str, str]:
     props: dict[str, str] = {}
     for raw_line in text.splitlines():
@@ -88,7 +132,7 @@ def _parse_properties(text: str) -> dict[str, str]:
             key, _, value = line.partition(":")
         else:
             continue
-        props[key.strip()] = value.strip()
+        props[key.strip()] = _unescape_properties_value(value.strip())
     return props
 
 
@@ -230,10 +274,20 @@ def _profile_schema(conn: sqlite3.Connection) -> dict[str, Any] | None:
         "table": table,
         "columns": columns,
         "id": _col(columns, "id", "Id", "profileId", "ProfileId"),
-        "name": _col(columns, "name", "Name", "profileName", "ProfileName"),
+        "name": _col(
+            columns,
+            "profile_name",
+            "profileName",
+            "ProfileName",
+            "name",
+            "Name",
+            "character_name",
+            "characterName",
+        ),
         "enabled": _col(columns, "enabled", "Enabled", "active", "Active"),
         "emu": _col(
             columns,
+            "emulator_number",
             "emulatorNumber",
             "EmulatorNumber",
             "emulatorIndex",
@@ -243,6 +297,10 @@ def _profile_schema(conn: sqlite3.Connection) -> dict[str, Any] | None:
             "instanceId",
             "InstanceId",
         ),
+        "characterName": _col(columns, "character_name", "characterName"),
+        "playerId": _col(columns, "character_id", "characterId", "player_id", "playerId"),
+        "alliance": _col(columns, "character_alliance_code", "alliance", "allianceCode"),
+        "state": _col(columns, "character_server", "characterServer", "server", "state"),
     }
 
 
@@ -276,9 +334,20 @@ def _row_to_profile(mapping: dict[str, Any], schema: dict[str, Any]) -> dict[str
             instance_id = int(mapping.get(emu_col))
         except (TypeError, ValueError):
             instance_id = -1
+    def _text(schema_key: str) -> str:
+        column = schema.get(schema_key)
+        if not column:
+            return ""
+        raw = mapping.get(column)
+        return "" if raw is None else str(raw).strip()
+
     return {
         "id": account_id,
         "name": name,
+        "characterName": _text("characterName"),
+        "playerId": _text("playerId"),
+        "alliance": _text("alliance"),
+        "state": _text("state"),
         "active": enabled,
         "enabled": enabled,
         "instanceId": instance_id,
@@ -304,7 +373,20 @@ def list_profiles(workspace: Path) -> list[dict[str, Any]]:
         emu_col = schema.get("emu")
         if not id_col and not name_col:
             return []
-        select_cols = [c for c in (id_col, name_col, enabled_col, emu_col) if c]
+        select_cols = [
+            c
+            for c in (
+                id_col,
+                name_col,
+                enabled_col,
+                emu_col,
+                schema.get("characterName"),
+                schema.get("playerId"),
+                schema.get("alliance"),
+                schema.get("state"),
+            )
+            if c
+        ]
         seen: set[str] = set()
         ordered: list[str] = []
         for col in select_cols:
@@ -389,8 +471,20 @@ def list_tasks(workspace: Path) -> list[dict[str, Any]]:
         if not table:
             return []
         columns = _table_columns(conn, table)
-        id_col = _col(columns, "id", "Id", "taskId", "TaskId")
-        name_col = _col(columns, "name", "Name", "title", "Title", "type", "Type")
+        id_col = _col(columns, "id", "Id", "taskId", "TaskId", "task_id")
+        name_col = _col(
+            columns,
+            "task_name",
+            "taskName",
+            "custom_task_name",
+            "customTaskName",
+            "name",
+            "Name",
+            "title",
+            "Title",
+            "type",
+            "Type",
+        )
         status_col = _col(columns, "status", "Status", "state", "State")
         enabled_col = _col(columns, "enabled", "Enabled", "active", "Active")
         executing_col = _col(
@@ -404,7 +498,14 @@ def list_tasks(workspace: Path) -> list[dict[str, Any]]:
             "inProgress",
             "InProgress",
         )
-        profile_col = _col(columns, "profileId", "ProfileId", "accountId", "AccountId")
+        profile_col = _col(
+            columns,
+            "profile_id",
+            "profileId",
+            "ProfileId",
+            "accountId",
+            "AccountId",
+        )
         ordered = [c for c in (id_col, name_col, status_col, enabled_col, executing_col, profile_col) if c]
         if not ordered:
             return []
@@ -563,6 +664,7 @@ def upsert_profile(workspace: Path, fields: dict[str, Any]) -> dict[str, Any]:
                 updates[emu_col] = int(emu)
             except (TypeError, ValueError):
                 updates[emu_col] = emu
+        updates.update(_identity_column_updates(schema["columns"], fields))
 
         if existing is not None:
             if not updates:
@@ -603,6 +705,7 @@ def upsert_profile(workspace: Path, fields: dict[str, Any]) -> dict[str, Any]:
                 insert_cols[emu_col] = int(emu)
             except (TypeError, ValueError):
                 insert_cols[emu_col] = emu
+        insert_cols.update(_identity_column_updates(schema["columns"], fields))
         if not insert_cols:
             return {"ok": False, "message": "No writable profile columns for insert."}
         cols_sql = ", ".join(f'"{c}"' for c in insert_cols)
@@ -624,6 +727,28 @@ def upsert_profile(workspace: Path, fields: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
+def _identity_column_updates(columns: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Map account identity onto Frostguard profile columns when they exist."""
+    mapping = (
+        (("playerId", "characterId"), "character_id"),
+        (("characterName",), "character_name"),
+        (("alliance",), "character_alliance_code"),
+        (("state", "server"), "character_server"),
+    )
+    updates: dict[str, Any] = {}
+    for sources, column in mapping:
+        if column not in columns:
+            continue
+        for source in sources:
+            if source in fields and fields.get(source) is not None:
+                updates[column] = str(fields.get(source) or "")[:255]
+                break
+    alliance = updates.get("character_alliance_code")
+    if isinstance(alliance, str):
+        updates["character_alliance_code"] = alliance.strip().upper()[:3]
+    return updates
+
+
 def add_profile_for_instance(
     workspace: Path,
     *,
@@ -631,6 +756,10 @@ def add_profile_for_instance(
     name: str | None = None,
     enabled: bool = True,
     profile_id: str | int | None = None,
+    player_id: str | None = None,
+    character_name: str | None = None,
+    alliance: str | None = None,
+    state: str | None = None,
 ) -> dict[str, Any]:
     """Provision-friendly helper: upsert a profile bound to an emulator index."""
     fields: dict[str, Any] = {
@@ -643,6 +772,14 @@ def add_profile_for_instance(
         fields["name"] = f"Emulator {int(instance_index)}"
     if profile_id is not None:
         fields["id"] = profile_id
+    if player_id is not None:
+        fields["playerId"] = player_id
+    if character_name is not None:
+        fields["characterName"] = character_name
+    if alliance is not None:
+        fields["alliance"] = alliance
+    if state is not None:
+        fields["state"] = state
     return upsert_profile(workspace, fields)
 
 
@@ -699,14 +836,56 @@ def set_task_enabled(workspace: Path, task_id: str, enabled: bool) -> dict[str, 
         conn.close()
 
 
+def read_global_config_value(workspace: Path, key: str) -> str:
+    """Read one global row from Frostguard's user ``config`` table. Never log the value."""
+    want = str(key or "").strip()
+    if not want:
+        return ""
+    try:
+        conn = open_db_readonly(workspace)
+    except (FileNotFoundError, sqlite3.Error, OSError):
+        return ""
+    try:
+        tables = _table_names(conn)
+        table = _pick_table(tables, ("config", "Config"))
+        if not table:
+            return ""
+        columns = _table_columns(conn, table)
+        key_col = _col(columns, "config_key", "configKey", "key", "Key")
+        value_col = _col(columns, "value", "Value")
+        profile_col = _col(columns, "profile_id", "profileId", "ProfileId")
+        if not key_col or not value_col:
+            return ""
+        if profile_col:
+            row = conn.execute(
+                f'SELECT "{value_col}" FROM "{table}" '
+                f'WHERE "{key_col}" = ? AND "{profile_col}" IS NULL LIMIT 1',
+                (want,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f'SELECT "{value_col}" FROM "{table}" WHERE "{key_col}" = ? LIMIT 1',
+                (want,),
+            ).fetchone()
+        if not row or row[0] is None:
+            return ""
+        return str(row[0]).strip()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+
+
 def workspace_status(workspace: Path, *, channel: str = "stable") -> dict[str, Any]:
     root = Path(workspace).expanduser().resolve()
     channel_name = (channel or "stable").strip().lower() or "stable"
     identity = workspace_identity(channel_name, root)
     props = read_watcher_props(root)
-    # Watcher configured = props present with chatId and (token or localPort),
-    # without exposing the token itself.
-    watcher_configured = bool(props.get("chatId")) and bool(props.get("token") or props.get("localPort"))
+    chat_id = str(props.get("chatId") or "").strip()
+    if not chat_id:
+        chat_id = read_global_config_value(root, "TELEGRAM_ALLOWED_CHAT_ID_STRING")
+    # Watcher configured = chat id plus token or local port, without exposing the token.
+    watcher_configured = bool(chat_id) and bool(props.get("token") or props.get("localPort"))
     local_port = props.get("localPort")
     if local_port is None:
         local_port = default_local_port(identity)
