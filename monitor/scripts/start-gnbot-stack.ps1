@@ -36,11 +36,50 @@ function Write-Info([string]$Message) {
     }
 }
 
+function Sync-ReleaseConfigFromDashboard {
+    # The packaged tree under monitor\dist has its own config.json. The
+    # dashboard setting lives in monitor\config.json. Copy it before startup
+    # so the program that launches is the one selected in settings.
+    $releaseName = Split-Path -Leaf $MonitorRoot
+    $parentName = Split-Path -Leaf (Split-Path -Parent $MonitorRoot)
+    if ($releaseName -ne "GnBotsMonitor-Release" -or $parentName -ne "dist") { return }
+    $dashboardConfig = Join-Path (Split-Path -Parent (Split-Path -Parent $MonitorRoot)) "config.json"
+    if (-not (Test-Path -LiteralPath $dashboardConfig)) { return }
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        Copy-Item -LiteralPath $dashboardConfig -Destination $ConfigPath -Force
+        return
+    }
+    $dashboardFull = (Resolve-Path -LiteralPath $dashboardConfig).Path
+    $localFull = (Resolve-Path -LiteralPath $ConfigPath).Path
+    if ($dashboardFull -eq $localFull) { return }
+    Copy-Item -LiteralPath $dashboardConfig -Destination $ConfigPath -Force
+    Write-Info "Using dashboard config for the startup program."
+}
+
 function Get-Config {
+    Sync-ReleaseConfigFromDashboard
     if (-not (Test-Path $ConfigPath)) {
         throw "Missing config.json at $ConfigPath"
     }
     return Get-Content $ConfigPath -Raw | ConvertFrom-Json
+}
+
+function Resolve-StartupProvider([object]$Config) {
+    $raw = ""
+    if ($Config -and $Config.bot_provider) {
+        $raw = ([string]$Config.bot_provider).Trim().ToLower()
+    }
+    if ($raw -eq "frostguard" -or $raw -eq "gnbots") { return $raw }
+    $providerScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
+    if (Test-Path -LiteralPath $providerScript) {
+        try {
+            $detected = [string](& $providerScript -Action Provider | ConvertFrom-Json).provider
+            if ($detected -eq "frostguard" -or $detected -eq "gnbots") { return $detected }
+        } catch {
+            Write-Info "Could not read the active program: $($_.Exception.Message)"
+        }
+    }
+    return "gnbots"
 }
 
 function Test-MonitorHealthy([int]$Port) {
@@ -130,6 +169,8 @@ function Wait-MonitorHealthy([int]$Port, [int]$TimeoutSeconds) {
 $config = Get-Config
 $dashboardPort = [int]$config.dashboard_port
 if ($dashboardPort -le 0) { $dashboardPort = 8787 }
+$activeProvider = Resolve-StartupProvider $config
+Write-Info "Startup program from config: $activeProvider"
 
 $elevation = Get-GnBotsElevationInfo -Config $config -MonitorRoot $MonitorRoot
 Write-Info "Stack start (elevated=$Elevated admin=$($elevation.isAdmin) requiresAdmin=$($elevation.requiresAdmin))"
@@ -160,11 +201,9 @@ if (-not (Wait-MonitorHealthy $dashboardPort 60)) {
 }
 
 $FrostguardScript = Join-Path $PSScriptRoot "frostguard-process.ps1"
-$activeProvider = "gnbots"
 $restartedFrostguard = $false
-if (Test-Path $FrostguardScript) {
+if ($activeProvider -eq "frostguard" -and (Test-Path $FrostguardScript)) {
     try {
-        $activeProvider = [string](& $FrostguardScript -Action Provider | ConvertFrom-Json).provider
         $restarted = & $FrostguardScript -Action StartIfRestartRequested | ConvertFrom-Json
         $restartedFrostguard = [bool]$restarted.requested
         if ($restartedFrostguard) {
@@ -196,7 +235,7 @@ if (-not $Quiet) {
 }
 
 if ($launchExit -ne 0) {
-    Write-Info "GnBots launch returned exit $launchExit (monitor may still be running)."
+    Write-Info "Startup launch returned exit $launchExit (monitor may still be running)."
 }
 
 Write-Info "Stack is up. Monitor: http://127.0.0.1:$dashboardPort"
