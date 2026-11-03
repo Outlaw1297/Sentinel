@@ -89,6 +89,15 @@ def test_read_local_version_info_utf8_bom(tmp_path: Path, monkeypatch: pytest.Mo
     assert info["commit"] == "abc1234"
 
 
+def test_version_file_overrides_older_version_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("update_info.get_install_root", lambda: tmp_path)
+    (tmp_path / "version.json").write_text('{"appVersion": "0.2.7", "commitShort": "0317f39"}', encoding="utf-8")
+    (tmp_path / "VERSION").write_text("0.2.8\n", encoding="utf-8")
+    info = read_local_version_info()
+    assert info["appVersion"] == "0.2.8"
+    assert info["commitShort"] == "0317f39"
+
+
 def test_read_local_version_falls_back_to_version_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("update_info.get_install_root", lambda: tmp_path)
     (tmp_path / "VERSION").write_text("0.1.5\n", encoding="utf-8")

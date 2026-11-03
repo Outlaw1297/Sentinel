@@ -33,15 +33,18 @@ def read_local_version_info() -> dict[str, Any]:
                 info.update(raw)
         except (OSError, json.JSONDecodeError):
             pass
-    if not str(info.get("appVersion") or "").strip() or info.get("appVersion") == "0.0.0":
-        version_file = get_install_root() / "VERSION"
-        if version_file.is_file():
-            try:
-                text = version_file.read_text(encoding="utf-8-sig").strip()
-                if text:
-                    info["appVersion"] = text.splitlines()[0].strip()
-            except OSError:
-                pass
+    version_file = get_install_root() / "VERSION"
+    file_version = ""
+    if version_file.is_file():
+        try:
+            text = version_file.read_text(encoding="utf-8-sig").strip()
+            if text:
+                file_version = text.splitlines()[0].strip()
+        except OSError:
+            file_version = ""
+    current = str(info.get("appVersion") or "").strip()
+    if file_version and (not current or current == "0.0.0" or version_is_older(current, file_version)):
+        info["appVersion"] = file_version
     return info
 
 def local_commit() -> str:
