@@ -81,6 +81,49 @@ def _github_commit(repo: str, branch: str) -> dict[str, Any]:
     return {"commit": sha, "commitShort": sha[:7], "message": message}
 
 
+def _version_file_text(git_root: Any) -> str:
+    """App version from the working tree, preferring monitor/VERSION over a stale version.json."""
+    root = git_root if hasattr(git_root, "joinpath") else None
+    if root is None:
+        return ""
+    for relative in ("monitor/VERSION", "VERSION"):
+        path = root / relative
+        try:
+            if path.is_file():
+                text = path.read_text(encoding="utf-8-sig").strip()
+                if text:
+                    return text.splitlines()[0].strip()
+        except OSError:
+            continue
+    return ""
+
+
+def _git_show_text(spec: str, *, cwd: str) -> str:
+    try:
+        return _run_git(["show", spec], cwd=cwd)
+    except (RuntimeError, OSError):
+        return ""
+
+
+def _git_version_tag(sha: str, *, cwd: str) -> str:
+    """Highest vX.Y.Z tag pointing at this commit."""
+    if not sha:
+        return ""
+    try:
+        raw = _run_git(["tag", "--points-at", sha], cwd=cwd)
+    except (RuntimeError, OSError):
+        return ""
+    best = ""
+    best_parsed: tuple[int, ...] = ()
+    for line in raw.splitlines():
+        tag = line.strip()
+        parsed = parse_app_version(tag)
+        if parsed and (not best or parsed > best_parsed):
+            best = tag
+            best_parsed = parsed
+    return best
+
+
 def _github_tag_commit(repo: str, tag: str) -> str:
     """Resolve a release tag to its commit SHA (handles annotated tags)."""
     tag_name = str(tag or "").strip()
@@ -199,9 +242,27 @@ def check_for_updates(*, force: bool = False, config: dict[str, Any] | None = No
             try:
                 _run_git(["fetch", "origin", branch], cwd=str(root))
                 remote_sha = _run_git(["rev-parse", f"origin/{branch}"], cwd=str(root)).lower()
+                head_sha = _run_git(["rev-parse", "HEAD"], cwd=str(root)).lower()
+                result["localCommit"] = head_sha or local_sha
+                result["localCommitShort"] = (head_sha or local_sha)[:7]
+                local_tag = _git_version_tag(head_sha, cwd=str(root))
+                if local_tag:
+                    result["localVersion"] = normalize_version_string(local_tag)
+                else:
+                    local_file = _version_file_text(root)
+                    if local_file:
+                        result["localVersion"] = local_file
                 result["remoteCommit"] = remote_sha
                 result["remoteCommitShort"] = remote_sha[:7]
-                result["updateAvailable"] = bool(remote_sha and remote_sha != local_sha)
+                remote_tag = _git_version_tag(remote_sha, cwd=str(root))
+                if remote_tag:
+                    result["remoteTag"] = remote_tag
+                    result["remoteVersion"] = normalize_version_string(remote_tag)
+                else:
+                    remote_file = _git_show_text(f"origin/{branch}:monitor/VERSION", cwd=str(root))
+                    if remote_file:
+                        result["remoteVersion"] = remote_file.splitlines()[0].strip()
+                result["updateAvailable"] = bool(remote_sha and remote_sha != (head_sha or local_sha))
                 if result["updateAvailable"]:
                     result["remoteMessage"] = _run_git(
                         ["log", "-1", "--pretty=%s", f"origin/{branch}"],

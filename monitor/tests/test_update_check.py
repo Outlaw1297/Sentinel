@@ -46,17 +46,33 @@ def test_git_install_update_available():
         patch("update_check._run_git") as run_git,
         patch("update_check._config_update_settings", return_value=("Outlaw1297/Sentinel", "main", "stable")),
     ):
-        run_git.side_effect = [
-            "",  # fetch
-            remote,  # rev-parse
-            "fix something",  # log message
-        ]
+        def _fake_git(args, cwd):
+            if args[:1] == ["fetch"]:
+                return ""
+            if args[:2] == ["rev-parse", "origin/main"]:
+                return remote
+            if args[:2] == ["rev-parse", "HEAD"]:
+                return local["commit"]
+            if args[:2] == ["tag", "--points-at"] and args[-1] == remote:
+                return "v0.2.7\nv0.2.8\n"
+            if args[:2] == ["tag", "--points-at"]:
+                return ""
+            if args[:2] == ["show", "origin/main:monitor/VERSION"]:
+                return "0.2.8\n"
+            if args[:3] == ["log", "-1", "--pretty=%s"]:
+                return "Release Sentinel 0.2.8."
+            raise AssertionError(args)
+
+        run_git.side_effect = _fake_git
         result = update_check.check_for_updates(force=True)
 
     assert result["updateMode"] == "git"
     assert result["updateAvailable"] is True
     assert result["remoteCommit"] == remote
-    assert result["remoteMessage"] == "fix something"
+    assert result["remoteVersion"] == "0.2.8"
+    assert result["remoteTag"] == "v0.2.8"
+    assert result["localVersion"] == "0.1.5"
+    assert result["remoteMessage"] == "Release Sentinel 0.2.8."
 
 
 def test_stable_release_newer_version_available():

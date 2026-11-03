@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A git checkout shows the version tag on the update line. It was repeating the installed version.json on both sides, so 0.2.8 looked like v0.2.7.
+
 ## 0.2.8 — 2026-11-02
 
 ### Frostguard alignment
