@@ -466,16 +466,14 @@ def stage_xapk_into_apk_dir(
     abi: str | None = None,
     write_game_zip: bool = True,
 ) -> dict[str, Any]:
-    """Extract an XAPK and stage GnBots-compatible split filenames into apk_dir."""
+    """Extract an XAPK and stage GnBots-compatible split filenames into apk_dir.
+
+    Staging is transactional: live ``main.apk`` / ``arch.apk`` / ``pack.apk`` are
+    left untouched until the new splits are fully extracted into a temp dir. Only
+    then are they swapped in and any splits absent from the new XAPK removed, so a
+    mid-stage failure cannot wipe a previously good cache.
+    """
     apk_dir.mkdir(parents=True, exist_ok=True)
-    # Drop previous split cache so a partial XAPK cannot mix with older arch/pack APKs.
-    for stale_name in ("main.apk", "arch.apk", "pack.apk"):
-        stale_path = apk_dir / stale_name
-        if stale_path.is_file():
-            try:
-                stale_path.unlink()
-            except OSError:
-                pass
     staged: dict[str, str] = {}
     manifest: dict[str, Any] = {}
 
@@ -497,6 +495,8 @@ def stage_xapk_into_apk_dir(
 
         with tempfile.TemporaryDirectory(prefix="sentinel-xapk-") as tmp:
             tmp_root = Path(tmp)
+            staged_root = tmp_root / "staged"
+            staged_root.mkdir()
             for name in names:
                 if not name.lower().endswith(".apk"):
                     continue
@@ -522,9 +522,21 @@ def stage_xapk_into_apk_dir(
                 extracted = tmp_root / leaf
                 with archive.open(name) as source, extracted.open("wb") as dest:
                     shutil.copyfileobj(source, dest)
-                dest_path = apk_dir / target_name
-                shutil.copy2(extracted, dest_path)
+                shutil.copy2(extracted, staged_root / target_name)
                 staged[target_name] = leaf
+
+            # Commit: replace live splits only after the full extract succeeded.
+            for target_name in staged:
+                shutil.copy2(staged_root / target_name, apk_dir / target_name)
+            for stale_name in ("main.apk", "arch.apk", "pack.apk"):
+                if stale_name in staged:
+                    continue
+                stale_path = apk_dir / stale_name
+                if stale_path.is_file():
+                    try:
+                        stale_path.unlink()
+                    except OSError:
+                        pass
 
     package_name = str(manifest.get("package_name") or "").strip() or None
     version_name = str(manifest.get("version_name") or "").strip() or None
